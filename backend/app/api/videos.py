@@ -8,23 +8,36 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from app.api.deps import get_session
+from app.config import get_settings
 
 router = APIRouter(prefix="/sessions/{session_id}/video", tags=["video"])
 
 
 @router.post("")
 async def upload_video(session_id: str, file: UploadFile = File(...)):
-    """上传视频文件并读取元数据。"""
+    """上传视频文件并读取元数据（分块落盘，避免整个文件进内存）。"""
     session = get_session(session_id)
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="缺少文件名")
 
-    content = await file.read()
-    if len(content) == 0:
-        raise HTTPException(status_code=400, detail="文件为空")
+    # 覆盖上传前先放掉旧视频的解码句柄，否则 Windows 下文件被占用
+    session.release_video_handle()
 
-    dest = session.storage.save_video(content, file.filename)
+    max_bytes = get_settings().max_upload_mb * 1024 * 1024
+    try:
+        dest, written = await session.storage.save_video_stream(
+            file, file.filename, max_bytes=max_bytes
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+
+    if written == 0:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=400, detail="文件为空")
 
     try:
         video_info = session.video_processor.load_video(str(dest))

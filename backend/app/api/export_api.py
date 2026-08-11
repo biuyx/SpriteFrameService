@@ -22,6 +22,24 @@ def _sanitize_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-一-鿿]", "_", name) or "export"
 
 
+def _safe_child(base: Path, *parts: str) -> Path:
+    """在 base 下解析子路径，拒绝越界（.. / 分隔符 / 绝对路径 / 符号链接逃逸）。
+
+    显式拒绝而非静默改写，避免 "..%2F.." 这类输入在反代解码后产生意外语义。
+    """
+    target = base
+    for part in parts:
+        if not part or part in (".", "..") or "/" in part or "\\" in part:
+            raise HTTPException(status_code=400, detail="非法的名称")
+        target = target / part
+
+    base_r = base.resolve()
+    target_r = target.resolve()
+    if target_r != base_r and base_r not in target_r.parents:
+        raise HTTPException(status_code=400, detail="非法的路径")
+    return target_r
+
+
 @router.post("")
 def create_export(session_id: str, req: ExportRequest):
     session = get_session(session_id)
@@ -65,7 +83,7 @@ def create_export(session_id: str, req: ExportRequest):
             "dir": str(export_dir),
         }
 
-    job = job_manager.submit("export", _job)
+    job = job_manager.submit("export", _job, lock=session.lock)
     return {"job_id": job.id, "export_name": export_name}
 
 
@@ -79,7 +97,7 @@ def list_exports(session_id: str):
 def download_export(session_id: str, name: str):
     """下载导出结果（打包为 zip）。"""
     session = get_session(session_id)
-    export_dir = session.storage.exports_dir / name
+    export_dir = _safe_child(session.storage.exports_dir, name)
     if not export_dir.is_dir():
         raise HTTPException(status_code=404, detail="导出不存在")
 
@@ -98,14 +116,15 @@ def download_export(session_id: str, name: str):
     return StreamingResponse(
         buf,
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{name}.zip"'},
+        # 用解析后的目录名，避免请求参数直接进响应头
+        headers={"Content-Disposition": f'attachment; filename="{export_dir.name}.zip"'},
     )
 
 
 @router.get("/{name}/files/{filename}")
 def download_export_file(session_id: str, name: str, filename: str):
     session = get_session(session_id)
-    path = session.storage.exports_dir / name / filename
+    path = _safe_child(session.storage.exports_dir, name, filename)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
-    return FileResponse(str(path), filename=filename)
+    return FileResponse(str(path), filename=path.name)

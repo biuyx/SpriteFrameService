@@ -1,6 +1,7 @@
 """进程内后台任务管理器（线程池执行长任务，前端轮询状态）。"""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import traceback
@@ -11,6 +12,8 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Any
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(str, Enum):
@@ -77,6 +80,8 @@ class JobContext:
 class JobManager:
     """线程池任务管理器。"""
 
+    MAX_JOBS = 200   # 任务表上限，超出后淘汰最早的已结束任务
+
     def __init__(self, max_workers: Optional[int] = None):
         self._jobs: Dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
@@ -85,28 +90,70 @@ class JobManager:
             thread_name_prefix="spriteframe-job",
         )
 
-    def submit(self, job_type: str, fn: Callable[[JobContext], Any]) -> Job:
+    def _evict_locked(self) -> None:
+        """在持有 _jobs_lock 时调用：淘汰最早的已结束任务。"""
+        if len(self._jobs) <= self.MAX_JOBS:
+            return
+        finished = sorted(
+            (j for j in self._jobs.values() if j.finished_at is not None),
+            key=lambda j: j.finished_at,
+        )
+        for job in finished:
+            if len(self._jobs) <= self.MAX_JOBS:
+                break
+            self._jobs.pop(job.id, None)
+
+    def submit(self, job_type: str, fn: Callable[[JobContext], Any],
+               lock: Optional[Any] = None) -> Job:
+        """提交任务。
+
+        lock: 可选的互斥锁（如会话锁）。在工作线程内获取，使同一会话的任务
+        串行执行，避免并发改写帧数据；提交调用本身不会因此阻塞。
+        """
         job = Job(id=uuid.uuid4().hex[:12], type=job_type)
         with self._jobs_lock:
             self._jobs[job.id] = job
+            self._evict_locked()
 
         def _runner():
-            with job._lock:
-                job.status = JobStatus.RUNNING
             ctx = JobContext(job)
             try:
-                result = fn(ctx)
-                if not ctx.cancelled():
+                if lock is not None:
                     with job._lock:
-                        job.status = JobStatus.DONE
-                        job.result = result
-                        job.progress = 100.0
+                        job.message = "等待同会话的其他任务完成..."
+                    lock.acquire()
+                try:
+                    with job._lock:
+                        if job.cancel_requested:
+                            job.status = JobStatus.CANCELLED
+                            return
+                        job.status = JobStatus.RUNNING
+                        # 清掉排队提示，避免任务完成后仍显示「等待中」
+                        job.message = ""
+                    result = fn(ctx)
+                    if not ctx.cancelled():
+                        with job._lock:
+                            job.status = JobStatus.DONE
+                            job.result = result
+                            job.progress = 100.0
+                finally:
+                    if lock is not None:
+                        lock.release()
             except Exception as e:
+                # 完整堆栈只进服务端日志；响应默认仅给异常类型与消息，
+                # 避免向未鉴权的调用方泄露绝对路径等内部信息。
+                logger.exception("任务失败 [%s/%s]", job.type, job.id)
+                detail = f"{type(e).__name__}: {e}"
+                if get_settings().debug_errors:
+                    detail = f"{detail}\n{traceback.format_exc()}"
                 with job._lock:
                     job.status = JobStatus.ERROR
-                    job.error = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+                    job.error = detail
             finally:
                 job.finished_at = time.time()
+                # 任务结束后再淘汰一次，使任务表在提交停止后也能收敛到上限
+                with self._jobs_lock:
+                    self._evict_locked()
 
         self._executor.submit(_runner)
         return job

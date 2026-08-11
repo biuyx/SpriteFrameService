@@ -55,10 +55,23 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8000
     max_workers: int = 2
+    cors_origins: str = "*"          # 逗号分隔的允许来源，"*" 为不限制
+    debug_errors: bool = False       # 任务失败时是否把完整 traceback 返回给前端
 
     # --- 处理 ---
     force_cpu: bool = False
     realesrgan_tile: int = 0
+    max_upload_mb: int = 2048        # 单个视频上传大小上限（MB）
+    max_extract_frames: int = 2000   # 单次抽帧的帧数上限
+    allow_model_download: bool = False  # 允许 RTMPose 在本地模型缺失时联网下载
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """解析 CORS 来源配置。"""
+        raw = (self.cors_origins or "*").strip()
+        if raw == "*":
+            return ["*"]
+        return [o.strip() for o in raw.split(",") if o.strip()] or ["*"]
 
     @property
     def project_root(self) -> Path:

@@ -21,7 +21,7 @@ def get_history(session_id: str):
             "description": e.description,
             "affected_count": len(e.affected_indices),
             "affected_indices": e.affected_indices[:50],
-            "memory_bytes": e.memory_bytes,
+            "bytes_used": e.bytes_used,
             "timestamp": e.timestamp,
         })
     return {"entries": entries, "memory": session.history.get_memory_usage()}
@@ -40,5 +40,5 @@ def revert_history(session_id: str, req: RevertRequest):
         ctx.report(100, "回退完成")
         return {"affected": affected, "count": len(affected)}
 
-    job = job_manager.submit("history-revert", _job)
+    job = job_manager.submit("history-revert", _job, lock=session.lock)
     return {"job_id": job.id}

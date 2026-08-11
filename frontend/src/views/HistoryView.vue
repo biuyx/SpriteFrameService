@@ -60,7 +60,7 @@ onMounted(load)
       <button class="primary" :disabled="busy || !entries.length" @click="undoLast">撤销上一步</button>
       <button :disabled="busy || !entries.length" @click="revertTo(0)">回退到初始状态</button>
       <button class="small" @click="load">刷新</button>
-      <span v-if="memory" class="hint">占用内存：{{ memory }}</span>
+      <span v-if="memory" class="hint">快照占用：{{ memory }}</span>
     </div>
 
     <div v-if="entries.length" class="history-list">

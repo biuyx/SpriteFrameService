@@ -16,9 +16,9 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
     yield
-    # 优雅关闭：清理空闲会话
+    # 优雅关闭：仅释放内存与文件句柄，磁盘数据保留（重启后按需恢复）
     from app.services.session import session_manager
-    session_manager.cleanup_idle(max_idle_seconds=0)
+    session_manager.release_all()
 
 
 def create_app() -> FastAPI:
@@ -31,10 +31,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # CORS：默认放开（本机/局域网自用）。通配来源下不能带凭证——浏览器会
+    # 直接拒绝该组合，因此仅在显式配置了具体来源时才允许 credentials。
+    origins = settings.cors_origins_list
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials=origins != ["*"],
         allow_methods=["*"],
         allow_headers=["*"],
     )

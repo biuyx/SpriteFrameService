@@ -32,6 +32,10 @@ rtmlib/                  RTMPose 推理库（与原项目同款，已随仓库�
 
 **服务模型**：每个会话（session）对应一个视频项目。视频与帧以文件形式存于 `data/sessions/{id}/`，处理任务（抽帧/抠图/分析/导出）在进程内线程池异步执行，前端轮询 `GET /api/jobs/{id}` 获取进度。
 
+**持久化**：会话数据以文件为准，进程重启后首次访问该会话会自动从磁盘恢复（帧元数据、帧图像、视频）。关停服务不会删除任何数据；只有显式 `DELETE /api/sessions/{id}` 才会清除磁盘内容。
+
+**并发**：同一会话的后台任务串行执行（会话级锁），不同会话之间并行，避免并发改写同一批帧。
+
 ---
 
 ## 快速开始
@@ -83,6 +87,13 @@ server {
 }
 ```
 
+> ⚠️ **对外暴露前须知**：本服务**没有任何身份认证**，任何能访问到端口的人都可以创建/删除会话、上传视频、提交计算任务。默认定位是单人本机或可信局域网使用。若确需对外提供：
+>
+> - 在反代层加上认证（Basic Auth / OAuth2 / mTLS 等），不要裸奔；
+> - 把 `SPRITE_CORS_ORIGINS` 收敛为具体来源，不要保留 `*`；
+> - 保持 `SPRITE_DEBUG_ERRORS=false`（否则任务错误会返回服务端路径与堆栈）；
+> - 按机器实际容量下调 `SPRITE_MAX_UPLOAD_MB` 与 `SPRITE_MAX_EXTRACT_FRAMES`，并让 Nginx 的 `client_max_body_size` 与前者一致。
+
 ---
 
 ## 模型与外部依赖（跨平台注意）
@@ -103,6 +114,13 @@ SPRITE_MODELS_DIR=...          # 开发期可指向原项目 models 目录
 SPRITE_TOOLS_DIR=tools
 SPRITE_HOST=127.0.0.1
 SPRITE_PORT=8000
+
+# 安全与资源上限（详见 backend/.env.example）
+SPRITE_CORS_ORIGINS=*          # 对外暴露时收敛为具体来源
+SPRITE_DEBUG_ERRORS=false      # true 时任务错误会带完整 traceback（仅调试）
+SPRITE_MAX_UPLOAD_MB=2048      # 单个视频上传上限
+SPRITE_MAX_EXTRACT_FRAMES=2000 # 单次抽帧帧数上限
+SPRITE_ALLOW_MODEL_DOWNLOAD=false  # 允许 RTMPose 缺模型时联网下载
 ```
 
 > Windows 下外部二进制带 `.exe` 后缀，Linux 下为裸名——代码按 `sys.platform` 自动解析，无需修改源码。
@@ -173,6 +191,12 @@ A：需在 `models/realesrgan/` 放置 `realesrgan-ncnn-vulkan`（Linux）或 `.
 
 **Q：姿势(RTM)检测找不到 rtmlib？**
 A：rtmlib 已随仓库分发（项目根 `rtmlib/rtmlib/...`），无需手动放置；确认 `models/rtmpose/` 下有对应模型即可。
+
+**Q：RTMPose 提示「未找到本地模型」？**
+A：默认不联网下载（rtmlib 的下载不校验哈希，且离线部署不应有意外外连）。请把 `yolox_*.onnx` 与 `rtmw_*.onnx` 放入 `models/rtmpose/`；确实想自动下载则设 `SPRITE_ALLOW_MODEL_DOWNLOAD=true`。
+
+**Q：重启服务后之前的项目还在吗？**
+A：在。会话数据以文件形式存于 `data/sessions/{id}/`，重启后用同一个会话 ID 访问即可自动恢复。只有显式删除会话才会清除磁盘数据。
 
 **Q：mediapipe / onnxruntime 在 Python 3.13 无 wheel？**
 A：用 conda 创建 Python 3.11 环境再执行 setup 脚本。

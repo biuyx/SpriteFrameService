@@ -109,7 +109,7 @@ def remove_background(session_id: str, req: BackgroundRemoveRequest):
         ctx.report(100, f"抠图完成: {processed}/{len(indices)} 帧")
         return {"mode": req.mode, "processed": processed, "total": len(indices)}
 
-    job = job_manager.submit("background", _job)
+    job = job_manager.submit("background", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -149,5 +149,5 @@ def add_outline(session_id: str, req: OutlineRequest):
         ctx.report(100, f"描边完成: {processed}/{len(indices)} 帧")
         return {"processed": processed, "total": len(indices)}
 
-    job = job_manager.submit("outline", _job)
+    job = job_manager.submit("outline", _job, lock=session.lock)
     return {"job_id": job.id}

@@ -1,7 +1,7 @@
 """图像处理 API：缩放、空白裁剪、边缘优化、RealESRGAN 增强、魔棒编辑。"""
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -78,7 +78,7 @@ def scale_frames(session_id: str, req: ScaleRequest):
         return {"processed": processed, "total": len(indices),
                 "from": f"{orig_w}x{orig_h}", "to": f"{target_w}x{target_h}"}
 
-    job = job_manager.submit("scale", _job)
+    job = job_manager.submit("scale", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -143,7 +143,7 @@ def crop_whitespace(session_id: str, req: CropRequest):
         session.persist_metadata()
         return {"processed": processed, "total": len(indices), "size": f"{crop_w}x{crop_h}"}
 
-    job = job_manager.submit("crop", _job)
+    job = job_manager.submit("crop", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -181,7 +181,7 @@ def optimize_edges(session_id: str, req: OptimizeEdgesRequest):
         session.persist_metadata()
         return {"processed": processed, "total": len(indices)}
 
-    job = job_manager.submit("optimize-edges", _job)
+    job = job_manager.submit("optimize-edges", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -218,7 +218,7 @@ def enhance_frames(session_id: str, req: EnhanceRequest):
         session.persist_metadata()
         return {"processed": processed, "total": len(indices), "model": req.model}
 
-    job = job_manager.submit("enhance", _job)
+    job = job_manager.submit("enhance", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -242,10 +242,8 @@ def wand_select(session_id: str, req: WandSelectRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # 存储 mask（会话级，每帧一个）
-    if not hasattr(session, "wand_masks"):
-        session.wand_masks = {}
-    session.wand_masks[req.frame_index] = selection.mask
+    # 存储 mask（会话级，每帧一个，超出上限自动淘汰最早的）
+    session.set_wand_mask(req.frame_index, selection.mask)
 
     session.clear_frame_arrays()
 
@@ -263,8 +261,7 @@ def wand_select(session_id: str, req: WandSelectRequest):
 def wand_mask(session_id: str, frame_index: int):
     """返回已存储的选区 mask 图（PNG，蓝色高亮）。"""
     session = get_session(session_id)
-    masks: Dict[int, np.ndarray] = getattr(session, "wand_masks", {})
-    mask = masks.get(frame_index)
+    mask = session.wand_masks.get(frame_index)
     if mask is None:
         raise HTTPException(status_code=404, detail="请先对该帧执行选区操作")
 
@@ -282,8 +279,7 @@ def wand_mask(session_id: str, frame_index: int):
 def wand_apply(session_id: str, req: WandApplyRequest):
     """应用魔棒选区：delete 清除选区，fill 用颜色填充。"""
     session = get_session(session_id)
-    masks: Dict[int, np.ndarray] = getattr(session, "wand_masks", {})
-    mask = masks.get(req.frame_index)
+    mask = session.wand_masks.get(req.frame_index)
     if mask is None:
         raise HTTPException(status_code=400, detail="请先对该帧执行选区操作")
 

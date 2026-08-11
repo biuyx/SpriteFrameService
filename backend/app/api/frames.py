@@ -7,6 +7,7 @@ from typing import List
 from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.api.deps import get_session, require_indices
+from app.config import get_settings
 from app.api.schemas import (
     ExtractRequest, LoopTransitionRequest, ReorderRequest,
     SelectionRequest, SupplementRequest,
@@ -29,6 +30,17 @@ def extract_frames(session_id: str, req: ExtractRequest):
         raise HTTPException(status_code=400, detail="请先上传视频")
     if req.end_time > session.video_info.duration + 0.001:
         raise HTTPException(status_code=400, detail=f"结束时间超出视频时长 {session.video_info.duration:.2f}s")
+    if req.end_time <= req.start_time:
+        raise HTTPException(status_code=400, detail="结束时间必须大于开始时间")
+
+    # 每帧一张 PNG 落盘，长视频 × 高帧率足以撑满磁盘，这里给出上限
+    limit = get_settings().max_extract_frames
+    planned = int((req.end_time - req.start_time) * req.fps) + 1
+    if limit and planned > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"本次将抽取约 {planned} 帧，超过上限 {limit}。请缩短时间范围或降低帧率。",
+        )
 
     def _job(ctx):
         extractor = FrameExtractor()
@@ -53,7 +65,7 @@ def extract_frames(session_id: str, req: ExtractRequest):
         ctx.report(100, f"抽帧完成: {len(frames)} 帧")
         return {"extracted": len(frames), "start_time": req.start_time, "end_time": req.end_time}
 
-    job = job_manager.submit("extract", _job)
+    job = job_manager.submit("extract", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -281,7 +293,7 @@ def loop_transition(session_id: str, req: LoopTransitionRequest):
             "gif": "/api/sessions/{}/frames/preview/loop_transition.gif".format(session_id),
         }
 
-    job = job_manager.submit("loop-transition", _job)
+    job = job_manager.submit("loop-transition", _job, lock=session.lock)
     return {"job_id": job.id}
 
 
@@ -350,5 +362,5 @@ def supplement_frames(session_id: str, req: SupplementRequest):
         ctx.report(100, f"补帧完成，新增 {len(new_frames)} 帧")
         return {"added": len(new_frames), "total": fm.frame_count}
 
-    job = job_manager.submit("supplement", _job)
+    job = job_manager.submit("supplement", _job, lock=session.lock)
     return {"job_id": job.id}

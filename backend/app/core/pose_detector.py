@@ -290,13 +290,21 @@ class PoseDetector:
                     backend=self._rtm_backend,
                     device=self._rtm_device,
                 )
-            else:
+            elif get_settings().allow_model_download:
                 print(f"[INFO] 本地模型未找到,使用 balanced 模式(将从网络下载)")
                 self._rtm_model = Wholebody(
                     to_openpose=False,
                     mode='balanced',
                     backend=self._rtm_backend,
                     device=self._rtm_device,
+                )
+            else:
+                # 默认不联网：rtmlib 的下载不校验哈希，且离线部署时不应有
+                # 意外外连。需要自动下载时显式设置 SPRITE_ALLOW_MODEL_DOWNLOAD=true。
+                raise FileNotFoundError(
+                    "未找到本地 RTMPose 模型。请将 yolox_*.onnx 与 rtmw_*.onnx 放入 "
+                    f"{get_settings().resolved_models_dir / 'rtmpose'}，"
+                    "或设置 SPRITE_ALLOW_MODEL_DOWNLOAD=true 允许联网下载。"
                 )
 
     def detect_pose(self, image: np.ndarray, frame_index: int = 0):
