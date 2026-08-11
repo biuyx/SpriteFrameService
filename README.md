@@ -180,6 +180,58 @@ curl -H "Authorization: Bearer $SPRITE_AUTH_TOKEN" http://127.0.0.1:8000/api/cap
 | RealESRGAN | `models/realesrgan/` | 可执行文件 `realesrgan-ncnn-vulkan(.exe)` + `models/` 下的 `.param/.bin` |
 | pngquant | `tools/pngquant/pngquant(.exe)` | PNG 压缩；Linux 需放置 Linux 版本二进制 |
 
+### 下载与安装模型
+
+**AI 抠图模型**（放到 `models/` 根下，文件名即模型名）：
+
+| 模型 | 大小 | 下载 |
+| ---- | ---- | ---- |
+| `isnet-anime.onnx` | 168 MB | 动漫/插画专用，做游戏精灵图首选 |
+| `u2net.onnx` | 168 MB | 通用 |
+| `silueta.onnx` | 42 MB | 轻量，适合快速试参数 |
+| `u2net_human_seg.onnx` | 168 MB | 真人像专用，卡通角色用不上 |
+
+前四个来自 rembg 官方 release，公开可下载：
+
+```bash
+BASE=https://github.com/danielgatis/rembg/releases/download/v0.0.0
+for m in isnet-anime u2net silueta u2net_human_seg; do
+  curl -L -o "models/$m.onnx" "$BASE/$m.onnx"
+done
+```
+
+`bria-rmbg-2.0.onnx` 是 **gated 模型**，需先在 [briaai/RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0)
+登录并接受 BRIA 许可（免费授权仅限非商业用途，商用需单独购买），再下载
+`onnx/model.onnx`（1.02 GB）重命名放入 `models/`。**只能用全精度版**——
+`model_fp16.onnx` 的输入是 fp16，而代码固定喂 float32，会类型不匹配。
+
+> 边缘质量 bria-rmbg-2.0 > isnet-anime > silueta > u2net，但 bria 的 ONNX 导出含
+> 可变形卷积，约 1100 个算子无法走 CUDA，即便在 RTX 4070 Ti 上也要 ~9s/帧
+> （isnet-anime 仅 0.4s）。建议日常迭代用 isnet-anime，定稿再用 bria。
+
+**RTMPose 姿势模型**（放到 `models/rtmpose/`）。压缩包解压出来都叫
+`end2end.onnx`，**必须按下表重命名**，否则代码找不到：
+
+```bash
+mkdir -p models/rtmpose && cd models/rtmpose
+BASE=https://download.openmmlab.com/mmpose/v1/projects
+curl -LO "$BASE/rtmposev1/onnx_sdk/yolox_m_8xb8-300e_humanart-c2c7a14a.zip"
+curl -LO "$BASE/rtmw/onnx_sdk/rtmw-dw-x-l_simcc-cocktail14_270e-256x192_20231122.zip"
+unzip -o '*.zip'
+# 96.7MB 的是检测模型，218.1MB 的是姿态模型，分别重命名：
+mv <96.7MB的end2end.onnx>  yolox_m_8xb8-300e_humanart-c2c7a14a.onnx
+mv <218.1MB的end2end.onnx> rtmw-dw-x-l_simcc-cocktail14_270e-256x192_20231122.onnx
+rm -rf *.zip 20230928 deploy.json detail.json pipeline.json output_*.jpg
+```
+
+不放这两个文件时「动作分析」的**姿势**模式会直接报错（默认不联网下载，
+原因见下方常见问题）。轮廓 / 图像特征 / 分区域SSIM 三种模式不依赖它们。
+
+> MediaPipe 未安装时，「姿势」模式会自动回退到 RTMPose。Python 3.13 通常没有
+> mediapipe wheel，且新版已移除 solutions API——RTMPose 效果足够，不必折腾。
+> 做卡通精灵图去重时「轮廓匹配」往往比姿势更合适（姿势模型按真人骨架训练），
+> 且快约 3 倍。
+
 所有外部路径均可通过环境变量配置（见 `backend/.env.example`）：
 
 ```ini
@@ -267,8 +319,19 @@ A：需在 `models/realesrgan/` 放置 `realesrgan-ncnn-vulkan`（Linux）或 `.
 **Q：姿势(RTM)检测找不到 rtmlib？**
 A：rtmlib 已随仓库分发（项目根 `rtmlib/rtmlib/...`），无需手动放置；确认 `models/rtmpose/` 下有对应模型即可。
 
-**Q：RTMPose 提示「未找到本地模型」？**
-A：默认不联网下载（rtmlib 的下载不校验哈希，且离线部署不应有意外外连）。请把 `yolox_*.onnx` 与 `rtmw_*.onnx` 放入 `models/rtmpose/`；确实想自动下载则设 `SPRITE_ALLOW_MODEL_DOWNLOAD=true`。
+**Q：「动作分析」的姿势模式报「未找到本地 RTMPose 模型」？**
+A：默认不联网下载（rtmlib 的下载不校验哈希，且离线部署不应有意外外连）。按
+「模型与外部依赖 → 下载与安装模型」一节把两个 onnx 放进 `models/rtmpose/` 即可；
+注意压缩包解压出来都叫 `end2end.onnx`，必须重命名。急用也可设
+`SPRITE_ALLOW_MODEL_DOWNLOAD=true` 让 rtmlib 自动下载。
+
+**Q：抠图后边缘有一圈原背景色的白边？**
+A：代码只做 alpha 合成、不做颜色净化（`rgba[:,:,:3]` 直接沿用原始 RGB），
+半透明边缘像素保留着「主体色 × 背景色」的混合值。缓解办法：换边缘更锐的模型
+（isnet-anime / bria-rmbg-2.0），并设 `Alpha阈值=128`、`腐蚀=1`、`羽化=0`。
+**注意 Alpha 阈值不要填 1~50 的小值**——那会把淡白边缘一律提升为完全不透明，
+比填 0 更糟；要么 0（保留柔和边缘），要么 ≥128（硬边）。羽化会加宽过渡带，
+做精灵图基本不要开。
 
 **Q：重启服务后之前的项目还在吗？**
 A：在。会话数据以文件形式存于 `data/sessions/{id}/`，重启后用同一个会话 ID 访问即可自动恢复。只有显式删除会话才会清除磁盘数据。
