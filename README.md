@@ -97,6 +97,48 @@ server {
 
 ---
 
+## 内网访问
+
+默认只监听 `127.0.0.1`（仅本机）。要让局域网内其他机器访问，需要三步——**缺一不可**：
+
+**1. 改监听地址**（`backend/.env`）：
+
+```ini
+SPRITE_HOST=0.0.0.0
+SPRITE_PORT=8088
+```
+
+`0.0.0.0` 表示监听所有网卡，本机 `127.0.0.1` 与内网地址都能访问。
+
+**2. 开启认证**——内网暴露必须做，否则同网段任何人都能读写你的数据：
+
+```ini
+SPRITE_AUTH_TOKEN=<随机令牌>
+# 内网走明文 HTTP，Cookie 不能带 Secure，否则浏览器拒绝保存
+SPRITE_AUTH_COOKIE_SECURE=false
+```
+
+**3. 放行防火墙**（Windows，需管理员权限）。按「专用」网络和具体网段收敛，
+避免把服务暴露到 VPN / 代理虚拟网卡上：
+
+```powershell
+New-NetFirewallRule -DisplayName "SpriteFrameService (LAN)" -Direction Inbound -Protocol TCP -LocalPort 8088 -Action Allow -Profile Private -RemoteAddress 192.168.2.0/24
+```
+
+Linux（ufw）对应：
+
+```bash
+sudo ufw allow from 192.168.2.0/24 to any port 8088 proto tcp
+```
+
+完成后同事用 `http://<你的内网IP>:8088` 访问，输入令牌即可。前端是同源托管的，
+不需要额外配置 CORS。
+
+> ⚠️ 内网是明文 HTTP，令牌与 Cookie 在网段内可被抓包。若网络环境不可信，
+> 在前面挂一层 HTTPS 反代，并把 `SPRITE_AUTH_COOKIE_SECURE` 改回 `auto`。
+
+---
+
 ## 访问认证
 
 **默认关闭**：不设置 `SPRITE_AUTH_TOKEN` 时行为与不带认证完全一致，本机 `127.0.0.1` 自用不受影响。
