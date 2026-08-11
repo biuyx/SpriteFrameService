@@ -58,12 +58,26 @@ class Settings(BaseSettings):
     cors_origins: str = "*"          # 逗号分隔的允许来源，"*" 为不限制
     debug_errors: bool = False       # 任务失败时是否把完整 traceback 返回给前端
 
+    # --- 认证（默认关闭；设置 token 后自动启用） ---
+    auth_token: str = ""             # 访问令牌，留空表示不启用认证
+    auth_session_hours: int = 720    # 登录态有效期（小时），默认 30 天
+    auth_cookie_secure: str = "auto" # Cookie Secure 标志：auto/true/false
+
     # --- 处理 ---
     force_cpu: bool = False
     realesrgan_tile: int = 0
     max_upload_mb: int = 2048        # 单个视频上传大小上限（MB）
     max_extract_frames: int = 2000   # 单次抽帧的帧数上限
     allow_model_download: bool = False  # 允许 RTMPose 在本地模型缺失时联网下载
+
+    @property
+    def auth_enabled(self) -> bool:
+        """是否启用认证（配置了非空 token 即启用）。"""
+        return bool(self.auth_token.strip())
+
+    @property
+    def auth_token_value(self) -> str:
+        return self.auth_token.strip()
 
     @property
     def cors_origins_list(self) -> list[str]:

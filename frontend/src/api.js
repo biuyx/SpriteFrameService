@@ -1,8 +1,15 @@
 // 后端 API 封装
 const BASE = ''
 
+// 401 回调：由 App 注册，用于把界面切回登录页
+let onUnauthorized = null
+export function setUnauthorizedHandler(fn) {
+  onUnauthorized = fn
+}
+
 async function request(method, path, { json, form, blob } = {}) {
-  const opts = { method, headers: {} }
+  // credentials 让登录下发的 HttpOnly Cookie 随请求发出
+  const opts = { method, headers: {}, credentials: 'same-origin' }
   if (json !== undefined) {
     opts.headers['Content-Type'] = 'application/json'
     opts.body = JSON.stringify(json)
@@ -16,6 +23,10 @@ async function request(method, path, { json, form, blob } = {}) {
       const data = await res.json()
       detail = data.detail || JSON.stringify(data)
     } catch { /* ignore */ }
+    // 登录接口自身的 401（令牌输错）由登录页就地提示，
+    // 不触发「登录已过期」的全局回调，否则会重复报错
+    const isAuthEndpoint = path.startsWith('/api/auth/')
+    if (res.status === 401 && onUnauthorized && !isAuthEndpoint) onUnauthorized(detail)
     throw new Error(detail)
   }
   if (blob) return res.blob()
@@ -25,6 +36,11 @@ async function request(method, path, { json, form, blob } = {}) {
 }
 
 const api = {
+  // 认证
+  authStatus: () => request('GET', '/api/auth/status'),
+  login: (token) => request('POST', '/api/auth/login', { json: { token } }),
+  logout: () => request('POST', '/api/auth/logout'),
+
   // 能力
   capabilities: () => request('GET', '/api/capabilities'),
   health: () => request('GET', '/api/health'),

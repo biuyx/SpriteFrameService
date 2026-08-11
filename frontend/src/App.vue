@@ -3,6 +3,8 @@ import { ref, watch, onMounted } from 'vue'
 import { useStore, initSession, loadCapabilities, toast } from './stores'
 import { useJobs, cancelJob } from './jobs'
 import { currentTab } from './nav'
+import api, { setUnauthorizedHandler } from './api'
+import LoginView from './components/LoginView.vue'
 import VideoView from './views/VideoView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import BackgroundView from './views/BackgroundView.vue'
@@ -20,6 +22,11 @@ const tab = currentTab
 const ready = ref(false)
 const err = ref('')
 const jobsVisible = ref(true)   // 后台任务栏是否显示
+
+// 认证状态：needLogin 为真时整个应用被登录页挡住
+const authRequired = ref(false)
+const needLogin = ref(false)
+const loginNotice = ref('')
 
 // 有新任务启动时自动展开任务栏
 watch(() => jobs.items.length, (n, old) => {
@@ -48,15 +55,48 @@ const views = {
   history: HistoryView,
 }
 
-onMounted(async () => {
+// 任何请求返回 401（如登录过期）都把界面切回登录页
+setUnauthorizedHandler((detail) => {
+  needLogin.value = true
+  ready.value = false
+  loginNotice.value = detail || '登录已过期，请重新登录'
+})
+
+async function boot() {
   try {
+    const status = await api.authStatus()
+    authRequired.value = status.required
+    if (status.required && !status.authenticated) {
+      needLogin.value = true
+      return
+    }
+    needLogin.value = false
     await loadCapabilities()
     await initSession()
     ready.value = true
   } catch (e) {
     err.value = `无法连接后端服务: ${e.message}`
   }
-})
+}
+
+async function onAuthenticated() {
+  needLogin.value = false
+  loginNotice.value = ''
+  err.value = ''
+  await boot()
+}
+
+async function doLogout() {
+  if (!confirm('退出登录？')) return
+  try {
+    await api.logout()
+  } catch { /* 忽略：无论成功与否都回到登录页 */ }
+  ready.value = false
+  needLogin.value = true
+  loginNotice.value = ''
+}
+
+onMounted(boot)
 
 function fmtDuration(sec) {
   if (sec == null) return ''
@@ -74,7 +114,9 @@ async function newSession() {
 </script>
 
 <template>
-  <div class="layout" v-if="ready">
+  <LoginView v-if="needLogin" :notice="loginNotice" @authenticated="onAuthenticated" />
+
+  <div class="layout" v-else-if="ready">
     <aside class="sidebar">
       <div class="brand">精灵帧工作室<small>SpriteFrameService</small></div>
       <button
@@ -97,6 +139,7 @@ async function newSession() {
           {{ store.capabilities.platform.os }}
           <span v-if="store.capabilities.platform.gpu_available" style="color: var(--ok)">· GPU</span>
         </span>
+        <button v-if="authRequired" class="small" style="margin-left:8px" @click="doLogout">退出登录</button>
       </div>
 
       <div class="main-body">

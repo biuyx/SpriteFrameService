@@ -66,15 +66,22 @@ def make_test_video(path: Path, seconds: float = 2.0, fps: float = 30.0,
     return path
 
 
+def auth_headers() -> dict:
+    """启用认证时带上访问令牌（取自 SPRITE_AUTH_TOKEN）。"""
+    import os
+    token = (os.environ.get("SPRITE_AUTH_TOKEN") or "").strip()
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def run_inprocess():
     from fastapi.testclient import TestClient
     from app.main import app
-    return TestClient(app)
+    return TestClient(app, headers=auth_headers())
 
 
 def run_live(base: str):
     import httpx
-    return httpx.Client(base_url=base, timeout=120)
+    return httpx.Client(base_url=base, timeout=120, headers=auth_headers())
 
 
 def main():

@@ -5,6 +5,7 @@ from fastapi import APIRouter
 
 from . import (
     analysis,
+    auth,
     background,
     capabilities,
     export_api,
@@ -17,6 +18,7 @@ from . import (
 )
 
 api_router = APIRouter(prefix="/api")
+api_router.include_router(auth.router)
 api_router.include_router(capabilities.router)
 api_router.include_router(sessions.router)
 api_router.include_router(videos.router)

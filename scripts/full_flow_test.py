@@ -58,7 +58,12 @@ def main():
         print(f"视频不存在: {video}")
         sys.exit(1)
 
-    c = httpx.Client(base_url=args.base, timeout=180)
+    # 启用认证时带上访问令牌（取自 SPRITE_AUTH_TOKEN）
+    import os
+    _token = (os.environ.get("SPRITE_AUTH_TOKEN") or "").strip()
+    _headers = {"Authorization": f"Bearer {_token}"} if _token else {}
+
+    c = httpx.Client(base_url=args.base, timeout=180, headers=_headers)
 
     step(f"1. 创建会话")
     sid = c.post("/api/sessions").json()["id"]

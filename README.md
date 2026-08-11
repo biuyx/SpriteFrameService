@@ -87,12 +87,44 @@ server {
 }
 ```
 
-> ⚠️ **对外暴露前须知**：本服务**没有任何身份认证**，任何能访问到端口的人都可以创建/删除会话、上传视频、提交计算任务。默认定位是单人本机或可信局域网使用。若确需对外提供：
+> ⚠️ **对外暴露前须知**：认证**默认关闭**。未设置 `SPRITE_AUTH_TOKEN` 时任何能访问到端口的人都可以创建/删除会话、上传视频、提交计算任务。对外提供时请：
 >
-> - 在反代层加上认证（Basic Auth / OAuth2 / mTLS 等），不要裸奔；
+> - 设置 `SPRITE_AUTH_TOKEN` 启用认证（见下节），或在反代层加认证；
 > - 把 `SPRITE_CORS_ORIGINS` 收敛为具体来源，不要保留 `*`；
 > - 保持 `SPRITE_DEBUG_ERRORS=false`（否则任务错误会返回服务端路径与堆栈）；
-> - 按机器实际容量下调 `SPRITE_MAX_UPLOAD_MB` 与 `SPRITE_MAX_EXTRACT_FRAMES`，并让 Nginx 的 `client_max_body_size` 与前者一致。
+> - 按机器实际容量下调 `SPRITE_MAX_UPLOAD_MB` 与 `SPRITE_MAX_EXTRACT_FRAMES`，并让 Nginx 的 `client_max_body_size` 与前者一致；
+> - 尽量走 HTTPS——令牌与 Cookie 在明文 HTTP 上会被中间人截获。
+
+---
+
+## 访问认证
+
+**默认关闭**：不设置 `SPRITE_AUTH_TOKEN` 时行为与不带认证完全一致，本机 `127.0.0.1` 自用不受影响。
+
+启用只需配置一个令牌：
+
+```bash
+# 生成一个随机令牌
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 写入 backend/.env
+SPRITE_AUTH_TOKEN=<上一步生成的令牌>
+```
+
+启用后：
+
+| 使用方式 | 认证方式 |
+| ---- | ---- |
+| 浏览器 | 打开页面出现登录页，输入令牌后下发 HttpOnly Cookie，后续自动携带；右上角可「退出登录」 |
+| 脚本 / CLI | 请求头 `Authorization: Bearer <token>` |
+| 自带测试脚本 | 读取环境变量 `SPRITE_AUTH_TOKEN`，无需改动 |
+
+```bash
+curl -H "Authorization: Bearer $SPRITE_AUTH_TOKEN" http://127.0.0.1:8000/api/capabilities
+```
+
+**为什么同时用 Cookie 和 Header**：前端有大量 `<img src>` / `<video src>` / 下载链接直接指向 API（帧图像、姿势叠加、魔棒 mask、导出下载），这类请求无法携带自定义请求头，因此登录时下发 Cookie 让它们自动通过；Bearer Header 则保留给脚本与 CLI。Cookie 为 `HttpOnly` + `SameSite=Lax`，存的是令牌派生值而非令牌本身，前端 JS 读不到。
+
+免认证的端点只有 `/api/health` 与 `/api/auth/*`（登录流程自身）。连续登录失败 10 次会触发 5 分钟节流。
 
 ---
 
@@ -133,6 +165,7 @@ SPRITE_ALLOW_MODEL_DOWNLOAD=false  # 允许 RTMPose 缺模型时联网下载
 
 | 分组 | 端点 | 说明 |
 | ---- | ---- | ---- |
+| 认证 | `GET /api/auth/status`<br>`POST /api/auth/login`<br>`POST /api/auth/logout` | 是否需要认证 / 登录（下发 Cookie）/ 登出。未配置令牌时全部放行 |
 | 能力 | `GET /api/capabilities` | 平台、可用模型、GPU、导出格式 |
 | 会话 | `POST/GET/DELETE /api/sessions[/{id}]` | 创建/查询/删除项目会话 |
 | 视频 | `POST /api/sessions/{id}/video`<br>`GET /api/sessions/{id}/video`<br>`GET /api/sessions/{id}/video/info` | 上传 / 预览流 / 元数据 |
