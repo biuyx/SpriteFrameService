@@ -79,6 +79,10 @@ class U2NetLocalSession:
 
         sess_opts = ort.SessionOptions()
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # BiRefNet 类模型（bria-rmbg-2.0）含可变形卷积，加载时 onnxruntime 会刷出
+        # 上百行 shape 推断警告（可安全忽略，运行时按 lenient 合并）。压到 ERROR
+        # 级别，避免淹没服务日志。
+        sess_opts.log_severity_level = 3
 
         if force_cpu:
             providers = ['CPUExecutionProvider']
