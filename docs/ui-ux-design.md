@@ -1,6 +1,10 @@
 # 客户端整体设计与 UI/UX 优化方案
 
-配套：[视频生成接入](./video-generation-design.md) · [资产生命周期](./asset-lifecycle-design.md)
+> **修订**：顶层导航按 [精灵领域模型](./sprite-domain-design.md) 调整为三层
+> 「精灵库 → 动作看板 → 动作工作台」；本文 §2 的制作四步移入工作台内部，
+> §1 的实测问题与 §4 的交互优化在工作台层原样适用。
+
+配套：[视频生成接入](./video-generation-design.md) · [资产生命周期](./asset-lifecycle-design.md) · [精灵领域模型](./sprite-domain-design.md)
 
 ---
 
