@@ -9,6 +9,95 @@ const dragOver = ref(false)
 const uploading = ref(false)
 const fileInput = ref(null)
 
+// ---- AI 生成 ----
+const gen = ref(null)              // /generate/capabilities 结果
+const genPrompt = ref('')
+const genRes = ref('720p')
+const genRatio = ref('1:1')
+const genDuration = ref(5)
+const genSeed = ref('')
+const genFirstFrame = ref('none')  // none | action | frame
+const genFrameIndex = ref(0)
+const takes = ref({ current: null, takes: [] })
+const genBusy = ref(false)
+
+const hasActionFirstFrame = computed(() => !!store.currentAction?.first_frame?.file)
+
+async function loadGen() {
+  try { gen.value = await api.genCapabilities() } catch { gen.value = null }
+  await loadTakes()
+}
+
+async function loadTakes() {
+  try { takes.value = await api.takes(store.sessionId) } catch { /* ignore */ }
+}
+
+async function runGenerate() {
+  const prompt = genPrompt.value.trim()
+  if (!prompt) return toast('请填写提示词')
+  const remaining = gen.value?.quota?.remaining
+  const msg = remaining == null
+    ? '提交生成任务？（每次生成计费）'
+    : `提交生成任务？今日剩余额度 ${remaining} 次（每次生成计费）`
+  if (!confirm(msg)) return
+  genBusy.value = true
+  try {
+    const params = { resolution: genRes.value, ratio: genRatio.value, duration: genDuration.value }
+    if (genSeed.value !== '' && !isNaN(+genSeed.value)) params.seed = +genSeed.value
+    const first_frame = genFirstFrame.value === 'none' ? null
+      : genFirstFrame.value === 'action' ? { kind: 'action' }
+      : { kind: 'frame', frame_index: genFrameIndex.value }
+    await startJob(() => api.generate(store.sessionId, { prompt, params, first_frame }), {
+      title: 'AI 生成视频',
+      onDone: async () => {
+        await loadGen()
+        await refreshSession()
+        toast('生成完成，可在下方版本列表中查看')
+      },
+    })
+  } catch (e) {
+    toast(`生成失败: ${e.message}`)
+  } finally {
+    genBusy.value = false
+    await loadGen()
+  }
+}
+
+async function useTake(t) {
+  const r = await api.selectTake(store.sessionId, t.id)
+  store.videoInfo = r.video_info
+  videoErr.value = ''
+  await loadTakes()
+  toast(`已切换到该版本，可开始抽帧`)
+}
+
+async function removeTake(t) {
+  const warn = t.source === 'generate'
+    ? `删除生成的版本 ${t.id}？该视频是付费生成的，删除后需重新付费生成。`
+    : `删除版本 ${t.id}？`
+  if (!confirm(warn)) return
+  await api.deleteTake(store.sessionId, t.id)
+  await loadTakes()
+  await refreshSession()
+}
+
+function takeLabel(t) {
+  const p = []
+  if (t.source === 'generate') {
+    if (t.resolution) p.push(t.resolution)
+    if (t.actual_duration) p.push(`${t.actual_duration}s`)
+    if (t.seed != null) p.push(`seed ${t.seed}`)
+  } else {
+    p.push(t.filename || '上传')
+  }
+  return p.join(' · ')
+}
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000)
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 const startTime = ref(0)
 const endTime = ref(10)
 const fps = ref(10)
@@ -93,12 +182,88 @@ onMounted(async () => {
     const srcFps = store.videoInfo.fps || 10
     fps.value = Math.min(60, Math.max(0.1, srcFps))
   }
+  await loadGen()
+  // 有未完结的远端生成任务时自动重挂（重启后取回结果）
+  const running = (takes.value.takes || []).some(
+    (t) => t.source === 'generate' && (t.status === 'running' || t.status === 'pending'))
+  if (running && gen.value?.configured) {
+    await startJob(() => api.reconcileTakes(store.sessionId), {
+      title: '恢复生成任务',
+      onDone: async () => { await loadTakes(); await refreshSession() },
+    })
+  }
 })
 </script>
 
 <template>
   <div class="panel">
-    <div class="section-title"><h2>1. 上传视频</h2></div>
+    <div class="section-title"><h2>1. 获取素材：AI 生成 或 上传视频</h2></div>
+
+    <!-- AI 生成 -->
+    <div class="gen-box" :class="{ disabled: !gen?.configured }">
+      <div class="row" style="align-items:center">
+        <b style="font-size:13px">AI 生成视频（Seedance）</b>
+        <span v-if="gen?.configured && gen.quota.remaining != null" class="hint">
+          今日剩余 {{ gen.quota.remaining }} / {{ gen.quota.limit }} 次</span>
+        <span v-else-if="gen && !gen.configured" class="hint warn-text">
+          未配置 API Key——在 backend\.env 设置 SPRITE_ARK_API_KEY 后重启即可启用</span>
+      </div>
+      <template v-if="gen?.configured">
+        <div class="row">
+          <textarea v-model="genPrompt" rows="2" style="flex:1;resize:vertical"
+                    placeholder="提示词，如：角色向前走路，动作循环，白色背景，镜头固定"></textarea>
+        </div>
+        <div class="row">
+          <div class="field inline"><label>首帧</label>
+            <select v-model="genFirstFrame">
+              <option value="none">无（纯文生视频）</option>
+              <option value="action" :disabled="!hasActionFirstFrame">
+                动作首帧{{ hasActionFirstFrame ? '' : '（本动作未设置）' }}</option>
+              <option value="frame" :disabled="!store.frameCount">当前第 N 帧</option>
+            </select>
+          </div>
+          <div v-if="genFirstFrame === 'frame'" class="field inline">
+            <label>帧</label><input type="number" v-model.number="genFrameIndex" :min="0" :max="store.frameCount - 1" style="width:70px" />
+          </div>
+          <div class="field inline"><label>分辨率</label>
+            <select v-model="genRes"><option v-for="r in gen.params.resolution" :key="r">{{ r }}</option></select>
+          </div>
+          <div class="field inline"><label>比例</label>
+            <select v-model="genRatio"><option v-for="r in gen.params.ratio" :key="r">{{ r }}</option></select>
+          </div>
+          <div class="field inline"><label>时长(s)</label>
+            <select v-model.number="genDuration"><option v-for="d in gen.params.duration" :key="d" :value="d">{{ d }}</option></select>
+          </div>
+          <div class="field inline"><label>seed</label>
+            <input v-model="genSeed" placeholder="留空随机" style="width:90px" /></div>
+          <button class="primary" :disabled="genBusy" @click="runGenerate">
+            {{ genBusy ? '生成中...' : '生成' }}</button>
+        </div>
+        <p class="hint" style="margin:4px 0 0">
+          生成约需数分钟，可切到其他页面继续工作；每次生成为一个新版本，在下方列表中挑选使用。</p>
+      </template>
+    </div>
+
+    <!-- 版本列表 -->
+    <div v-if="takes.takes?.length" class="take-list">
+      <div class="section-title" style="margin-top:12px"><h2>素材版本</h2></div>
+      <div v-for="t in [...takes.takes].reverse()" :key="t.id" class="take-row"
+           :class="{ current: takes.current === t.id }">
+        <span class="take-badge" :class="t.status">
+          {{ t.status === 'succeeded' ? (t.source === 'generate' ? '生成' : '上传')
+             : t.status === 'running' ? '生成中' : t.status === 'failed' ? '失败' : t.status }}</span>
+        <span class="take-name">{{ takeLabel(t) }}</span>
+        <span class="hint">{{ fmtTime(t.created_at) }}</span>
+        <span v-if="t.prompt" class="hint take-prompt" :title="t.prompt">{{ t.prompt.slice(0, 40) }}…</span>
+        <span v-if="t.error" class="warn-text" :title="t.error">{{ t.error.slice(0, 50) }}</span>
+        <span class="spacer" style="flex:1"></span>
+        <span v-if="takes.current === t.id" class="ok-text" style="font-size:12px">✓ 当前使用</span>
+        <button v-else-if="t.status === 'succeeded'" class="small" @click="useTake(t)">用这个</button>
+        <button class="small danger" @click="removeTake(t)">删除</button>
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:14px"><h2>上传视频</h2></div>
 
     <div
       class="upload-drop"
@@ -158,6 +323,30 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.gen-box {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; margin-bottom: 6px;
+}
+.gen-box.disabled { opacity: .75; }
+.warn-text { color: var(--warn); font-size: 12px; }
+.ok-text { color: var(--ok); }
+.take-list { margin-top: 4px; }
+.take-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 5px;
+  margin-bottom: 5px; font-size: 13px;
+}
+.take-row.current { border-color: var(--accent); }
+.take-badge {
+  font-size: 11px; padding: 1px 8px; border-radius: 8px;
+  background: var(--bg-hover); color: var(--text-dim);
+}
+.take-badge.running { background: #ff980033; color: var(--warn); }
+.take-badge.failed { background: #ef535033; color: var(--err); }
+.take-badge.succeeded { background: #4caf5022; color: var(--ok); }
+.take-name { font-weight: 600; }
+.take-prompt { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.danger { border-color: var(--err); color: var(--err); }
 .video-unsupported {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; min-height: 240px; padding: 20px; text-align: center;

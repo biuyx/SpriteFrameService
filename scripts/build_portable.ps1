@@ -87,6 +87,7 @@ opencv-python-headless==4.11.0.86
 Pillow==11.3.0
 onnxruntime==1.20.1
 tqdm==4.67.1
+httpx==0.28.1
 "@ | Set-Content -Path $reqFile -Encoding UTF8
 # tqdm 是 rtmlib/tools/file.py 的模块级依赖，缺了姿势检测会直接 ImportError。
 # rtmlib 还会 import openvino，但只在 backend=='openvino' 分支内懒加载，

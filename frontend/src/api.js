@@ -66,6 +66,15 @@ const api = {
   session: (sid) => request('GET', `/api/sessions/${sid}`),
   deleteSession: (sid) => request('DELETE', `/api/sessions/${sid}`),
 
+  // 视频生成 / take 版本
+  genCapabilities: () => request('GET', '/api/generate/capabilities'),
+  generate: (sid, params) => request('POST', `/api/sessions/${sid}/generate`, { json: params }),
+  takes: (sid) => request('GET', `/api/sessions/${sid}/takes`),
+  takeVideoUrl: (sid, tid) => `${BASE}/api/sessions/${sid}/takes/${tid}/video`,
+  selectTake: (sid, tid) => request('POST', `/api/sessions/${sid}/takes/${tid}/select`),
+  deleteTake: (sid, tid) => request('DELETE', `/api/sessions/${sid}/takes/${tid}`),
+  reconcileTakes: (sid) => request('POST', `/api/sessions/${sid}/takes/reconcile`),
+
   // 视频
   uploadVideo: (sid, file) => {
     const form = new FormData()

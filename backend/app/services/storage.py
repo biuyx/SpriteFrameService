@@ -44,17 +44,34 @@ class SessionStorage:
     # --- 视频 ---
     @property
     def video_path(self) -> Path | None:
-        # 跳过未完成上传的临时文件（upload.part.*）
+        """当前使用的视频：takes.json 的 current 优先，旧版单文件兜底。
+
+        take 化后一个动作可存多版本视频；此属性始终指向「当前选中」的那个，
+        使抽帧/预览/恢复等所有下游代码无需感知多版本。
+        """
+        tj = self.video_dir / "takes.json"
+        if tj.is_file():
+            try:
+                import json as _json
+                data = _json.loads(tj.read_text(encoding="utf-8"))
+                cur = data.get("current")
+                if cur:
+                    for t in data.get("takes", []):
+                        if t.get("id") == cur:
+                            p = self.video_dir / t.get("file", f"{cur}.mp4")
+                            if p.is_file():
+                                return p
+            except (ValueError, OSError):
+                pass
+
+        # 旧版布局：单个 upload.* 文件（排除元数据与未完成上传）
+        exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".ts", ".wmv"}
         files = [f for f in self.video_dir.glob("*")
-                 if f.is_file() and ".part" not in f.name]
-        if files:
-            # 优先视频扩展名
-            exts = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".flv", ".ts", ".wmv"}
-            for f in files:
-                if f.suffix.lower() in exts:
-                    return f
-            return files[0]
-        return None
+                 if f.is_file() and ".part" not in f.name and f.suffix.lower() != ".json"]
+        for f in files:
+            if f.suffix.lower() in exts:
+                return f
+        return files[0] if files else None
 
     def _clear_videos(self, exclude: Path | None = None) -> None:
         """删除旧视频，避免多次上传后残留不同扩展名的文件。"""
@@ -75,12 +92,16 @@ class SessionStorage:
 
     async def save_video_stream(self, upload, filename: str,
                                 max_bytes: int = 0,
-                                chunk_size: int = 4 * 1024 * 1024) -> tuple[Path, int]:
+                                chunk_size: int = 4 * 1024 * 1024,
+                                dest: Path | None = None) -> tuple[Path, int]:
         """分块写入上传的视频，返回 (路径, 字节数)。
 
         整片读入内存对大视频不可行（4GB 视频会直接撑爆进程），因此按块落盘。
-        先写临时文件、成功后再替换正式文件：上传失败（如超限）不会破坏
-        会话中已有的视频。max_bytes > 0 时超限抛 ValueError。
+        先写临时文件、成功后再替换：上传失败（如超限）不会破坏已有视频。
+        max_bytes > 0 时超限抛 ValueError。
+
+        dest 显式指定目标（take 化路径 t_xxx.mp4）时多版本并存、不清旧视频；
+        缺省走旧版单文件布局（upload.ext，覆盖式）。
         """
         ext = Path(filename).suffix or ".mp4"
         tmp = self.video_dir / f"upload.part{ext}"
@@ -106,9 +127,10 @@ class SessionStorage:
                 pass
             raise
 
-        # 全部写入成功后才替换旧视频
-        self._clear_videos(exclude=tmp)
-        dest = self.video_dir / f"upload{ext}"
+        if dest is None:
+            # 旧版行为：覆盖式单文件
+            self._clear_videos(exclude=tmp)
+            dest = self.video_dir / f"upload{ext}"
         try:
             tmp.replace(dest)
         except OSError:

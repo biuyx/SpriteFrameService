@@ -21,29 +21,40 @@ async def upload_video(session_id: str, file: UploadFile = File(...)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="缺少文件名")
 
-    # 覆盖上传前先放掉旧视频的解码句柄，否则 Windows 下文件被占用
+    # 上传前放掉旧视频的解码句柄，否则 Windows 下文件被占用
     session.release_video_handle()
+
+    # take 化：每次上传是一个新版本，与旧版本并存
+    from app.services.take_store import TakeStore
+    take_store = TakeStore(session.storage)
+    take = take_store.add("upload", filename=file.filename)
 
     max_bytes = get_settings().max_upload_mb * 1024 * 1024
     try:
         dest, written = await session.storage.save_video_stream(
-            file, file.filename, max_bytes=max_bytes
+            file, file.filename, max_bytes=max_bytes,
+            dest=take_store.path(take["id"]),
         )
     except ValueError as e:
+        take_store.delete(take["id"])
         raise HTTPException(status_code=413, detail=str(e))
+    except Exception:
+        take_store.delete(take["id"])
+        raise
 
     if written == 0:
-        try:
-            dest.unlink(missing_ok=True)
-        except OSError:
-            pass
+        take_store.delete(take["id"])
         raise HTTPException(status_code=400, detail="文件为空")
 
     try:
         video_info = session.video_processor.load_video(str(dest))
     except Exception as e:
+        take_store.delete(take["id"])
         raise HTTPException(status_code=400, detail=f"无法解析视频: {e}")
 
+    # 上传成功：标记 take 成功并设为当前使用
+    take_store.update(take["id"], {"status": "succeeded", "bytes": written})
+    take_store.set_current(take["id"])
     session.video_info = video_info
 
     # 清理旧的帧数据
@@ -54,13 +65,15 @@ async def upload_video(session_id: str, file: UploadFile = File(...)):
     from app.services import recipe
     recipe.set_source(session, {
         "kind": "upload",
+        "take_id": take["id"],
         "filename": file.filename,
         "bytes": written,
         "video": {"width": video_info.width, "height": video_info.height,
                   "fps": video_info.fps, "duration": video_info.duration},
     })
 
-    return {"video_info": video_info.model_dump(), "path": str(dest)}
+    return {"video_info": video_info.model_dump(), "path": str(dest),
+            "take_id": take["id"]}
 
 
 @router.get("")

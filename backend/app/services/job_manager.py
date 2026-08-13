@@ -82,12 +82,18 @@ class JobManager:
 
     MAX_JOBS = 200   # 任务表上限，超出后淘汰最早的已结束任务
 
-    def __init__(self, max_workers: Optional[int] = None):
+    def __init__(self, max_workers: Optional[int] = None, io_workers: int = 8):
         self._jobs: Dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers or get_settings().max_workers,
             thread_name_prefix="spriteframe-job",
+        )
+        # io 池：外部 API 的纯网络等待（视频生成等）。这类任务一等就是几分钟，
+        # 放进 CPU 池会占满 worker 把本地处理全部堵死。
+        self._io_executor = ThreadPoolExecutor(
+            max_workers=io_workers,
+            thread_name_prefix="spriteframe-io",
         )
 
     def _evict_locked(self) -> None:
@@ -104,11 +110,12 @@ class JobManager:
             self._jobs.pop(job.id, None)
 
     def submit(self, job_type: str, fn: Callable[[JobContext], Any],
-               lock: Optional[Any] = None) -> Job:
+               lock: Optional[Any] = None, pool: str = "cpu") -> Job:
         """提交任务。
 
         lock: 可选的互斥锁（如会话锁）。在工作线程内获取，使同一会话的任务
         串行执行，避免并发改写帧数据；提交调用本身不会因此阻塞。
+        pool: "cpu"（默认，本地处理）或 "io"（外部 API 等待，如视频生成）。
         """
         job = Job(id=uuid.uuid4().hex[:12], type=job_type)
         with self._jobs_lock:
@@ -155,7 +162,8 @@ class JobManager:
                 with self._jobs_lock:
                     self._evict_locked()
 
-        self._executor.submit(_runner)
+        executor = self._io_executor if pool == "io" else self._executor
+        executor.submit(_runner)
         return job
 
     def cancel(self, job_id: str) -> bool:
