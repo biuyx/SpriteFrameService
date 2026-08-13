@@ -164,52 +164,152 @@ if ($SkipModels) {
 Step 7 "生成启动器与说明"
 New-Item -ItemType Directory -Force -Path (Join-Path $staging "data") | Out-Null
 
+# .bat 必须是「纯 ASCII + CRLF」：
+#   - 批处理里混中文会与 chcp 65001 冲突（文件是 ANSI/GBK 字节，控制台却按
+#     UTF-8 解析），中文变乱码后会被 cmd 当成命令执行，整个脚本崩掉；
+#   - cmd 对 LF-only 的 .bat 解析多行块会出错，必须 CRLF。
+# 因此这里只留最小 ASCII 逻辑，所有中文界面交给 launcher.py（Python 处理
+# 编码可靠）。chcp 65001 放在纯 ASCII 文件里是安全的，且能让 Python 的
+# UTF-8 输出正确显示。
 $launcher = @'
 @echo off
 chcp 65001 > nul 2>&1
-title 精灵帧工作室 SpriteFrameService
+title SpriteFrameService
 cd /d "%~dp0"
 
 set "PY=%~dp0python\python.exe"
 if not exist "%PY%" (
-    echo [错误] 缺少内嵌 Python，安装包可能未解压完整。
-    echo 请把 ZIP 完整解压后再运行，不要直接在压缩包内双击。
-    pause & exit /b 1
+    echo.
+    echo   [ERROR] Embedded Python not found.
+    echo   Please extract the whole ZIP to a folder first,
+    echo   then run this file. Do NOT run it inside the archive.
+    echo.
+    pause
+    exit /b 1
 )
-
-if not exist "backend\.env" (
-    echo 首次启动，正在生成默认配置 ...
-    > "backend\.env" echo # 首次启动自动生成。改完保存后重启本程序生效。
-    >> "backend\.env" echo # 仅本机访问；要让同事通过内网访问，改成 0.0.0.0 并设置下面的令牌。
-    >> "backend\.env" echo SPRITE_HOST=127.0.0.1
-    >> "backend\.env" echo SPRITE_PORT=8000
-    >> "backend\.env" echo # 内网开放时务必设置访问令牌，否则同网段任何人都能读写你的数据
-    >> "backend\.env" echo # SPRITE_AUTH_TOKEN=
-    >> "backend\.env" echo # SPRITE_AUTH_COOKIE_SECURE=false
-)
-
-for /f "usebackq tokens=1,2 delims==" %%a in ("backend\.env") do (
-    if /i "%%a"=="SPRITE_PORT" set "PORT=%%b"
-)
-if not defined PORT set "PORT=8000"
-
-echo.
-echo   精灵帧工作室 正在启动 ...
-echo   启动后浏览器会自动打开 http://127.0.0.1:%PORT%
-echo   关闭本窗口即可停止服务。
-echo.
-
-start "" /b cmd /c "timeout /t 4 > nul & start http://127.0.0.1:%PORT%"
 
 set "PYTHONPATH=%~dp0backend"
 set "PYTHONIOENCODING=utf-8"
-"%PY%" backend\run.py
+set "PYTHONUTF8=1"
+"%PY%" "%~dp0launcher.py"
 
 echo.
-echo 服务已停止。
 pause
 '@
-Set-Content -Path (Join-Path $staging "启动服务.bat") -Value $launcher -Encoding Default
+# 显式写 ASCII + CRLF，不依赖 Set-Content 的默认行为
+$batText = ($launcher -split "`r?`n") -join "`r`n"
+# 同时给一个 ASCII 文件名的副本：极少数环境（某些远程/共享路径、
+# 非中文区域设置）对中文文件名不友好，start.bat 作为保底入口。
+foreach ($name in @("启动服务.bat", "start.bat")) {
+    $p = Join-Path $staging $name
+    [IO.File]::WriteAllText($p, $batText, [Text.Encoding]::ASCII)
+    if ([IO.File]::ReadAllBytes($p) | Where-Object { $_ -gt 127 }) {
+        throw "启动器 $name 含非 ASCII 字节，会在 GBK 控制台下乱码"
+    }
+}
+
+# Python 启动器：负责首次配置、中文提示、自动开浏览器、拉起服务
+$pyLauncher = @'
+# -*- coding: utf-8 -*-
+"""绿色包启动器：生成默认配置、打开浏览器、启动服务。"""
+import os
+import sys
+import threading
+import time
+import webbrowser
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+ENV = ROOT / "backend" / ".env"
+
+DEFAULT_ENV = """\
+# 本文件由启动器首次运行时生成，改完保存后重启程序生效。
+
+# 监听地址：127.0.0.1 = 仅本机；改成 0.0.0.0 可让同事通过内网访问
+SPRITE_HOST=127.0.0.1
+SPRITE_PORT=8000
+
+# 开放内网访问时，务必去掉下面两行的 # 并设置口令，
+# 否则同网段任何人都能读写你的数据。
+# SPRITE_AUTH_TOKEN=change-me
+# SPRITE_AUTH_COOKIE_SECURE=false
+"""
+
+
+def ensure_env():
+    if ENV.exists():
+        return False
+    ENV.parent.mkdir(parents=True, exist_ok=True)
+    ENV.write_text(DEFAULT_ENV, encoding="utf-8")
+    return True
+
+
+def read_setting(key, default):
+    try:
+        for line in ENV.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip().upper() == key:
+                return v.strip() or default
+    except OSError:
+        pass
+    return default
+
+
+def open_browser_later(url, delay=4.0):
+    def _go():
+        time.sleep(delay)
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+    threading.Thread(target=_go, daemon=True).start()
+
+
+def main():
+    created = ensure_env()
+    host = read_setting("SPRITE_HOST", "127.0.0.1")
+    port = read_setting("SPRITE_PORT", "8000")
+    local_url = "http://127.0.0.1:%s" % port
+
+    print()
+    print("  ==========================================")
+    print("    精灵帧工作室  SpriteFrameService")
+    print("  ==========================================")
+    if created:
+        print("  首次启动，已生成默认配置 backend\\.env")
+    print("  访问地址： %s" % local_url)
+    if host not in ("127.0.0.1", "localhost"):
+        print("  监听地址： %s （已对内网开放）" % host)
+        if not read_setting("SPRITE_AUTH_TOKEN", ""):
+            print("  【警告】未设置访问令牌，同网段任何人都能读写你的数据！")
+    print("  浏览器稍后会自动打开；关闭本窗口即可停止服务。")
+    print()
+
+    open_browser_later(local_url)
+
+    sys.path.insert(0, str(ROOT / "backend"))
+    os.chdir(str(ROOT / "backend"))
+    try:
+        import run
+        run.main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print()
+        print("  启动失败：%s: %s" % (type(e).__name__, e))
+        print("  请把上面的信息截图反馈。")
+        raise
+
+
+if __name__ == "__main__":
+    main()
+'@
+$pyPath = Join-Path $staging "launcher.py"
+$pyText = ($pyLauncher -split "`r?`n") -join "`r`n"
+[IO.File]::WriteAllText($pyPath, $pyText, (New-Object Text.UTF8Encoding($false)))
 
 $readme = @'
 精灵帧工作室 SpriteFrameService — Windows 免安装版
@@ -219,6 +319,7 @@ $readme = @'
   1. 把整个文件夹解压到任意位置（例如 D:\SpriteFrameService）
      ※ 必须先解压，不要在压缩包里直接双击
   2. 双击「启动服务.bat」
+     （若该文件双击无反应，改双击同目录下的 start.bat，两者内容完全一样）
   3. 稍等几秒，浏览器会自动打开操作界面
   4. 关闭那个黑色命令行窗口即可停止服务
 
@@ -274,7 +375,11 @@ $readme = @'
       内嵌 Python 解释器有时会被误报。本包不写注册表、不联网上传，
       可将整个文件夹加入白名单。
 '@
-Set-Content -Path (Join-Path $staging "使用说明.txt") -Value $readme -Encoding UTF8
+# 说明文件用「UTF-8 + BOM + CRLF」：Windows 记事本靠 BOM 才能正确识别中文，
+# 没有 BOM 会按 ANSI 打开显示乱码。
+$readmePath = Join-Path $staging "使用说明.txt"
+$readmeText = ($readme -split "`r?`n") -join "`r`n"
+[IO.File]::WriteAllText($readmePath, $readmeText, (New-Object Text.UTF8Encoding($true)))
 Info "启动服务.bat / 使用说明.txt 已生成"
 
 # ---------------------------------------------------------------- 打包
