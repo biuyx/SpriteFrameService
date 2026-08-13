@@ -102,7 +102,13 @@ def generate_capabilities():
         "defaults": {"resolution": "480p", "ratio": "adaptive", "duration": 4},
         "concurrent": {"limit": s.generate_max_concurrent,
                        "active": generate_gate.active},
+        "prompt_templates": _prompt_templates(),
     }
+
+
+def _prompt_templates() -> dict:
+    from app.services.prompt_templates import template_payload
+    return template_payload()
 
 
 # ------------------------------------------------------------ 生成

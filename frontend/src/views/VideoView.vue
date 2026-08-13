@@ -31,6 +31,8 @@ async function loadGen() {
     const d = gen.value.defaults || {}
     if (!genModel.value) genModel.value = gen.value.default_model
     genRes.value = genRes.value || d.resolution || '480p'
+    // 提示词为空时按动作名自动预填模板
+    if (!genPrompt.value.trim()) genPrompt.value = templateForAction()
   } catch { gen.value = null }
   // 探测首帧参考图是否已设置
   try {
@@ -57,6 +59,35 @@ async function onFirstFrameFile(file) {
 
 const canGenerate = computed(() =>
   genFirstFrame.value === 'action' ? ffAvailable.value : store.frameCount > 0)
+
+// ---- 按动作名解析提示词模板 ----
+function templateForAction() {
+  const pt = gen.value?.prompt_templates
+  const name = (store.currentAction?.name || '').trim()
+  if (!pt || !name) return ''
+  const lower = name.toLowerCase()
+  // 1) 精确命中(含别名)
+  const key = pt.templates[lower] ? lower : pt.aliases[name] || pt.aliases[lower]
+  if (key && pt.templates[key]) return pt.templates[key]
+  // 2) 部分包含(walk_luggage → walk 模板,并把完整动作名带进描述)
+  for (const k of Object.keys(pt.templates)) {
+    if (lower.includes(k)) {
+      return pt.templates[k].replace('角色', `角色（动作：${name}）`)
+    }
+  }
+  for (const [alias, k] of Object.entries(pt.aliases)) {
+    if (name.includes(alias) && pt.templates[k]) {
+      return pt.templates[k].replace('角色', `角色（动作：${name}）`)
+    }
+  }
+  // 3) 通用模板
+  return pt.generic.replace('{action}', name)
+}
+
+function applyTemplate() {
+  const t = templateForAction()
+  if (t) { genPrompt.value = t; toast('已按动作名填入模板提示词') }
+}
 
 async function loadTakes() {
   try { takes.value = await api.takes(store.sessionId) } catch { /* ignore */ }
@@ -258,6 +289,7 @@ onMounted(async () => {
                 <label>帧</label><input type="number" v-model.number="genFrameIndex" :min="0" :max="store.frameCount - 1" style="width:70px" />
               </div>
               <button class="small" @click="ffInput.click()">{{ ffAvailable ? '更换参考图' : '上传参考图' }}</button>
+              <button class="small" title="按动作名重新填入模板提示词" @click="applyTemplate">模板提示词</button>
               <span v-if="!canGenerate" class="warn-text">生成必须提供角色首帧参考图</span>
             </div>
             <textarea v-model="genPrompt" rows="2" style="width:100%;resize:vertical"
