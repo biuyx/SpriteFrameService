@@ -295,41 +295,51 @@ def wand_mask(session_id: str, frame_index: int):
 
 @router.post("/wand/apply")
 def wand_apply(session_id: str, req: WandApplyRequest):
-    """应用魔棒选区：delete 清除选区，fill 用颜色填充。"""
+    """应用魔棒选区：delete 清除选区，fill 用颜色填充。
+
+    同步端点但会改写帧数据，必须与后台任务互斥。用带超时的锁获取，
+    避免在长任务（批量抠图等）期间把请求线程挂死。
+    """
     session = get_session(session_id)
     mask = session.wand_masks.get(req.frame_index)
     if mask is None:
         raise HTTPException(status_code=400, detail="请先对该帧执行选区操作")
 
-    img = session.load_display_array(req.frame_index)
-    if img is None:
-        raise HTTPException(status_code=404, detail="帧图像不存在")
+    if not session.lock.acquire(timeout=5):
+        raise HTTPException(status_code=409,
+                            detail="该动作有任务正在进行，请等它完成后再应用魔棒")
+    try:
+        img = session.load_display_array(req.frame_index)
+        if img is None:
+            raise HTTPException(status_code=404, detail="帧图像不存在")
 
-    _push_history(session, [req.frame_index], "魔棒编辑",
-                  f"{'删除选区' if req.operation == 'delete' else '填充选区'} | 帧 {req.frame_index}")
+        _push_history(session, [req.frame_index], "魔棒编辑",
+                      f"{'删除选区' if req.operation == 'delete' else '填充选区'} | 帧 {req.frame_index}")
 
-    from app.core.magic_wand import Selection
-    wand = MagicWand()
-    wand._selection = Selection(
-        mask=mask,
-        bounds=(0, 0, img.shape[1], img.shape[0]),
-        area=int(np.count_nonzero(mask > 0)),
-        seed_point=(0, 0),
-        tolerance=0,
-        contiguous=True,
-    )
+        from app.core.magic_wand import Selection
+        wand = MagicWand()
+        wand._selection = Selection(
+            mask=mask,
+            bounds=(0, 0, img.shape[1], img.shape[0]),
+            area=int(np.count_nonzero(mask > 0)),
+            seed_point=(0, 0),
+            tolerance=0,
+            contiguous=True,
+        )
 
-    result = wand.apply_to_image(
-        img,
-        operation=req.operation,
-        fill_color=tuple(req.fill_color) if req.fill_color else None,
-    )
-    session.save_processed(req.frame_index, result)
-    session.clear_frame_arrays()
-    session.persist_metadata()
+        result = wand.apply_to_image(
+            img,
+            operation=req.operation,
+            fill_color=tuple(req.fill_color) if req.fill_color else None,
+        )
+        session.save_processed(req.frame_index, result)
+        session.clear_frame_arrays()
+        session.persist_metadata()
 
-    from app.services import recipe
-    recipe.record_step(session, "wand_apply",
-                       {"frame_index": req.frame_index, "operation": req.operation})
+        from app.services import recipe
+        recipe.record_step(session, "wand_apply",
+                           {"frame_index": req.frame_index, "operation": req.operation})
+    finally:
+        session.lock.release()
 
     return {"frame_index": req.frame_index, "operation": req.operation}
