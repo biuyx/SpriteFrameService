@@ -67,9 +67,17 @@ def make_test_video(path: Path, seconds: float = 2.0, fps: float = 30.0,
 
 
 def auth_headers() -> dict:
-    """启用认证时带上访问令牌（取自 SPRITE_AUTH_TOKEN）。"""
+    """启用认证时带上访问令牌（环境变量优先，其次 backend/.env）。"""
     import os
     token = (os.environ.get("SPRITE_AUTH_TOKEN") or "").strip()
+    if not token:
+        env_file = Path(__file__).resolve().parent.parent / "backend" / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("SPRITE_AUTH_TOKEN=") and not line.startswith("#"):
+                    token = line.split("=", 1)[1].strip()
+                    break
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
@@ -103,10 +111,18 @@ def main():
         # 1. 健康检查
         check("health", client.get("/api/health").status_code == 200)
 
-        # 2. 创建会话
-        r = client.post("/api/sessions")
-        check("创建会话", r.status_code == 200)
+        # 2. 创建精灵 + 动作，打开工作台（sid 即 action_id）
+        r = client.post("/api/sprites", json={"name": "冒烟精灵"})
+        check("创建精灵", r.status_code == 200)
+        sprite_id = r.json()["id"]
+
+        r = client.post(f"/api/sprites/{sprite_id}/actions", json={"name": "smoke"})
+        check("创建动作", r.status_code == 200)
         sid = r.json()["id"]
+
+        r = client.post(f"/api/sprites/{sprite_id}/actions/{sid}/open")
+        check("打开动作工作台", r.status_code == 200
+              and r.json()["action"]["status"] == "active")
 
         # 3. 上传视频
         with open(tmp_video, "rb") as f:
@@ -215,9 +231,13 @@ def main():
         r = client.get(f"/api/sessions/{sid}/export/smoke_sprite/download")
         check("导出下载", r.status_code == 200 and len(r.content) > 0)
 
-        # 13. 删除会话
+        # 13. 删除动作与精灵（经旧端点删动作应同步精灵索引）
         r = client.delete(f"/api/sessions/{sid}")
-        check("删除会话", r.status_code == 200)
+        check("删除动作(经会话端点)", r.status_code == 200 and r.json()["deleted"])
+        r = client.get(f"/api/sprites/{sprite_id}/actions")
+        check("精灵索引已同步", r.status_code == 200 and len(r.json()["actions"]) == 0)
+        r = client.delete(f"/api/sprites/{sprite_id}")
+        check("删除精灵", r.status_code == 200)
 
     finally:
         tmp_video.unlink(missing_ok=True)

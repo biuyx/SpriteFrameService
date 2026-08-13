@@ -2,7 +2,12 @@ import { reactive } from 'vue'
 import api from './api'
 
 const state = reactive({
-  sessionId: null,
+  // 三层视图: 'library' 精灵库 | 'sprite' 动作看板 | 'workbench' 动作工作台
+  view: 'library',
+  currentSprite: null,    // {id, name, preset}
+  currentAction: null,    // {id, name, status, ...}
+
+  sessionId: null,        // = 打开中的 action_id
   videoInfo: null,
   frames: [],
   frameCount: 0,
@@ -27,10 +32,33 @@ export function toast(msg) {
   state.toastTimer = setTimeout(() => (state.toast = ''), 3500)
 }
 
-export async function initSession() {
-  const s = await api.createSession()
-  state.sessionId = s.id
-  return s.id
+// 打开动作：进入工作台（sessionId 即 action_id）
+export async function openAction(spriteId, actionId) {
+  const r = await api.openAction(spriteId, actionId)
+  state.currentSprite = r.sprite
+  state.currentAction = r.action
+  state.sessionId = r.action.id
+  state.videoInfo = r.session.video_info
+  state.view = 'workbench'
+  await refreshFrames()
+  return r
+}
+
+// 返回上一层
+export function gotoLibrary() {
+  state.view = 'library'
+  state.currentSprite = null
+  state.currentAction = null
+  state.sessionId = null
+  resetProject()
+}
+
+export function gotoSprite(sprite) {
+  if (sprite) state.currentSprite = sprite
+  state.view = 'sprite'
+  state.currentAction = null
+  state.sessionId = null
+  resetProject()
 }
 
 export async function refreshSession() {

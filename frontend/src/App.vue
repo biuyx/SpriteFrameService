@@ -1,10 +1,12 @@
 <script setup>
 import { ref, watch, onMounted } from 'vue'
-import { useStore, initSession, loadCapabilities, toast } from './stores'
+import { useStore, gotoLibrary, gotoSprite, loadCapabilities, toast } from './stores'
 import { useJobs, cancelJob } from './jobs'
 import { currentTab } from './nav'
 import api, { setUnauthorizedHandler } from './api'
 import LoginView from './components/LoginView.vue'
+import SpriteLibraryView from './views/SpriteLibraryView.vue'
+import SpriteDetailView from './views/SpriteDetailView.vue'
 import VideoView from './views/VideoView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import BackgroundView from './views/BackgroundView.vue'
@@ -72,7 +74,6 @@ async function boot() {
     }
     needLogin.value = false
     await loadCapabilities()
-    await initSession()
     ready.value = true
   } catch (e) {
     err.value = `无法连接后端服务: ${e.message}`
@@ -105,17 +106,27 @@ function fmtDuration(sec) {
   return m > 0 ? `${m}m${s.padStart(5, '0')}s` : `${s}s`
 }
 
-async function newSession() {
-  const ok = confirm('新建项目会丢弃当前会话（含已上传视频与帧），确定继续？')
-  if (!ok) return
-  await initSession()
-  toast('已新建会话')
+function backToBoard() {
+  gotoSprite(store.currentSprite)
+  tab.value = 'video'
 }
 </script>
 
 <template>
   <LoginView v-if="needLogin" :notice="loginNotice" @authenticated="onAuthenticated" />
 
+  <!-- 一层：精灵库 -->
+  <div class="toplevel" v-else-if="ready && store.view === 'library'">
+    <SpriteLibraryView />
+    <button v-if="authRequired" class="small logout-fab" @click="doLogout">退出登录</button>
+  </div>
+
+  <!-- 二层：动作看板 -->
+  <div class="toplevel" v-else-if="ready && store.view === 'sprite'">
+    <SpriteDetailView />
+  </div>
+
+  <!-- 三层：动作工作台 -->
   <div class="layout" v-else-if="ready">
     <aside class="sidebar">
       <div class="brand">精灵帧工作室<small>SpriteFrameService</small></div>
@@ -125,12 +136,16 @@ async function newSession() {
         @click="tab = t.key"
       >{{ t.label }}</button>
       <div class="spacer"></div>
-      <button class="tab" @click="newSession">新建项目</button>
+      <button class="tab" @click="backToBoard">← 返回动作看板</button>
     </aside>
 
     <div class="main">
       <div class="topbar">
-        <span class="session-info">会话: {{ store.sessionId?.slice(0, 8) }}</span>
+        <span class="crumb">
+          <a @click="gotoLibrary">精灵库</a> /
+          <a @click="backToBoard">{{ store.currentSprite?.name }}</a> /
+          <b>{{ store.currentAction?.name }}</b>
+        </span>
         <span v-if="store.videoInfo" class="session-info">
           {{ store.videoInfo.width }}x{{ store.videoInfo.height }} · {{ fmtDuration(store.videoInfo.duration) }} · {{ store.frameCount }} 帧
         </span>
@@ -182,6 +197,12 @@ async function newSession() {
 </template>
 
 <style scoped>
+.toplevel { height: 100%; position: relative; }
+.logout-fab { position: absolute; top: 18px; right: 24px; }
+.crumb { font-size: 13px; color: var(--text-dim); }
+.crumb a { color: var(--text-dim); cursor: pointer; text-decoration: none; }
+.crumb a:hover { color: var(--accent-hover); }
+.crumb b { color: var(--text); }
 .main-body {
   flex: 1;
   display: flex;

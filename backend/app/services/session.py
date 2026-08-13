@@ -172,10 +172,11 @@ class Session:
 
 
 class SessionManager:
-    """会话注册表（内存索引 + 磁盘持久化）。
+    """工作态注册表（内存索引 + 磁盘持久化）。
 
-    会话数据以文件形式存于 data/sessions/{id}/，进程重启后按需从磁盘恢复，
-    不会因重启丢失已上传的视频与帧。
+    「会话」现在是动作（action）的工作态：ID 即 action_id，数据存于
+    data/sprites/{sid}/actions/{aid}/。旧版匿名会话（data/sessions/{id}/）
+    仍可按原 ID 打开，用于浏览与认领，属兼容路径。
     """
 
     def __init__(self):
@@ -183,19 +184,30 @@ class SessionManager:
         self._lock = threading.RLock()
 
     def create(self) -> Session:
+        """旧版匿名会话创建（仅兼容保留；正常路径走 open_action）。"""
         sid, storage = create_session_storage()
         session = Session(sid, storage)
         with self._lock:
             self._sessions[sid] = session
         return session
 
+    @staticmethod
+    def _locate_root(session_id: str):
+        """定位工作目录：精灵动作优先，旧 sessions 目录兜底。"""
+        from app.services.sprite_store import sprite_store
+        root = sprite_store.locate_action(session_id)
+        if root is not None:
+            return root
+        legacy = get_settings().sessions_dir / session_id
+        return legacy if legacy.is_dir() else None
+
     def _restore(self, session_id: str) -> Optional[Session]:
-        """从磁盘恢复会话（目录存在即认为有效）。"""
-        root = get_settings().sessions_dir / session_id
-        if not root.is_dir():
+        """从磁盘恢复工作态（动作目录或旧会话目录）。"""
+        root = self._locate_root(session_id)
+        if root is None:
             return None
 
-        session = Session(session_id, SessionStorage(session_id))
+        session = Session(session_id, SessionStorage(session_id, root=root))
         session.frame_store.load_metadata(session.frame_manager)
 
         video_path = session.storage.video_path
@@ -246,17 +258,28 @@ class SessionManager:
             session._pose_detector = None
 
     def delete(self, session_id: str) -> bool:
-        """删除会话，包括磁盘数据（不可恢复）。"""
+        """删除工作数据，包括磁盘（不可恢复）。
+
+        若 ID 是精灵动作，则交由实体层删除（同步 sprite.json 与索引）；
+        否则按旧版匿名会话处理。
+        """
         with self._lock:
             session = self._sessions.pop(session_id, None)
 
         if session is not None:
             self._release_handles(session)
             session.frame_manager.clear()
+
+        from app.services.sprite_store import sprite_store
+        sprite_id = sprite_store.sprite_of_action(session_id)
+        if sprite_id is not None:
+            return sprite_store.delete_action(sprite_id, session_id)
+
+        if session is not None:
             session.storage.clear()
             return True
 
-        # 仅存在于磁盘（进程重启后未被访问过）的会话也允许删除
+        # 仅存在于磁盘（进程重启后未被访问过）的旧会话也允许删除
         root = get_settings().sessions_dir / session_id
         if root.is_dir():
             shutil.rmtree(root, ignore_errors=True)
@@ -282,25 +305,27 @@ class SessionManager:
         return len(sids)
 
     def list(self) -> list[dict]:
-        """列出会话：已加载的给出完整摘要，仅在磁盘上的给出占位摘要。"""
-        with self._lock:
-            loaded = {sid: s.summary() for sid, s in self._sessions.items()}
+        """列出旧版匿名会话（data/sessions/ 下的目录），供「未归档认领」。
 
+        精灵动作不在此列——它们经 /api/sprites 的看板呈现。
+        """
         sessions_dir = get_settings().sessions_dir
+        result = []
         if sessions_dir.is_dir():
             for d in sorted(sessions_dir.iterdir()):
-                if d.is_dir() and d.name not in loaded:
-                    loaded[d.name] = {
-                        "id": d.name,
-                        "created_at": d.stat().st_ctime,
-                        "video_info": None,
-                        "frame_count": None,
-                        "selected_count": None,
-                        "history_steps": 0,
-                        "history_memory": "0.0 MB",
-                        "loaded": False,
-                    }
-        return list(loaded.values())
+                if not d.is_dir():
+                    continue
+                raw = d / "frames" / "raw"
+                video = d / "video"
+                result.append({
+                    "id": d.name,
+                    "created_at": d.stat().st_ctime,
+                    "frame_count": sum(1 for _ in raw.glob("*.png")) if raw.is_dir() else 0,
+                    "has_video": video.is_dir() and any(
+                        f.is_file() and ".part" not in f.name for f in video.iterdir()),
+                    "legacy": True,
+                })
+        return result
 
     def cleanup_idle(self, max_idle_seconds: float = 86400) -> int:
         """卸载空闲超时的会话（默认 24h）：仅释放内存，磁盘数据保留。"""

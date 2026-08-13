@@ -41,12 +41,28 @@ const api = {
   login: (token) => request('POST', '/api/auth/login', { json: { token } }),
   logout: () => request('POST', '/api/auth/logout'),
 
+  // 精灵 / 动作
+  sprites: () => request('GET', '/api/sprites'),
+  createSprite: (name, tags) => request('POST', '/api/sprites', { json: { name, tags } }),
+  sprite: (sid) => request('GET', `/api/sprites/${sid}`),
+  patchSprite: (sid, patch) => request('PATCH', `/api/sprites/${sid}`, { json: patch }),
+  deleteSprite: (sid) => request('DELETE', `/api/sprites/${sid}`),
+  actions: (sid) => request('GET', `/api/sprites/${sid}/actions`),
+  createAction: (sid, name, firstFrame) =>
+    request('POST', `/api/sprites/${sid}/actions`, { json: { name, first_frame: firstFrame } }),
+  patchAction: (sid, aid, patch) => request('PATCH', `/api/sprites/${sid}/actions/${aid}`, { json: patch }),
+  deleteAction: (sid, aid) => request('DELETE', `/api/sprites/${sid}/actions/${aid}`),
+  openAction: (sid, aid) => request('POST', `/api/sprites/${sid}/actions/${aid}/open`),
+  actionCover: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/cover?v=${v}`,
+  legacySessions: () => request('GET', '/api/sprites/legacy-sessions'),
+  claimSession: (sid, sessionId, name) =>
+    request('POST', `/api/sprites/${sid}/claim`, { json: { session_id: sessionId, name } }),
+
   // 能力
   capabilities: () => request('GET', '/api/capabilities'),
   health: () => request('GET', '/api/health'),
 
-  // 会话
-  createSession: () => request('POST', '/api/sessions'),
+  // 会话（= 动作工作态；id 即 action_id）
   session: (sid) => request('GET', `/api/sessions/${sid}`),
   deleteSession: (sid) => request('DELETE', `/api/sessions/${sid}`),
 

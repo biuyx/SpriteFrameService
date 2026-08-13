@@ -21,9 +21,10 @@ class SessionStorage:
         history/         历史快照（step_XXXX/{帧索引}.png）
     """
 
-    def __init__(self, session_id: str):
+    def __init__(self, session_id: str, root: Path | None = None):
+        """root 显式传入时使用之（精灵动作目录）；否则用旧版 sessions 布局。"""
         self.session_id = session_id
-        self.root = get_settings().sessions_dir / session_id
+        self.root = root if root is not None else get_settings().sessions_dir / session_id
 
         self.video_dir = self.root / "video"
         self.raw_dir = self.root / "frames" / "raw"
