@@ -50,6 +50,16 @@ async def upload_video(session_id: str, file: UploadFile = File(...)):
     session.frame_manager.clear()
     session.history.clear()
 
+    # 工序记录：素材来源（换视频重置工序链）
+    from app.services import recipe
+    recipe.set_source(session, {
+        "kind": "upload",
+        "filename": file.filename,
+        "bytes": written,
+        "video": {"width": video_info.width, "height": video_info.height,
+                  "fps": video_info.fps, "duration": video_info.duration},
+    })
+
     return {"video_info": video_info.model_dump(), "path": str(dest)}
 
 

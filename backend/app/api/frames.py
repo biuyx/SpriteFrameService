@@ -63,6 +63,11 @@ def extract_frames(session_id: str, req: ExtractRequest):
         session.frame_manager.add_frames(frames)
         session.persist_metadata()
         ctx.report(100, f"抽帧完成: {len(frames)} 帧")
+        from app.services import recipe
+        recipe.record_step(session, "extract",
+                           {"start_time": req.start_time, "end_time": req.end_time,
+                            "fps": req.fps},
+                           {"extracted": len(frames)})
         return {"extracted": len(frames), "start_time": req.start_time, "end_time": req.end_time}
 
     job = job_manager.submit("extract", _job, lock=session.lock)
@@ -360,6 +365,10 @@ def supplement_frames(session_id: str, req: SupplementRequest):
         session.persist_metadata()
 
         ctx.report(100, f"补帧完成，新增 {len(new_frames)} 帧")
+        from app.services import recipe
+        recipe.record_step(session, "supplement",
+                           {"num_frames": req.num_frames, "indices": indices[:20]},
+                           {"added": len(new_frames)})
         return {"added": len(new_frames), "total": fm.frame_count}
 
     job = job_manager.submit("supplement", _job, lock=session.lock)

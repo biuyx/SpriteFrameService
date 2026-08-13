@@ -75,6 +75,14 @@ def create_export(session_id: str, req: ExportRequest):
 
         files = [f.name for f in sorted(Path(main_path).parent.iterdir()) if f.is_file()]
         ctx.report(100, "导出完成")
+        from app.services import recipe
+        recipe.record_step(session, "export",
+                           {"format": req.config.format.value
+                            if hasattr(req.config.format, "value") else str(req.config.format),
+                            "name": export_name,
+                            "loop_transition": lt.enabled,
+                            "frame_indices": indices[:50]},
+                           {"files": files})
         return {
             "name": export_name,
             "main": Path(main_path).name,

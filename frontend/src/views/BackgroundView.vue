@@ -7,11 +7,36 @@ import api from '../api'
 const store = useStore()
 const mode = ref('ai')
 
-// AI 参数
-const aiModel = ref('u2net')
-const alphaThreshold = ref(0)
-const erode = ref(0)
-const feather = ref(0)
+// AI 参数：默认取精灵的工艺预设（全角色统一），可在此覆盖
+const spritePreset = ref({ model: 'isnet-anime', alpha_threshold: 128, erode: 1, feather: 0,
+                           ...(store.currentSprite?.preset?.matting || {}) })
+const aiModel = ref(spritePreset.value.model)
+const alphaThreshold = ref(spritePreset.value.alpha_threshold)
+const erode = ref(spritePreset.value.erode)
+const feather = ref(spritePreset.value.feather)
+
+// 当前参数是否偏离精灵预设（偏离时显式标出，防止悄悄不一致）
+const presetDirty = computed(() =>
+  aiModel.value !== spritePreset.value.model ||
+  alphaThreshold.value !== spritePreset.value.alpha_threshold ||
+  erode.value !== spritePreset.value.erode ||
+  feather.value !== spritePreset.value.feather
+)
+
+async function saveAsSpritePreset() {
+  if (!store.currentSprite) return
+  await api.patchSprite(store.currentSprite.id, { preset: { matting: aiParams() } })
+  spritePreset.value = { ...aiParams() }
+  store.currentSprite.preset = { ...store.currentSprite.preset, matting: aiParams() }
+  toast(`已保存为「${store.currentSprite.name}」的工艺预设，该精灵所有动作默认使用`)
+}
+
+function resetToPreset() {
+  aiModel.value = spritePreset.value.model
+  alphaThreshold.value = spritePreset.value.alpha_threshold
+  erode.value = spritePreset.value.erode
+  feather.value = spritePreset.value.feather
+}
 
 // 颜色参数
 const colorPreset = ref('绿幕')
@@ -153,6 +178,20 @@ onMounted(() => {
             <div class="field inline"><label>腐蚀(负=膨胀)</label><input type="number" v-model.number="erode" :min="-10" :max="10" /></div>
             <div class="field inline"><label>羽化</label><input type="number" v-model.number="feather" :min="0" :max="20" /></div>
           </div>
+          <div class="row preset-row">
+            <template v-if="presetDirty">
+              <span class="preset-warn">⚠ 已偏离「{{ store.currentSprite?.name }}」的工艺预设——同一精灵的动作建议用统一参数</span>
+              <button class="small" @click="resetToPreset">还原预设</button>
+              <button class="small" @click="saveAsSpritePreset">保存为精灵预设</button>
+            </template>
+            <span v-else class="hint">✓ 使用「{{ store.currentSprite?.name }}」的工艺预设（全部动作统一）</span>
+          </div>
+          <p v-if="alphaThreshold > 0 && alphaThreshold < 51" class="param-hint">
+            Alpha 阈值 1~50 会把半透明白边提升为完全不透明，白边反而更重；建议 0 或 ≥128
+          </p>
+          <p v-if="feather > 0" class="param-hint">
+            羽化会加宽边缘过渡带，做精灵图通常不需要
+          </p>
         </template>
 
         <template v-else>
@@ -208,3 +247,12 @@ onMounted(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.preset-row { align-items: center; gap: 8px; }
+.preset-warn { font-size: 12px; color: var(--warn); }
+.param-hint {
+  margin: 4px 0 0; padding: 5px 9px; font-size: 12px; color: #ffcc80;
+  background: #ff980022; border-left: 2px solid var(--warn); border-radius: 3px;
+}
+</style>

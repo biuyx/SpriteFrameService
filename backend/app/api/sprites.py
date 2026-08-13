@@ -121,7 +121,13 @@ def list_actions(sprite_id: str):
 @router.post("/{sprite_id}/actions")
 def create_action(sprite_id: str, req: ActionCreate):
     _wrap(lambda: sprite_store.get_sprite(sprite_id))  # 校验存在
-    return sprite_store.create_action(sprite_id, req.name, req.first_frame)
+    action = sprite_store.create_action(sprite_id, req.name, req.first_frame)
+    # 首帧来源为其他动作的帧时，物化为文件（血统引用 + 物理拷贝）
+    if req.first_frame and req.first_frame.get("kind") == "action_frame":
+        ff = sprite_store.materialize_first_frame(sprite_id, action["id"], req.first_frame)
+        if ff is not req.first_frame:
+            action = sprite_store.update_action(sprite_id, action["id"], {"first_frame": ff})
+    return action
 
 
 @router.patch("/{sprite_id}/actions/{action_id}")

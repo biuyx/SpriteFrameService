@@ -31,6 +31,14 @@ def get_session_detail(session_id: str):
     return session.summary()
 
 
+@router.get("/{session_id}/recipe")
+def get_recipe(session_id: str):
+    """工序记录：素材来源 + 每步参数（追溯与复现用）。"""
+    session = get_session(session_id)
+    from app.services import recipe
+    return recipe.read(session)
+
+
 @router.delete("/{session_id}")
 def delete_session(session_id: str):
     ok = session_manager.delete(session_id)

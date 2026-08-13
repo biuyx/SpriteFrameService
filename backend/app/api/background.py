@@ -107,6 +107,11 @@ def remove_background(session_id: str, req: BackgroundRemoveRequest):
         session.clear_frame_arrays()
         session.persist_metadata()
         ctx.report(100, f"抠图完成: {processed}/{len(indices)} 帧")
+        from app.services import recipe
+        recipe.record_step(session, "background",
+                           {"mode": req.mode, **{k: v for k, v in params.items()
+                                                 if not callable(v)}},
+                           {"processed": processed})
         return {"mode": req.mode, "processed": processed, "total": len(indices)}
 
     job = job_manager.submit("background", _job, lock=session.lock)
@@ -147,6 +152,10 @@ def add_outline(session_id: str, req: OutlineRequest):
         session.clear_frame_arrays()
         session.persist_metadata()
         ctx.report(100, f"描边完成: {processed}/{len(indices)} 帧")
+        from app.services import recipe
+        recipe.record_step(session, "outline",
+                           {"thickness": req.thickness, "color": list(color)},
+                           {"processed": processed})
         return {"processed": processed, "total": len(indices)}
 
     job = job_manager.submit("outline", _job, lock=session.lock)

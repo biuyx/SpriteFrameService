@@ -232,6 +232,10 @@ def remove_similar(session_id: str, req: RemoveSimilarRequest):
             })
 
         session.persist_metadata()
+        from app.services import recipe
+        recipe.record_step(session, "remove_similar",
+                           {"mode": mode, "threshold": req.threshold},
+                           {"kept": kept, "removed": removed})
         return {
             "mode": mode,
             "threshold": req.threshold,

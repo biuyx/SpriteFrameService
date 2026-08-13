@@ -38,6 +38,9 @@ def revert_history(session_id: str, req: RevertRequest):
         session.persist_metadata()
         session.clear_frame_arrays()
         ctx.report(100, "回退完成")
+        from app.services import recipe
+        recipe.record_step(session, "revert",
+                           {"step_id": req.step_id}, {"affected": len(affected)})
         return {"affected": affected, "count": len(affected)}
 
     job = job_manager.submit("history-revert", _job, lock=session.lock)

@@ -114,9 +114,10 @@ const api = {
   exports: (sid) => request('GET', `/api/sessions/${sid}/export/list`),
   exportDownload: (sid, name) => `${BASE}/api/sessions/${sid}/export/${name}/download`,
 
-  // 历史
+  // 历史 / 工序
   history: (sid) => request('GET', `/api/sessions/${sid}/history`),
   revert: (sid, stepId) => request('POST', `/api/sessions/${sid}/history/revert`, { json: { step_id: stepId } }),
+  recipe: (sid) => request('GET', `/api/sessions/${sid}/recipe`),
 
   // 任务
   job: (id) => request('GET', `/api/jobs/${id}`),

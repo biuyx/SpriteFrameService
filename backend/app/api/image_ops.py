@@ -75,6 +75,12 @@ def scale_frames(session_id: str, req: ScaleRequest):
 
         session.clear_frame_arrays()
         session.persist_metadata()
+        from app.services import recipe
+        recipe.record_step(session, "scale",
+                           {"mode": req.mode, "percent": req.percent,
+                            "width": req.width, "height": req.height,
+                            "algorithm": req.algorithm},
+                           {"processed": processed, "to": f"{target_w}x{target_h}"})
         return {"processed": processed, "total": len(indices),
                 "from": f"{orig_w}x{orig_h}", "to": f"{target_w}x{target_h}"}
 
@@ -141,6 +147,11 @@ def crop_whitespace(session_id: str, req: CropRequest):
 
         session.clear_frame_arrays()
         session.persist_metadata()
+        from app.services import recipe
+        recipe.record_step(session, "crop_whitespace",
+                           {"margins": [req.margin_top, req.margin_bottom,
+                                        req.margin_left, req.margin_right]},
+                           {"processed": processed, "size": f"{crop_w}x{crop_h}"})
         return {"processed": processed, "total": len(indices), "size": f"{crop_w}x{crop_h}"}
 
     job = job_manager.submit("crop", _job, lock=session.lock)
@@ -179,6 +190,9 @@ def optimize_edges(session_id: str, req: OptimizeEdgesRequest):
 
         session.clear_frame_arrays()
         session.persist_metadata()
+        from app.services import recipe
+        recipe.record_step(session, "optimize_edges", {"erode": req.erode},
+                           {"processed": processed})
         return {"processed": processed, "total": len(indices)}
 
     job = job_manager.submit("optimize-edges", _job, lock=session.lock)
@@ -216,6 +230,10 @@ def enhance_frames(session_id: str, req: EnhanceRequest):
 
         session.clear_frame_arrays()
         session.persist_metadata()
+        from app.services import recipe
+        recipe.record_step(session, "enhance",
+                           {"model": req.model, "tile": req.tile},
+                           {"processed": processed})
         return {"processed": processed, "total": len(indices), "model": req.model}
 
     job = job_manager.submit("enhance", _job, lock=session.lock)
@@ -309,5 +327,9 @@ def wand_apply(session_id: str, req: WandApplyRequest):
     session.save_processed(req.frame_index, result)
     session.clear_frame_arrays()
     session.persist_metadata()
+
+    from app.services import recipe
+    recipe.record_step(session, "wand_apply",
+                       {"frame_index": req.frame_index, "operation": req.operation})
 
     return {"frame_index": req.frame_index, "operation": req.operation}

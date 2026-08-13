@@ -8,6 +8,22 @@ const store = useStore()
 const entries = ref([])
 const memory = ref('')
 const busy = ref(false)
+const recipe = ref({ source: null, steps: [] })
+
+const OP_LABEL = {
+  extract: '抽帧', remove_similar: '去相似', background: '抠图', outline: '描边',
+  scale: '缩放', crop_whitespace: '空白裁剪', optimize_edges: '边缘优化',
+  enhance: 'AI增强', wand_apply: '魔棒编辑', supplement: '补帧',
+  export: '导出', revert: '历史回退',
+}
+
+function fmtParams(p) {
+  if (!p) return ''
+  return Object.entries(p)
+    .filter(([k]) => k !== 'frame_indices' && k !== 'indices')
+    .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(',') : v}`)
+    .join(' · ')
+}
 
 async function load() {
   try {
@@ -16,6 +32,11 @@ async function load() {
     memory.value = r.memory || ''
   } catch {
     entries.value = []
+  }
+  try {
+    recipe.value = await api.recipe(store.sessionId)
+  } catch {
+    recipe.value = { source: null, steps: [] }
   }
 }
 
@@ -77,6 +98,27 @@ onMounted(load)
       </div>
     </div>
     <p v-else class="hint">暂无历史记录。对帧执行处理操作后会自动生成快照。</p>
+
+    <div class="section-title" style="margin-top:22px"><h2>工序记录</h2></div>
+    <p class="desc">本动作从素材到导出的完整参数链，用于追溯与复现。</p>
+
+    <div v-if="recipe.source" class="recipe-step recipe-src">
+      <b>素材</b>
+      <span>{{ recipe.source.kind === 'upload' ? '上传' : recipe.source.kind }}
+        {{ recipe.source.filename || '' }}
+        <template v-if="recipe.source.video">
+          · {{ recipe.source.video.width }}x{{ recipe.source.video.height }}
+          · {{ recipe.source.video.duration?.toFixed(1) }}s
+        </template>
+      </span>
+    </div>
+    <div v-for="(s, i) in recipe.steps" :key="i" class="recipe-step">
+      <b>{{ OP_LABEL[s.op] || s.op }}</b>
+      <span class="mono-sm">{{ fmtParams(s.params) }}</span>
+      <span v-if="s.result" class="hint">→ {{ fmtParams(s.result) }}</span>
+    </div>
+    <p v-if="!recipe.source && !recipe.steps.length" class="hint">
+      暂无工序记录。上传素材并执行处理后自动累积。</p>
   </div>
 </template>
 
@@ -86,4 +128,12 @@ onMounted(load)
   background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; padding: 8px 12px;
 }
 .history-desc { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+.recipe-step {
+  display: flex; align-items: baseline; gap: 10px; padding: 6px 12px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 5px; font-size: 12px;
+}
+.recipe-step b { min-width: 64px; }
+.recipe-src { border-left: 2px solid var(--accent); }
+.mono-sm { font-family: Consolas, monospace; font-size: 11px; color: var(--text-dim); }
 </style>

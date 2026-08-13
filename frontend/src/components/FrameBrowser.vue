@@ -39,6 +39,18 @@ async function applyRange() {
   await sel('range', { range_start: rangeStart.value, range_end: rangeEnd.value })
 }
 
+// 以选中的那一帧为首帧，为同一精灵新建动作（血统边 + 物理拷贝首帧图）
+async function newActionFromFrame() {
+  const idx = store.frames.filter((f) => f.is_selected).map((f) => f.index)
+  if (idx.length !== 1) return toast('请恰好选中 1 帧作为新动作的首帧')
+  const name = prompt(`以第 ${idx[0]} 帧为首帧，为「${store.currentSprite?.name}」新建动作，命名：`, '')
+  if (!name) return
+  const act = await api.createAction(store.currentSprite.id, name, {
+    kind: 'action_frame', action: store.sessionId, frame_index: idx[0],
+  })
+  toast(`已创建动作「${act.name}」（首帧 = 本动作第 ${idx[0]} 帧），可从动作看板进入`)
+}
+
 // 拖拽调整高度
 const dragging = ref(false)
 function startDrag(e) {
@@ -84,6 +96,9 @@ watch(collapsed, (c) => { if (popped.value && c) popped.value = false })</script
         <div class="field inline"><label>到</label><input type="number" v-model.number="rangeEnd" :max="store.frameCount - 1" /></div>
         <button class="small" @click="applyRange">区间选帧</button>
         <span class="hint">|</span>
+        <button class="small" :disabled="selectedCount !== 1"
+                title="以选中的那一帧为首帧新建动作（血统可追溯）"
+                @click="newActionFromFrame">以此帧建动作</button>
         <button class="small danger" @click="delSelected">删除选中</button>
       </template>
 

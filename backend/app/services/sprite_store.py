@@ -315,6 +315,54 @@ class SpriteStore:
             "export_count": count("exports"),
         }
 
+    def frame_image_path(self, sprite_id: str, action_id: str,
+                         frame_index: int) -> Optional[Path]:
+        """取某动作第 N 帧的图像文件（处理图优先），不加载工作态。"""
+        d = self.action_dir(sprite_id, action_id)
+        fj = d / "frames.json"
+        if not fj.is_file():
+            return None
+        try:
+            frames = json.loads(fj.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        for f in frames:
+            if f.get("index") == frame_index:
+                for key in ("processed_path", "image_path"):
+                    p = f.get(key)
+                    if p and Path(p).is_file():
+                        return Path(p)
+        return None
+
+    def materialize_first_frame(self, sprite_id: str, action_id: str,
+                                first_frame: Optional[dict]) -> Optional[dict]:
+        """把首帧来源物化为动作目录下的 first_frame.png。
+
+        血统边只是引用；物理拷贝保证源动作被删后新动作首帧仍在
+        （它是视频生成的输入，属于源料）。返回补充了 file 字段的 first_frame。
+        """
+        import shutil
+        if not first_frame or first_frame.get("kind") != "action_frame":
+            return first_frame
+        src_action = str(first_frame.get("action", ""))
+        try:
+            idx = int(first_frame.get("frame_index"))
+        except (TypeError, ValueError):
+            return first_frame
+        src_sprite = self.sprite_of_action(src_action)
+        if src_sprite is None:
+            return first_frame
+        src = self.frame_image_path(src_sprite, src_action, idx)
+        if src is None:
+            return first_frame
+        dest = self.action_dir(sprite_id, action_id) / "first_frame.png"
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest)
+        except OSError:
+            return first_frame
+        return {**first_frame, "file": "first_frame.png"}
+
     def cover_path(self, sprite_id: str, action_id: str) -> Optional[Path]:
         """看板封面：第一帧的处理图，其次原图（按 frames.json 的顺序）。"""
         d = self.action_dir(sprite_id, action_id)
