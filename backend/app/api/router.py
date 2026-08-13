@@ -15,6 +15,7 @@ from . import (
     image_ops,
     jobs,
     sessions,
+    settings_api,
     sprites,
     videos,
 )
@@ -32,4 +33,5 @@ api_router.include_router(image_ops.router)
 api_router.include_router(export_api.router)
 api_router.include_router(history_api.router)
 api_router.include_router(generate.router)
+api_router.include_router(settings_api.router)
 api_router.include_router(jobs.router)

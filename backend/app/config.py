@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     ark_model: str = "doubao-seedance-2-0-mini-260615"   # 默认模型
     ark_timeout_seconds: int = 900   # 单次生成总超时
     generate_daily_limit: int = 20   # 每日生成次数上限，0 = 不限制
+    generate_max_concurrent: int = 5  # 同时进行中的生成任务数上限（1~10）
 
     # --- 处理 ---
     force_cpu: bool = False

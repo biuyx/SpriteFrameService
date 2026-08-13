@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from typing import Optional
 
@@ -50,6 +51,40 @@ def quota_consume() -> None:
                  encoding="utf-8")
 
 
+# ------------------------------------------------------------ 生成并发闸门
+class _ConcurrencyGate:
+    """限制同时进行中的生成任务数。上限每次现取（设置修改立即生效）。
+
+    超限的任务排队等待而不是拒绝——远端生成本来就要等几分钟，
+    多等一会儿比让用户重试友好；等待中可取消。
+    """
+
+    def __init__(self):
+        self._active = 0
+        self._cond = threading.Condition()
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    def acquire(self, ctx) -> None:
+        with self._cond:
+            while self._active >= max(1, get_settings().generate_max_concurrent):
+                ctx.report(1, f"排队中（生成并发已满 {self._active} 个）...")
+                if ctx.cancelled():
+                    raise RuntimeError("已取消")
+                self._cond.wait(timeout=2)
+            self._active += 1
+
+    def release(self) -> None:
+        with self._cond:
+            self._active = max(0, self._active - 1)
+            self._cond.notify_all()
+
+
+generate_gate = _ConcurrencyGate()
+
+
 # ------------------------------------------------------------ 能力
 @router.get("/generate/capabilities")
 def generate_capabilities():
@@ -65,6 +100,8 @@ def generate_capabilities():
             "duration": [4, 5, 6, 8, 10, 12],          # 默认 4s（mini 下限档）
         },
         "defaults": {"resolution": "480p", "ratio": "adaptive", "duration": 4},
+        "concurrent": {"limit": s.generate_max_concurrent,
+                       "active": generate_gate.active},
     }
 
 
@@ -104,7 +141,11 @@ def generate_video(session_id: str, req: GenerateRequest):
 
     def _job(ctx):
         from app.core.video_generator import run_generate
-        return run_generate(session, payload, ctx)
+        generate_gate.acquire(ctx)   # 并发上限（可在设置中调整，默认 5）
+        try:
+            return run_generate(session, payload, ctx)
+        finally:
+            generate_gate.release()
 
     # io 池 + 不占会话锁：纯网络等待，只写新 take 文件，不碰帧数据
     job = job_manager.submit("generate", _job, pool="io")

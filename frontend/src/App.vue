@@ -5,6 +5,7 @@ import { useJobs, cancelJob } from './jobs'
 import { currentTab } from './nav'
 import api, { setUnauthorizedHandler } from './api'
 import LoginView from './components/LoginView.vue'
+import SettingsModal from './components/SettingsModal.vue'
 import SpriteLibraryView from './views/SpriteLibraryView.vue'
 import SpriteDetailView from './views/SpriteDetailView.vue'
 import VideoView from './views/VideoView.vue'
@@ -29,6 +30,7 @@ const jobsVisible = ref(true)   // 后台任务栏是否显示
 const authRequired = ref(false)
 const needLogin = ref(false)
 const loginNotice = ref('')
+const settingsOpen = ref(false)
 
 // 有新任务启动时自动展开任务栏
 watch(() => jobs.items.length, (n, old) => {
@@ -118,7 +120,10 @@ function backToBoard() {
   <!-- 一层：精灵库 -->
   <div class="toplevel" v-else-if="ready && store.view === 'library'">
     <SpriteLibraryView />
-    <button v-if="authRequired" class="small logout-fab" @click="doLogout">退出登录</button>
+    <div class="corner-ops">
+      <button class="small" @click="settingsOpen = true">⚙ 设置</button>
+      <button v-if="authRequired" class="small" @click="doLogout">退出登录</button>
+    </div>
   </div>
 
   <!-- 二层：动作看板 -->
@@ -154,6 +159,7 @@ function backToBoard() {
           {{ store.capabilities.platform.os }}
           <span v-if="store.capabilities.platform.gpu_available" style="color: var(--ok)">· GPU</span>
         </span>
+        <button class="small" style="margin-left:8px" @click="settingsOpen = true">⚙</button>
         <button v-if="authRequired" class="small" style="margin-left:8px" @click="doLogout">退出登录</button>
       </div>
 
@@ -193,12 +199,14 @@ function backToBoard() {
     后台任务 <span v-if="runningCount()">({{ runningCount() }} 进行中)</span>
   </button>
 
+  <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
+
   <div v-if="store.toast" class="toast">{{ store.toast }}</div>
 </template>
 
 <style scoped>
 .toplevel { height: 100%; position: relative; }
-.logout-fab { position: absolute; top: 18px; right: 24px; }
+.corner-ops { position: absolute; top: 18px; right: 24px; display: flex; gap: 8px; }
 .crumb { font-size: 13px; color: var(--text-dim); }
 .crumb a { color: var(--text-dim); cursor: pointer; text-decoration: none; }
 .crumb a:hover { color: var(--accent-hover); }

@@ -58,9 +58,11 @@ const api = {
   claimSession: (sid, sessionId, name) =>
     request('POST', `/api/sprites/${sid}/claim`, { json: { session_id: sessionId, name } }),
 
-  // 能力
+  // 能力 / 设置
   capabilities: () => request('GET', '/api/capabilities'),
   health: () => request('GET', '/api/health'),
+  settings: () => request('GET', '/api/settings'),
+  saveSettings: (patch) => request('PUT', '/api/settings', { json: patch }),
 
   // 会话（= 动作工作态；id 即 action_id）
   session: (sid) => request('GET', `/api/sessions/${sid}`),

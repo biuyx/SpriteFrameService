@@ -82,7 +82,7 @@ class JobManager:
 
     MAX_JOBS = 200   # 任务表上限，超出后淘汰最早的已结束任务
 
-    def __init__(self, max_workers: Optional[int] = None, io_workers: int = 8):
+    def __init__(self, max_workers: Optional[int] = None, io_workers: int = 16):
         self._jobs: Dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(
