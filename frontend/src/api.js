@@ -69,6 +69,12 @@ const api = {
   // 视频生成 / take 版本
   genCapabilities: () => request('GET', '/api/generate/capabilities'),
   generate: (sid, params) => request('POST', `/api/sessions/${sid}/generate`, { json: params }),
+  uploadFirstFrame: (sid, file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('POST', `/api/sessions/${sid}/first-frame`, { form })
+  },
+  firstFrameUrl: (sid, v = 0) => `${BASE}/api/sessions/${sid}/first-frame?v=${v}`,
   takes: (sid) => request('GET', `/api/sessions/${sid}/takes`),
   takeVideoUrl: (sid, tid) => `${BASE}/api/sessions/${sid}/takes/${tid}/video`,
   selectTake: (sid, tid) => request('POST', `/api/sessions/${sid}/takes/${tid}/select`),

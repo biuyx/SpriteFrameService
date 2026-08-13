@@ -5,8 +5,10 @@ import json
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+import cv2
+import numpy as np
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.api.deps import get_session
@@ -54,33 +56,51 @@ def generate_capabilities():
     s = get_settings()
     return {
         "configured": s.generate_enabled,
-        "model": s.ark_model,
+        "models": s.ark_models_list,
+        "default_model": s.ark_model,
         "quota": quota_state(),
         "params": {
-            "resolution": ["480p", "720p", "1080p"],
+            "resolution": ["480p", "720p", "1080p"],   # 480p 优先（成本最低）
             "ratio": ["adaptive", "1:1", "16:9", "9:16", "4:3", "3:4"],
-            "duration": [3, 4, 5, 6, 8, 10, 12],
+            "duration": [4, 5, 6, 8, 10, 12],          # 默认 4s（mini 下限档）
         },
+        "defaults": {"resolution": "480p", "ratio": "adaptive", "duration": 4},
     }
 
 
 # ------------------------------------------------------------ 生成
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., min_length=1, max_length=2000)
+    model: Optional[str] = Field(default=None, description="缺省用默认模型")
     params: dict = Field(default_factory=dict, description="resolution/ratio/duration/seed")
-    first_frame: Optional[dict] = Field(
-        default=None, description='{"kind":"action"} 或 {"kind":"frame","frame_index":N}')
+    first_frame: dict = Field(
+        ..., description='必填：{"kind":"action"} 或 {"kind":"frame","frame_index":N}')
 
 
 @router.post("/sessions/{session_id}/generate")
 def generate_video(session_id: str, req: GenerateRequest):
-    if not get_settings().generate_enabled:
+    s = get_settings()
+    if not s.generate_enabled:
         raise HTTPException(status_code=400,
                             detail="未配置 Ark API Key，无法生成（SPRITE_ARK_API_KEY）")
     session = get_session(session_id)
+
+    # 模型白名单
+    model = req.model or s.ark_model
+    if model not in {m["id"] for m in s.ark_models_list}:
+        raise HTTPException(status_code=400, detail=f"不支持的模型: {model}")
+
+    # 首帧必填且必须真实可用（角色一致性依赖参考图，不允许纯文生）
+    from app.core.video_generator import resolve_first_frame
+    if resolve_first_frame(session, req.first_frame) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="必须提供角色首帧参考图：上传参考图，或选择已有帧作为首帧")
+
     quota_consume()
 
     payload = req.model_dump()
+    payload["model"] = model
 
     def _job(ctx):
         from app.core.video_generator import run_generate
@@ -89,6 +109,45 @@ def generate_video(session_id: str, req: GenerateRequest):
     # io 池 + 不占会话锁：纯网络等待，只写新 take 文件，不碰帧数据
     job = job_manager.submit("generate", _job, pool="io")
     return {"job_id": job.id}
+
+
+# ------------------------------------------------------------ 首帧参考图
+@router.post("/sessions/{session_id}/first-frame")
+async def upload_first_frame(session_id: str, file: UploadFile = File(...)):
+    """上传角色首帧参考图（生成的必要输入），存为动作的 first_frame.png。"""
+    session = get_session(session_id)
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="参考图超过 10MB")
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise HTTPException(status_code=400, detail="不是可识别的图片文件")
+
+    dest = session.storage.root / "first_frame.png"
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise HTTPException(status_code=400, detail="图片编码失败")
+    dest.write_bytes(buf.tobytes())
+
+    # 同步到动作实体（血统来源标记为上传）
+    from app.services.sprite_store import sprite_store
+    sprite_id = sprite_store.sprite_of_action(session_id)
+    if sprite_id:
+        sprite_store.update_action(sprite_id, session_id, {
+            "first_frame": {"kind": "upload", "file": "first_frame.png",
+                            "filename": file.filename},
+        })
+    return {"ok": True, "file": "first_frame.png"}
+
+
+@router.get("/sessions/{session_id}/first-frame")
+def get_first_frame(session_id: str):
+    """返回当前动作的首帧参考图（预览用）。"""
+    session = get_session(session_id)
+    p = session.storage.root / "first_frame.png"
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="尚未设置首帧参考图")
+    return Response(content=p.read_bytes(), media_type="image/png")
 
 
 # ------------------------------------------------------------ take 管理

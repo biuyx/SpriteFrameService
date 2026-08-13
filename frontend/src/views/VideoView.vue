@@ -11,22 +11,52 @@ const fileInput = ref(null)
 
 // ---- AI 生成 ----
 const gen = ref(null)              // /generate/capabilities 结果
+const genModel = ref('')
 const genPrompt = ref('')
-const genRes = ref('720p')
-const genRatio = ref('1:1')
-const genDuration = ref(5)
+const genRes = ref('480p')
+const genRatio = ref('adaptive')
+const genDuration = ref(4)
 const genSeed = ref('')
-const genFirstFrame = ref('none')  // none | action | frame
+const genFirstFrame = ref('action')   // action(参考图) | frame(当前第N帧)
 const genFrameIndex = ref(0)
 const takes = ref({ current: null, takes: [] })
 const genBusy = ref(false)
-
-const hasActionFirstFrame = computed(() => !!store.currentAction?.first_frame?.file)
+const ffAvailable = ref(false)        // 是否已有首帧参考图
+const ffVersion = ref(0)              // 参考图缓存戳
+const ffInput = ref(null)
 
 async function loadGen() {
-  try { gen.value = await api.genCapabilities() } catch { gen.value = null }
+  try {
+    gen.value = await api.genCapabilities()
+    const d = gen.value.defaults || {}
+    if (!genModel.value) genModel.value = gen.value.default_model
+    genRes.value = genRes.value || d.resolution || '480p'
+  } catch { gen.value = null }
+  // 探测首帧参考图是否已设置
+  try {
+    const r = await fetch(api.firstFrameUrl(store.sessionId, Date.now()), { credentials: 'same-origin' })
+    ffAvailable.value = r.ok
+  } catch { ffAvailable.value = false }
   await loadTakes()
 }
+
+async function onFirstFrameFile(file) {
+  if (!file) return
+  try {
+    await api.uploadFirstFrame(store.sessionId, file)
+    ffAvailable.value = true
+    ffVersion.value = Date.now()
+    genFirstFrame.value = 'action'
+    toast('首帧参考图已设置')
+  } catch (e) {
+    toast(`上传失败: ${e.message}`)
+  } finally {
+    if (ffInput.value) ffInput.value.value = ''
+  }
+}
+
+const canGenerate = computed(() =>
+  genFirstFrame.value === 'action' ? ffAvailable.value : store.frameCount > 0)
 
 async function loadTakes() {
   try { takes.value = await api.takes(store.sessionId) } catch { /* ignore */ }
@@ -35,6 +65,7 @@ async function loadTakes() {
 async function runGenerate() {
   const prompt = genPrompt.value.trim()
   if (!prompt) return toast('请填写提示词')
+  if (!canGenerate.value) return toast('请先上传角色首帧参考图')
   const remaining = gen.value?.quota?.remaining
   const msg = remaining == null
     ? '提交生成任务？（每次生成计费）'
@@ -44,10 +75,10 @@ async function runGenerate() {
   try {
     const params = { resolution: genRes.value, ratio: genRatio.value, duration: genDuration.value }
     if (genSeed.value !== '' && !isNaN(+genSeed.value)) params.seed = +genSeed.value
-    const first_frame = genFirstFrame.value === 'none' ? null
-      : genFirstFrame.value === 'action' ? { kind: 'action' }
+    const first_frame = genFirstFrame.value === 'action' ? { kind: 'action' }
       : { kind: 'frame', frame_index: genFrameIndex.value }
-    await startJob(() => api.generate(store.sessionId, { prompt, params, first_frame }), {
+    await startJob(() => api.generate(store.sessionId,
+      { prompt, model: genModel.value, params, first_frame }), {
       title: 'AI 生成视频',
       onDone: async () => {
         await loadGen()
@@ -209,21 +240,37 @@ onMounted(async () => {
           未配置 API Key——在 backend\.env 设置 SPRITE_ARK_API_KEY 后重启即可启用</span>
       </div>
       <template v-if="gen?.configured">
-        <div class="row">
-          <textarea v-model="genPrompt" rows="2" style="flex:1;resize:vertical"
-                    placeholder="提示词，如：角色向前走路，动作循环，白色背景，镜头固定"></textarea>
+        <!-- 首帧参考图（必填）：保证角色一致性 -->
+        <div class="row ff-row">
+          <div class="ff-preview" @click="ffInput.click()">
+            <img v-if="ffAvailable" :src="api.firstFrameUrl(store.sessionId, ffVersion)" alt="" />
+            <span v-else class="ff-empty">+ 上传角色<br>首帧参考图</span>
+          </div>
+          <div style="flex:1">
+            <div class="row" style="margin-bottom:6px">
+              <div class="field inline"><label>首帧来源</label>
+                <select v-model="genFirstFrame">
+                  <option value="action">参考图{{ ffAvailable ? '' : '（未上传）' }}</option>
+                  <option value="frame" :disabled="!store.frameCount">当前第 N 帧</option>
+                </select>
+              </div>
+              <div v-if="genFirstFrame === 'frame'" class="field inline">
+                <label>帧</label><input type="number" v-model.number="genFrameIndex" :min="0" :max="store.frameCount - 1" style="width:70px" />
+              </div>
+              <button class="small" @click="ffInput.click()">{{ ffAvailable ? '更换参考图' : '上传参考图' }}</button>
+              <span v-if="!canGenerate" class="warn-text">生成必须提供角色首帧参考图</span>
+            </div>
+            <textarea v-model="genPrompt" rows="2" style="width:100%;resize:vertical"
+                      placeholder="提示词，如：角色向前走路，动作循环，白色背景，镜头固定"></textarea>
+          </div>
+          <input ref="ffInput" type="file" accept="image/*" style="display:none"
+                 @change="e => onFirstFrameFile(e.target.files[0])" />
         </div>
         <div class="row">
-          <div class="field inline"><label>首帧</label>
-            <select v-model="genFirstFrame">
-              <option value="none">无（纯文生视频）</option>
-              <option value="action" :disabled="!hasActionFirstFrame">
-                动作首帧{{ hasActionFirstFrame ? '' : '（本动作未设置）' }}</option>
-              <option value="frame" :disabled="!store.frameCount">当前第 N 帧</option>
+          <div class="field inline"><label>模型</label>
+            <select v-model="genModel">
+              <option v-for="m in gen.models" :key="m.id" :value="m.id">{{ m.label }}</option>
             </select>
-          </div>
-          <div v-if="genFirstFrame === 'frame'" class="field inline">
-            <label>帧</label><input type="number" v-model.number="genFrameIndex" :min="0" :max="store.frameCount - 1" style="width:70px" />
           </div>
           <div class="field inline"><label>分辨率</label>
             <select v-model="genRes"><option v-for="r in gen.params.resolution" :key="r">{{ r }}</option></select>
@@ -236,11 +283,11 @@ onMounted(async () => {
           </div>
           <div class="field inline"><label>seed</label>
             <input v-model="genSeed" placeholder="留空随机" style="width:90px" /></div>
-          <button class="primary" :disabled="genBusy" @click="runGenerate">
+          <button class="primary" :disabled="genBusy || !canGenerate" @click="runGenerate">
             {{ genBusy ? '生成中...' : '生成' }}</button>
         </div>
         <p class="hint" style="margin:4px 0 0">
-          生成约需数分钟，可切到其他页面继续工作；每次生成为一个新版本，在下方列表中挑选使用。</p>
+          默认 Mini 模型 + 480p + 4s（成本最低档）；生成约需数分钟，可切到其他页面继续工作。</p>
       </template>
     </div>
 
@@ -328,6 +375,16 @@ onMounted(async () => {
   padding: 12px 14px; margin-bottom: 6px;
 }
 .gen-box.disabled { opacity: .75; }
+.ff-row { align-items: flex-start; }
+.ff-preview {
+  width: 110px; height: 110px; flex-shrink: 0; cursor: pointer;
+  border: 1px dashed var(--border); border-radius: 5px; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: repeating-conic-gradient(#3a3a3a 0 25%, #2e2e2e 0 50%) 0 0/14px 14px;
+}
+.ff-preview:hover { border-color: var(--accent); }
+.ff-preview img { width: 100%; height: 100%; object-fit: contain; }
+.ff-empty { font-size: 11px; color: var(--text-dim); text-align: center; line-height: 1.6; }
 .warn-text { color: var(--warn); font-size: 12px; }
 .ok-text { color: var(--ok); }
 .take-list { margin-top: 4px; }

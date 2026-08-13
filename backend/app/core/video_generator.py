@@ -138,7 +138,7 @@ def run_generate(session, req: dict, ctx) -> dict:
     settings = get_settings()
     take_store = TakeStore(session.storage)
     params = req.get("params") or {}
-    model = settings.ark_model
+    model = req.get("model") or settings.ark_model
 
     take = take_store.add(
         "generate", status="pending",
@@ -151,10 +151,11 @@ def run_generate(session, req: dict, ctx) -> dict:
         ctx.report(2, "准备请求...")
         content = [{"type": "text", "text": req.get("prompt", "")}]
         image_url = resolve_first_frame(session, req.get("first_frame"))
-        if image_url:
-            content.append({"type": "image_url",
-                            "image_url": {"url": image_url},
-                            "role": "first_frame"})
+        if not image_url:
+            raise ArkError("角色首帧参考图不可用（文件缺失或帧不存在）")
+        content.append({"type": "image_url",
+                        "image_url": {"url": image_url},
+                        "role": "first_frame"})
 
         client = ArkClient()
         try:

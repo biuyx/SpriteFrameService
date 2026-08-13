@@ -66,7 +66,12 @@ class Settings(BaseSettings):
     # --- Ark 视频生成（Seedance）---
     ark_api_key: str = ""            # 留空则回退环境变量 ARK_API_KEY；都空 = 功能置灰
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    ark_model: str = "doubao-seedance-2-0-fast-260128"
+    # 可选模型（id:标签，分号分隔）。ID 均经模型列表接口/历史请求核实：
+    # 2.0 完整版没有 -pro- 后缀，就叫 doubao-seedance-2-0-260128
+    ark_models: str = ("doubao-seedance-2-0-mini-260615:2.0 Mini（默认，成本最低）;"
+                       "doubao-seedance-2-0-fast-260128:2.0 Fast;"
+                       "doubao-seedance-2-0-260128:2.0 Pro（完整版）")
+    ark_model: str = "doubao-seedance-2-0-mini-260615"   # 默认模型
     ark_timeout_seconds: int = 900   # 单次生成总超时
     generate_daily_limit: int = 20   # 每日生成次数上限，0 = 不限制
 
@@ -81,6 +86,18 @@ class Settings(BaseSettings):
     def ark_key_value(self) -> str:
         """Ark 访问密钥：显式配置优先，回退通用环境变量 ARK_API_KEY。"""
         return self.ark_api_key.strip() or os.environ.get("ARK_API_KEY", "").strip()
+
+    @property
+    def ark_models_list(self) -> list[dict]:
+        """解析可选模型：[{"id": ..., "label": ...}]。"""
+        result = []
+        for item in self.ark_models.split(";"):
+            item = item.strip()
+            if not item:
+                continue
+            mid, _, label = item.partition(":")
+            result.append({"id": mid.strip(), "label": label.strip() or mid.strip()})
+        return result
 
     @property
     def generate_enabled(self) -> bool:
