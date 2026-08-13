@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useStore, refreshFrames, toast } from '../stores'
+import { useStore, refreshFrames, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
 
@@ -49,7 +49,7 @@ function fmtTime(ts) {
 
 async function revertTo(stepId) {
   const isInit = stepId === 0
-  if (!confirm(isInit ? '回退到初始状态（撤销全部修改）？' : '回退到该步骤完成后的状态（撤销之后的操作）？')) return
+  if (!(await askConfirm(isInit ? '回退到初始状态（撤销全部修改）？' : '回退到该步骤完成后的状态（撤销之后的操作）？'))) return
   busy.value = true
   await startJob(() => api.revert(store.sessionId, stepId), {
     title: '历史回退',

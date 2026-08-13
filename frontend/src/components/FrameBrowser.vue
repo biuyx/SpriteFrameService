@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { useStore, refreshFrames, toast } from '../stores'
+import { useStore, refreshFrames, toast, askConfirm } from '../stores'
 import api from '../api'
 import FrameGallery from './FrameGallery.vue'
 
@@ -28,7 +28,7 @@ async function sel(mode, extra = {}) {
 async function delSelected() {
   const idx = store.frames.filter((f) => f.is_selected).map((f) => f.index)
   if (!idx.length) return toast('没有选中的帧')
-  if (!confirm(`删除选中的 ${idx.length} 帧？`)) return
+  if (!(await askConfirm(`删除选中的 ${idx.length} 帧？`, { danger: true }))) return
   await api.deleteFrames(store.sessionId, idx)
   await refreshFrames()
   toast('已删除')
@@ -43,7 +43,7 @@ async function applyRange() {
 async function newActionFromFrame() {
   const idx = store.frames.filter((f) => f.is_selected).map((f) => f.index)
   if (idx.length !== 1) return toast('请恰好选中 1 帧作为新动作的首帧')
-  const name = prompt(`以第 ${idx[0]} 帧为首帧，为「${store.currentSprite?.name}」新建动作，命名：`, '')
+  const name = await askConfirm(`以第 ${idx[0]} 帧为首帧，为「${store.currentSprite?.name}」新建动作`, { input: { placeholder: '动作名称，如 idle' } })
   if (!name) return
   const act = await api.createAction(store.currentSprite.id, name, {
     kind: 'action_frame', action: store.sessionId, frame_index: idx[0],

@@ -1,6 +1,7 @@
 <script setup>
-import { ref, watch, onMounted } from 'vue'
-import { useStore, gotoLibrary, gotoSprite, loadCapabilities, toast } from './stores'
+import { ref, watch, onMounted, nextTick } from 'vue'
+import { useStore, gotoLibrary, gotoSprite, loadCapabilities, toast,
+         confirmDialog, resolveConfirm, askConfirm } from './stores'
 import { useJobs, cancelJob } from './jobs'
 import { currentTab } from './nav'
 import api, { setUnauthorizedHandler } from './api'
@@ -89,8 +90,22 @@ async function onAuthenticated() {
   await boot()
 }
 
+// 未捕获的 API 错误兜底：至少给一条 toast，不再静默失败
+window.addEventListener('unhandledrejection', (e) => {
+  const msg = e.reason?.message || String(e.reason || '未知错误')
+  toast(`操作失败: ${msg}`)
+})
+
+const confirmInput = ref(null)
+watch(() => confirmDialog.visible, async (v) => {
+  if (v && confirmDialog.input) {
+    await nextTick()
+    confirmInput.value?.focus()
+  }
+})
+
 async function doLogout() {
-  if (!confirm('退出登录？')) return
+  if (!(await askConfirm('退出登录？'))) return
   try {
     await api.logout()
   } catch { /* 忽略：无论成功与否都回到登录页 */ }
@@ -201,12 +216,39 @@ function backToBoard() {
 
   <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
 
+  <!-- 全局确认对话框（应用内实现，不依赖可能被浏览器抑制的原生 confirm） -->
+  <div v-if="confirmDialog.visible" class="cfm-mask" @click.self="resolveConfirm(confirmDialog.input ? null : false)">
+    <div class="cfm-box">
+      <p class="cfm-msg">{{ confirmDialog.message }}</p>
+      <input v-if="confirmDialog.input" ref="confirmInput" v-model="confirmDialog.input.value"
+             :placeholder="confirmDialog.input.placeholder" style="width:100%;margin-bottom:12px"
+             @keyup.enter="resolveConfirm(confirmDialog.input.value.trim() || null)" />
+      <div class="cfm-ops">
+        <button :class="confirmDialog.danger ? 'cfm-danger' : 'primary'"
+                @click="resolveConfirm(confirmDialog.input ? (confirmDialog.input.value.trim() || null) : true)">
+          确定</button>
+        <button @click="resolveConfirm(confirmDialog.input ? null : false)">取消</button>
+      </div>
+    </div>
+  </div>
+
   <div v-if="store.toast" class="toast">{{ store.toast }}</div>
 </template>
 
 <style scoped>
 .toplevel { height: 100%; position: relative; }
 .corner-ops { position: absolute; top: 18px; right: 24px; display: flex; gap: 8px; }
+.cfm-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+}
+.cfm-box {
+  width: 380px; max-width: 92vw; background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px;
+}
+.cfm-msg { margin: 0 0 14px; font-size: 13px; line-height: 1.7; white-space: pre-line; }
+.cfm-ops { display: flex; gap: 10px; justify-content: flex-end; }
+.cfm-danger { background: var(--err); border-color: var(--err); color: #fff; }
 .crumb { font-size: 13px; color: var(--text-dim); }
 .crumb a { color: var(--text-dim); cursor: pointer; text-decoration: none; }
 .crumb a:hover { color: var(--accent-hover); }

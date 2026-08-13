@@ -32,6 +32,37 @@ export function toast(msg) {
   state.toastTimer = setTimeout(() => (state.toast = ''), 3500)
 }
 
+// ---- 应用内确认对话框（替代原生 confirm/prompt：原生对话框可能被浏览器
+//      静默抑制——被抑制的 confirm 直接返回 false，表现为“点了没反应”）----
+export const confirmDialog = reactive({
+  visible: false,
+  message: '',
+  danger: false,
+  input: null,          // {placeholder, value} 时显示输入框（替代 prompt）
+  _resolve: null,
+})
+
+/**
+ * askConfirm('确定删除？') → Promise<boolean>
+ * askConfirm('命名：', {input:{placeholder:'动作名'}}) → Promise<string|null>
+ */
+export function askConfirm(message, opts = {}) {
+  return new Promise((resolve) => {
+    confirmDialog.message = message
+    confirmDialog.danger = !!opts.danger
+    confirmDialog.input = opts.input ? { placeholder: opts.input.placeholder || '', value: opts.input.initial || '' } : null
+    confirmDialog.visible = true
+    confirmDialog._resolve = resolve
+  })
+}
+
+export function resolveConfirm(okOrValue) {
+  const r = confirmDialog._resolve
+  confirmDialog.visible = false
+  confirmDialog._resolve = null
+  if (r) r(okOrValue)
+}
+
 // 打开动作：进入工作台（sessionId 即 action_id）
 export async function openAction(spriteId, actionId) {
   const r = await api.openAction(spriteId, actionId)

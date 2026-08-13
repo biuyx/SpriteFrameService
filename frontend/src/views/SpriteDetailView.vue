@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useStore, gotoLibrary, openAction, toast } from '../stores'
+import { useStore, gotoLibrary, openAction, toast, askConfirm } from '../stores'
 import api from '../api'
 
 const store = useStore()
@@ -46,7 +46,7 @@ async function open(act) {
 }
 
 async function removeAction(act) {
-  if (!confirm(`删除动作「${act.name}」？其帧数据与导出将一并删除。`)) return
+  if (!(await askConfirm(`删除动作「${act.name}」？其帧数据与导出将一并删除。`, { danger: true }))) return
   await api.deleteAction(store.currentSprite.id, act.id)
   toast('已删除')
   await load()
@@ -58,7 +58,7 @@ async function markFinal(act) {
 }
 
 async function claim(sess) {
-  const name = prompt(`把旧会话 ${sess.id.slice(0, 8)}（${sess.frame_count} 帧）认领为动作，命名：`, 'imported')
+  const name = await askConfirm(`把旧会话 ${sess.id.slice(0, 8)}（${sess.frame_count} 帧）认领为动作`, { input: { placeholder: '动作名称', initial: 'imported' } })
   if (!name) return
   await api.claimSession(store.currentSprite.id, sess.id, name)
   toast('已认领')

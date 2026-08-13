@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { toast } from '../stores'
+import { toast, askConfirm } from '../stores'
 import api from '../api'
 
 const emit = defineEmits(['close'])
@@ -43,7 +43,7 @@ async function save() {
 }
 
 async function clearKey() {
-  if (!confirm('清除配置文件中的密钥？（若系统环境变量 ARK_API_KEY 存在，将回退使用它）')) return
+  if (!(await askConfirm('清除配置文件中的密钥？（若系统环境变量 ARK_API_KEY 存在，将回退使用它）'))) return
   saving.value = true
   try {
     current.value = await api.saveSettings({ ark_api_key: '' })

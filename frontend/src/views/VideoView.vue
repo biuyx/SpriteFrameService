@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
-import { useStore, refreshFrames, refreshSession, toast } from '../stores'
+import { useStore, refreshFrames, refreshSession, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
 
@@ -101,7 +101,7 @@ async function runGenerate() {
   const msg = remaining == null
     ? '提交生成任务？（每次生成计费）'
     : `提交生成任务？今日剩余额度 ${remaining} 次（每次生成计费）`
-  if (!confirm(msg)) return
+  if (!(await askConfirm(msg))) return
   genBusy.value = true
   try {
     const params = { resolution: genRes.value, ratio: genRatio.value, duration: genDuration.value }
@@ -137,7 +137,7 @@ async function removeTake(t) {
   const warn = t.source === 'generate'
     ? `删除生成的版本 ${t.id}？该视频是付费生成的，删除后需重新付费生成。`
     : `删除版本 ${t.id}？`
-  if (!confirm(warn)) return
+  if (!(await askConfirm(warn, { danger: true }))) return
   await api.deleteTake(store.sessionId, t.id)
   await loadTakes()
   await refreshSession()

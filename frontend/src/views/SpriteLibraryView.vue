@@ -1,6 +1,6 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useStore, gotoSprite, toast } from '../stores'
+import { useStore, gotoSprite, toast, askConfirm } from '../stores'
 import api from '../api'
 
 const store = useStore()
@@ -33,7 +33,8 @@ async function createSprite() {
 }
 
 async function removeSprite(sp) {
-  if (!confirm(`删除精灵「${sp.name}」及其全部 ${sp.action_count} 个动作？此操作不可恢复。`)) return
+  if (!(await askConfirm(`删除精灵「${sp.name}」及其全部 ${sp.action_count} 个动作？
+此操作不可恢复。`, { danger: true }))) return
   await api.deleteSprite(sp.id)
   toast('已删除')
   await load()
