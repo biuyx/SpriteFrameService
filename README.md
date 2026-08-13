@@ -242,6 +242,20 @@ done
 > 可变形卷积，约 1100 个算子无法走 CUDA，即便在 RTX 4070 Ti 上也要 ~9s/帧
 > （isnet-anime 仅 0.4s）。建议日常迭代用 isnet-anime，定稿再用 bria。
 
+**RealESRGAN 增强**（放到 `models/realesrgan/`）。官方 ncnn-vulkan 发布包
+自带可执行文件与全部 5 个模型，解压即为代码期望的布局：
+
+```bash
+mkdir -p models/realesrgan && cd models/realesrgan
+curl -LO https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip
+unzip -o realesrgan-ncnn-vulkan-*.zip && rm realesrgan-ncnn-vulkan-*.zip input*.jpg onepiece_demo.mp4
+# Linux 换下载 -ubuntu.zip 并 chmod +x realesrgan-ncnn-vulkan
+```
+
+> 首次运行需编译 Vulkan shader，单帧可能耗时 1 分钟左右（实测 69s）；
+> 驱动会缓存编译产物，之后稳定在秒级（实测 3.2s/帧，RTX 4070 Ti，
+> 720→2880 4x 放大）。首跑慢不是故障。
+
 **RTMPose 姿势模型**（放到 `models/rtmpose/`）。压缩包解压出来都叫
 `end2end.onnx`，**必须按下表重命名**，否则代码找不到：
 
