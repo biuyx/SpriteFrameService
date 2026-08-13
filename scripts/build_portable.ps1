@@ -158,6 +158,16 @@ if ($SkipModels) {
     if (Test-Path (Join-Path $modelsSrc "bria-rmbg-2.0.onnx")) {
         Info "bria-rmbg-2.0 因许可限制不打包（见使用说明）"
     }
+    # RealESRGAN：官方 ncnn-vulkan 包（BSD 许可，可分发），exe + 5 组模型约 55MB
+    $esrSrc = Join-Path $modelsSrc "realesrgan"
+    if (Test-Path (Join-Path $esrSrc "realesrgan-ncnn-vulkan.exe")) {
+        robocopy $esrSrc (Join-Path $modelsDst "realesrgan") /E /NFL /NDL /NJH /NJS /NP `
+            /XF "README*.md" | Out-Null
+        if ($LASTEXITCODE -ge 8) { throw "RealESRGAN 复制失败" }
+        Info "RealESRGAN 增强（exe + $((Get-ChildItem (Join-Path $esrSrc 'models') -Filter *.param).Count) 组模型）"
+    } else {
+        Info "RealESRGAN 未安装，跳过（图像增强功能在目标机器不可用）"
+    }
 }
 
 # ---------------------------------------------------------------- 启动器与说明
@@ -334,6 +344,8 @@ $readme = @'
   抠图： isnet-anime（动漫/插画，做游戏精灵图首选）
          u2net（通用）、silueta（轻量快速）、u2net_human_seg（真人像）
   姿势： RTMPose（yolox 检测 + rtmw 姿态），动作分析用
+  增强： RealESRGAN（4x 放大补细节，需显卡支持 Vulkan）
+         ※ 首次使用会编译着色器，单帧可能等约 1 分钟，之后秒级，不是故障
 
   另有 BRIA RMBG-2.0 边缘质量更好，但它是受限模型、许可仅授权非商业
   使用，不能随包分发。需要的话自行到 huggingface.co/briaai/RMBG-2.0
