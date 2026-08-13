@@ -13,10 +13,26 @@ const startTime = ref(0)
 const endTime = ref(10)
 const fps = ref(10)
 const videoEl = ref(null)
+const videoErr = ref('')
 
 const videoUrl = computed(() =>
   store.sessionId ? `/api/sessions/${store.sessionId}/video` : ''
 )
+
+// 浏览器 <video> 能解码的常见编码；cv2 能解析 ≠ 浏览器能播放
+const BROWSER_CODECS = ['avc1', 'h264', 'vp08', 'vp09', 'vp8', 'vp9', 'av01', 'hev1', 'hvc1']
+
+function codecPlayable(codec) {
+  if (!codec) return true   // 未知编码先尝试，失败由 @error 兜底
+  const c = String(codec).toLowerCase()
+  return BROWSER_CODECS.some((k) => c.includes(k))
+}
+
+function onVideoError() {
+  const codec = store.videoInfo?.codec || '未知'
+  videoErr.value = `该视频编码（${codec}）浏览器不支持预览。不影响抽帧与后续处理——` +
+    `抽帧后在底部「帧管理」查看画面即可。`
+}
 
 const estimate = computed(() => {
   const dur = Math.max(0, endTime.value - startTime.value)
@@ -34,6 +50,7 @@ async function uploadFile(file) {
   try {
     const res = await api.uploadVideo(store.sessionId, file)
     store.videoInfo = res.video_info
+    videoErr.value = ''   // 换了新视频，重新尝试预览
     // 帧率默认取源视频帧率（上限 60）
     const srcFps = store.videoInfo.fps || 10
     fps.value = Math.min(60, Math.max(0.1, srcFps))
@@ -101,9 +118,15 @@ onMounted(async () => {
         <div>
           <div class="preview-box" style="min-height: 260px">
             <video
-              v-if="videoUrl" ref="videoEl" :src="videoUrl"
+              v-if="videoUrl && !videoErr && codecPlayable(store.videoInfo?.codec)"
+              ref="videoEl" :src="videoUrl"
               controls style="max-width:100%; max-height:420px"
+              @error="onVideoError"
             ></video>
+            <div v-else class="video-unsupported">
+              <div style="font-size:26px">🎞️</div>
+              <p>{{ videoErr || `该视频编码（${store.videoInfo?.codec || '未知'}）浏览器不支持预览。不影响抽帧与后续处理——抽帧后在底部「帧管理」查看画面即可。` }}</p>
+            </div>
           </div>
         </div>
         <div>
@@ -133,3 +156,12 @@ onMounted(async () => {
       </div>    </div>
   </div>
 </template>
+
+<style scoped>
+.video-unsupported {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; min-height: 240px; padding: 20px; text-align: center;
+  color: var(--text-dim); font-size: 13px; line-height: 1.7;
+}
+.video-unsupported p { max-width: 340px; margin: 0; }
+</style>
