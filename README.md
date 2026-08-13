@@ -97,6 +97,39 @@ server {
 
 ---
 
+## 打包免安装版（分发给 Windows 用户）
+
+给没有开发环境的同事用：产出一个绿色 ZIP，解压后双击「启动服务.bat」即可，
+目标机器**无需安装 Python / Node.js**，不写注册表、不需要管理员权限。
+
+```powershell
+# 在项目根目录执行（需要本机已装 Python 用于拉取 wheel）
+powershell -ExecutionPolicy Bypass -File scripts\build_portable.ps1
+
+# 只打程序不打模型（约 87MB，适合模型另行分发的场景）
+powershell -ExecutionPolicy Bypass -File scripts\build_portable.ps1 -SkipModels
+```
+
+产物在 `dist-portable\`，完整包约 **1.1GB 解压 / 873MB 压缩**，内含：
+内嵌 CPython 3.13、运行时依赖、后端源码、前端产物、rtmlib、四个抠图模型
+与两个 RTMPose 姿势模型。
+
+几个打包时踩过的坑，改脚本前先看清楚：
+
+- **依赖版本必须钉死**。放开版本会装到 onnxruntime 1.28，在内嵌 Python 下
+  DLL 初始化失败；opencv 也会跳到 5.x 大版本。脚本里那组版本已通过完整验证。
+- **`tqdm` 不能漏**。它是 `rtmlib/tools/file.py` 的模块级依赖，缺了姿势检测
+  直接 ImportError。rtmlib 还会 import `openvino`，但只在 `backend=='openvino'`
+  分支内懒加载，本项目固定用 onnxruntime，不必打包那 300MB。
+- **`rembg` 与 `aiofiles` 是幽灵依赖**，`requirements.txt` 里列了但全项目从未
+  被 import（抠图走的是代码自带的 onnxruntime 会话），打包时已排除。
+- **`bria-rmbg-2.0` 不随包分发**——它是 gated 模型，许可仅授权非商业自用，
+  转分发有违约风险。使用说明里写了让用户自行获取。
+- 脚本含中文，**必须保存为 UTF-8 with BOM**，否则 Windows PowerShell 5.1
+  按 ANSI 读取会乱码并引发一连串语法错误。
+
+---
+
 ## 内网访问
 
 默认只监听 `127.0.0.1`（仅本机）。要让局域网内其他机器访问，需要三步——**缺一不可**：

@@ -33,3 +33,6 @@ backend/.env
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 绿色包构建产物（含内嵌 Python 缓存与 ZIP，勿入库）
+/dist-portable/
