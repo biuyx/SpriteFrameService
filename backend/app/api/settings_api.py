@@ -70,7 +70,6 @@ def get_runtime_settings():
         "ark_api_key_source": ("file" if s.ark_api_key.strip()
                                else ("env" if key else None)),
         "generate_max_concurrent": s.generate_max_concurrent,
-        "generate_daily_limit": s.generate_daily_limit,
     }
 
 

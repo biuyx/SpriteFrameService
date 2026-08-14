@@ -97,11 +97,7 @@ async function runGenerate() {
   const prompt = genPrompt.value.trim()
   if (!prompt) return toast('请填写提示词')
   if (!canGenerate.value) return toast('请先上传角色首帧参考图')
-  const remaining = gen.value?.quota?.remaining
-  const msg = remaining == null
-    ? '提交生成任务？（每次生成计费）'
-    : `提交生成任务？今日剩余额度 ${remaining} 次（每次生成计费）`
-  if (!(await askConfirm(msg))) return
+  if (!(await askConfirm('提交生成任务？（每次生成计费）'))) return
   genBusy.value = true
   try {
     const params = { resolution: genRes.value, ratio: genRatio.value, duration: genDuration.value }
@@ -265,9 +261,7 @@ onMounted(async () => {
     <div class="gen-box" :class="{ disabled: !gen?.configured }">
       <div class="row" style="align-items:center">
         <b style="font-size:13px">AI 生成视频（Seedance）</b>
-        <span v-if="gen?.configured && gen.quota.remaining != null" class="hint">
-          今日剩余 {{ gen.quota.remaining }} / {{ gen.quota.limit }} 次</span>
-        <span v-else-if="gen && !gen.configured" class="hint warn-text">
+        <span v-if="gen && !gen.configured" class="hint warn-text">
           未配置 API Key——在 backend\.env 设置 SPRITE_ARK_API_KEY 后重启即可启用</span>
       </div>
       <template v-if="gen?.configured">

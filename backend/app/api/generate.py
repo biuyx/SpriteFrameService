@@ -1,9 +1,7 @@
-"""视频生成 API：Seedance 生成、take 版本管理、每日配额、重挂。"""
+"""视频生成 API：Seedance 生成、take 版本管理、并发闸门、重挂。"""
 from __future__ import annotations
 
-import json
 import threading
-import time
 from typing import Optional
 
 import cv2
@@ -18,37 +16,6 @@ from app.services.job_manager import job_manager
 from app.services.take_store import TakeStore
 
 router = APIRouter(tags=["generate"])
-
-
-# ------------------------------------------------------------ 配额
-def _quota_path():
-    return get_settings().resolved_data_dir / "generate_quota.json"
-
-def _today() -> str:
-    return time.strftime("%Y-%m-%d")
-
-def quota_state() -> dict:
-    limit = get_settings().generate_daily_limit
-    p = _quota_path()
-    used = 0
-    if p.is_file():
-        try:
-            d = json.loads(p.read_text(encoding="utf-8"))
-            if d.get("date") == _today():
-                used = int(d.get("count", 0))
-        except (ValueError, OSError):
-            pass
-    return {"limit": limit, "used": used,
-            "remaining": None if limit <= 0 else max(0, limit - used)}
-
-def quota_consume() -> None:
-    st = quota_state()
-    if st["limit"] > 0 and st["used"] >= st["limit"]:
-        raise HTTPException(status_code=429,
-                            detail=f"今日生成额度已用完（{st['limit']} 次），明天再试或调大 SPRITE_GENERATE_DAILY_LIMIT")
-    p = _quota_path()
-    p.write_text(json.dumps({"date": _today(), "count": st["used"] + 1}),
-                 encoding="utf-8")
 
 
 # ------------------------------------------------------------ 生成并发闸门
@@ -93,7 +60,6 @@ def generate_capabilities():
         "configured": s.generate_enabled,
         "models": s.ark_models_list,
         "default_model": s.ark_model,
-        "quota": quota_state(),
         "params": {
             "resolution": ["480p", "720p", "1080p"],   # 480p 优先（成本最低）
             "ratio": ["adaptive", "1:1", "16:9", "9:16", "4:3", "3:4"],
@@ -139,8 +105,6 @@ def generate_video(session_id: str, req: GenerateRequest):
         raise HTTPException(
             status_code=400,
             detail="必须提供角色首帧参考图：上传参考图，或选择已有帧作为首帧")
-
-    quota_consume()
 
     payload = req.model_dump()
     payload["model"] = model

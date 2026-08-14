@@ -29,6 +29,17 @@ class ArkError(Exception):
     """Ark 调用失败（异常信息不含密钥）。"""
 
 
+# 常见错误的中文翻译（按消息关键词匹配）
+_ERROR_HINTS = [
+    ("overdue balance", "火山账户欠费，请到火山引擎控制台充值后重试"),
+    ("insufficient balance", "火山账户余额不足，请充值后重试"),
+    ("quota", "账户配额不足或已达上限，请到火山控制台确认"),
+    ("rate limit", "请求过于频繁（触发平台限流），请稍后重试"),
+    ("model not found", "模型不存在或未开通，请到方舟控制台确认该模型已开通"),
+    ("sensitive", "内容未通过平台审核，请调整提示词或参考图"),
+]
+
+
 def _summarize_error(resp: httpx.Response) -> str:
     try:
         data = resp.json()
@@ -36,6 +47,10 @@ def _summarize_error(resp: httpx.Response) -> str:
         msg = err.get("message") or str(err)
     except Exception:
         msg = resp.text[:200]
+    lower = msg.lower()
+    for key, hint in _ERROR_HINTS:
+        if key in lower:
+            return f"{hint}（HTTP {resp.status_code}: {msg[:160]}）"
     return f"HTTP {resp.status_code}: {msg[:300]}"
 
 
