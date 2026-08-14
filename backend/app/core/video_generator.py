@@ -160,18 +160,43 @@ def run_generate(session, req: dict, ctx) -> dict:
         "generate", status="pending",
         model=model, prompt=req.get("prompt", ""),
         params=params, first_frame=req.get("first_frame"),
+        used_reference_video=bool(req.get("use_reference_video")),
     )
     take_id = take["id"]
 
     try:
         ctx.report(2, "准备请求...")
-        content = [{"type": "text", "text": req.get("prompt", "")}]
         image_url = resolve_first_frame(session, req.get("first_frame"))
         if not image_url:
             raise ArkError("角色首帧参考图不可用（文件缺失或帧不存在）")
-        content.append({"type": "image_url",
-                        "image_url": {"url": image_url},
-                        "role": "first_frame"})
+
+        if req.get("use_reference_video"):
+            # Ark 硬规则：first_frame 角色与参考媒体不能同请求混用。
+            # 带参考视频时，首帧图改以 reference_image 传入，
+            # 各参考的分工在提示词首句显式声明（官方指南建议）。
+            ref_path = session.storage.root / "reference_video.mp4"
+            if not ref_path.is_file():
+                raise ArkError("参考视频文件缺失")
+            video_b64 = base64.b64encode(ref_path.read_bytes()).decode("ascii")
+            role_intro = (
+                "参考图1为角色的形象、脸部、发型与服装，全程严格保持一致，"
+                "不得改变角色设计。参考视频1仅作为动作与镜头节奏的参考，"
+                "不参考其中的角色形象与画面风格。"
+            )
+            content = [
+                {"type": "text", "text": role_intro + req.get("prompt", "")},
+                {"type": "image_url", "image_url": {"url": image_url},
+                 "role": "reference_image"},
+                {"type": "video_url",
+                 "video_url": {"url": "data:video/mp4;base64," + video_b64},
+                 "role": "reference_video"},
+            ]
+        else:
+            content = [
+                {"type": "text", "text": req.get("prompt", "")},
+                {"type": "image_url", "image_url": {"url": image_url},
+                 "role": "first_frame"},
+            ]
 
         client = ArkClient()
         try:

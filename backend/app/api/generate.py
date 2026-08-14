@@ -84,6 +84,11 @@ class GenerateRequest(BaseModel):
     params: dict = Field(default_factory=dict, description="resolution/ratio/duration/seed")
     first_frame: dict = Field(
         ..., description='必填：{"kind":"action"} 或 {"kind":"frame","frame_index":N}')
+    use_reference_video: bool = Field(
+        default=False,
+        description="使用已上传的参考视频（动作/镜头节奏参考）。"
+                    "注意：Ark 不允许 first_frame 与参考媒体混用，启用后首帧图"
+                    "将自动改以 reference_image 角色传入")
 
 
 @router.post("/sessions/{session_id}/generate")
@@ -105,6 +110,11 @@ def generate_video(session_id: str, req: GenerateRequest):
         raise HTTPException(
             status_code=400,
             detail="必须提供角色首帧参考图：上传参考图，或选择已有帧作为首帧")
+
+    if req.use_reference_video and not (
+            session.storage.root / "reference_video.mp4").is_file():
+        raise HTTPException(status_code=400,
+                            detail="尚未上传参考视频，请先上传或取消勾选")
 
     payload = req.model_dump()
     payload["model"] = model
@@ -159,6 +169,62 @@ def get_first_frame(session_id: str):
     if not p.is_file():
         raise HTTPException(status_code=404, detail="尚未设置首帧参考图")
     return Response(content=p.read_bytes(), media_type="image/png")
+
+
+# ------------------------------------------------------------ 参考视频
+REFERENCE_VIDEO_MAX_MB = 20   # base64 后随请求体走，保守限制
+
+
+@router.post("/sessions/{session_id}/reference-video")
+async def upload_reference_video(session_id: str, file: UploadFile = File(...)):
+    """上传参考视频（动作/镜头节奏参考，生成时可选启用）。"""
+    session = get_session(session_id)
+    raw = await file.read()
+    if len(raw) > REFERENCE_VIDEO_MAX_MB * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail=f"参考视频超过 {REFERENCE_VIDEO_MAX_MB}MB——参考视频只取动作节奏，"
+                   f"请裁短或压缩后上传")
+    # 校验确实是视频（cv2 能开且能读到帧）
+    import tempfile, os
+    fd, tmp = tempfile.mkstemp(suffix=".mp4")
+    try:
+        os.write(fd, raw)
+        os.close(fd)
+        cap = cv2.VideoCapture(tmp)
+        ok = cap.isOpened() and cap.read()[0]
+        cap.release()
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    if not ok:
+        raise HTTPException(status_code=400, detail="不是可识别的视频文件")
+
+    dest = session.storage.root / "reference_video.mp4"
+    dest.write_bytes(raw)
+    return {"ok": True, "bytes": len(raw), "filename": file.filename}
+
+
+@router.get("/sessions/{session_id}/reference-video")
+def get_reference_video(session_id: str):
+    """返回参考视频（预览用）。"""
+    session = get_session(session_id)
+    p = session.storage.root / "reference_video.mp4"
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="尚未上传参考视频")
+    return FileResponse(str(p), media_type="video/mp4")
+
+
+@router.delete("/sessions/{session_id}/reference-video")
+def delete_reference_video(session_id: str):
+    session = get_session(session_id)
+    p = session.storage.root / "reference_video.mp4"
+    existed = p.is_file()
+    if existed:
+        p.unlink()
+    return {"deleted": existed}
 
 
 # ------------------------------------------------------------ take 管理

@@ -42,6 +42,32 @@ function openPreview(t) {
 const ffAvailable = ref(false)        // 是否已有首帧参考图
 const ffVersion = ref(0)              // 参考图缓存戳
 const ffInput = ref(null)
+const rvAvailable = ref(false)        // 是否已上传参考视频
+const rvUse = ref(false)              // 本次生成是否使用参考视频
+const rvInput = ref(null)
+const rvPreview = ref(false)
+
+async function onRefVideoFile(file) {
+  if (!file) return
+  try {
+    const r = await api.uploadReferenceVideo(store.sessionId, file)
+    rvAvailable.value = true
+    rvUse.value = true
+    toast(`参考视频已设置（${(r.bytes / 1048576).toFixed(1)}MB）`)
+  } catch (e) {
+    toast(`上传失败: ${e.message}`)
+  } finally {
+    if (rvInput.value) rvInput.value.value = ''
+  }
+}
+
+async function clearRefVideo() {
+  if (!(await askConfirm('清除参考视频？'))) return
+  await api.deleteReferenceVideo(store.sessionId)
+  rvAvailable.value = false
+  rvUse.value = false
+  toast('已清除')
+}
 
 async function loadGen() {
   try {
@@ -52,11 +78,17 @@ async function loadGen() {
     // 提示词为空时按动作名自动预填模板
     if (!genPrompt.value.trim()) genPrompt.value = templateForAction()
   } catch { gen.value = null }
-  // 探测首帧参考图是否已设置
+  // 探测首帧参考图/参考视频是否已设置
   try {
     const r = await fetch(api.firstFrameUrl(store.sessionId, Date.now()), { credentials: 'same-origin' })
     ffAvailable.value = r.ok
   } catch { ffAvailable.value = false }
+  try {
+    const r = await fetch(api.referenceVideoUrl(store.sessionId, Date.now()),
+                          { method: 'GET', headers: { Range: 'bytes=0-0' }, credentials: 'same-origin' })
+    rvAvailable.value = r.ok
+    if (!r.ok) rvUse.value = false
+  } catch { rvAvailable.value = false }
   await loadTakes()
 }
 
@@ -120,7 +152,8 @@ async function runGenerate() {
       : { kind: 'frame', frame_index: genFrameIndex.value }
     startTakesPolling()
     await startJob(() => api.generate(store.sessionId,
-      { prompt, model: genModel.value, params, first_frame }), {
+      { prompt, model: genModel.value, params, first_frame,
+        use_reference_video: rvUse.value && rvAvailable.value }), {
       title: 'AI 生成视频',
       onDone: async () => {
         stopTakesPolling()
@@ -342,6 +375,21 @@ onMounted(async () => {
           <button class="primary" :disabled="genBusy || !canGenerate" @click="runGenerate">
             {{ genBusy ? '生成中...' : '生成' }}</button>
         </div>
+        <div class="row" style="align-items:center">
+          <span class="hint">参考视频（可选，动作/镜头节奏参考）：</span>
+          <template v-if="rvAvailable">
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+              <input type="checkbox" v-model="rvUse" /> 本次生成使用</label>
+            <button class="small" @click="rvPreview = true">预览</button>
+            <button class="small" @click="rvInput.click()">更换</button>
+            <button class="small danger" @click="clearRefVideo">清除</button>
+          </template>
+          <button v-else class="small" @click="rvInput.click()">上传参考视频</button>
+          <input ref="rvInput" type="file" accept="video/*" style="display:none"
+                 @change="e => onRefVideoFile(e.target.files[0])" />
+        </div>
+        <p v-if="rvUse && rvAvailable" class="hint" style="margin:2px 0 0">
+          已启用参考视频：角色形象仍以参考图为准，视频仅提供动作与镜头节奏。</p>
         <p class="hint" style="margin:4px 0 0">
           默认 Fast 模型 + 480p + 4s；生成约需数分钟，可切到其他页面继续工作。</p>
         <p v-if="gen.prompt_templates?.notes" class="hint" style="margin:4px 0 0">
@@ -366,6 +414,16 @@ onMounted(async () => {
         <button v-else-if="t.status === 'succeeded'" class="small" @click="useTake(t)">用这个</button>
         <button v-if="t.status === 'succeeded'" class="small" @click="openPreview(t)">预览</button>
         <button class="small danger" @click="removeTake(t)">删除</button>
+      </div>
+    </div>
+
+    <!-- 参考视频预览弹层 -->
+    <div v-if="rvPreview" class="tk-mask" @click.self="rvPreview = false">
+      <div class="tk-box">
+        <div class="tk-head"><b>参考视频</b><span class="spacer" style="flex:1"></span>
+          <button class="small" @click="rvPreview = false">✕ 关闭</button></div>
+        <video :src="api.referenceVideoUrl(store.sessionId, Date.now())"
+               controls autoplay loop style="width:100%;max-height:60vh;background:#000"></video>
       </div>
     </div>
 

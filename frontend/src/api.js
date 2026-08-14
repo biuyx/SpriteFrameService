@@ -77,6 +77,13 @@ const api = {
     return request('POST', `/api/sessions/${sid}/first-frame`, { form })
   },
   firstFrameUrl: (sid, v = 0) => `${BASE}/api/sessions/${sid}/first-frame?v=${v}`,
+  uploadReferenceVideo: (sid, file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('POST', `/api/sessions/${sid}/reference-video`, { form })
+  },
+  referenceVideoUrl: (sid, v = 0) => `${BASE}/api/sessions/${sid}/reference-video?v=${v}`,
+  deleteReferenceVideo: (sid) => request('DELETE', `/api/sessions/${sid}/reference-video`),
   takes: (sid) => request('GET', `/api/sessions/${sid}/takes`),
   takeVideoUrl: (sid, tid) => `${BASE}/api/sessions/${sid}/takes/${tid}/video`,
   selectTake: (sid, tid) => request('POST', `/api/sessions/${sid}/takes/${tid}/select`),
