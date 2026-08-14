@@ -87,16 +87,12 @@ function templateForAction() {
   // 1) 精确命中(含别名)
   const key = pt.templates[lower] ? lower : pt.aliases[name] || pt.aliases[lower]
   if (key && pt.templates[key]) return pt.templates[key]
-  // 2) 部分包含(walk_luggage → walk 模板,并把完整动作名带进描述)
+  // 2) 部分包含(walk_luggage → walk 模板;不改写模板文字,锚定句必须原样保留)
   for (const k of Object.keys(pt.templates)) {
-    if (lower.includes(k)) {
-      return pt.templates[k].replace('角色', `角色（动作：${name}）`)
-    }
+    if (lower.includes(k)) return pt.templates[k]
   }
   for (const [alias, k] of Object.entries(pt.aliases)) {
-    if (name.includes(alias) && pt.templates[k]) {
-      return pt.templates[k].replace('角色', `角色（动作：${name}）`)
-    }
+    if (name.includes(alias) && pt.templates[k]) return pt.templates[k]
   }
   // 3) 通用模板
   return pt.generic.replace('{action}', name)
@@ -344,6 +340,8 @@ onMounted(async () => {
         </div>
         <p class="hint" style="margin:4px 0 0">
           默认 Mini 模型 + 480p + 4s（成本最低档）；生成约需数分钟，可切到其他页面继续工作。</p>
+        <p v-if="gen.prompt_templates?.notes" class="hint" style="margin:4px 0 0">
+          {{ gen.prompt_templates.notes }}</p>
       </template>
     </div>
 
