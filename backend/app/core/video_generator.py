@@ -84,6 +84,22 @@ def resolve_first_frame(session, first_frame: Optional[dict]) -> Optional[str]:
 
 
 # ------------------------------------------------------------ 轮询共用
+def _refresh_session_video(session, take_store: TakeStore, take_id: str) -> None:
+    """生成的 take 成为当前版本时，同步刷新会话的视频元数据。
+
+    否则前端 refreshSession 拉到 video_info=None，视频信息与预览区都
+    不渲染——看起来就像“生成完成后什么都没发生”。
+    """
+    if take_store.current_id() != take_id:
+        return
+    try:
+        p = session.storage.video_path
+        if p and p.exists():
+            session.video_info = session.video_processor.load_video(str(p))
+    except Exception:
+        logger.exception("刷新视频元数据失败（不影响生成结果）")
+
+
 def _finalize_success(take_store: TakeStore, take_id: str, info: dict,
                       client: ArkClient) -> dict:
     """下载视频并把 take 置为成功；若当前无选中版本则自动选中。"""
@@ -177,6 +193,7 @@ def run_generate(session, req: dict, ctx) -> dict:
             info = poll_until_done(client, remote_id, ctx)
             ctx.report(92, "生成完成，下载视频...")
             take = _finalize_success(take_store, take_id, info, client)
+            _refresh_session_video(session, take_store, take_id)
         finally:
             client.close()
 
@@ -213,6 +230,7 @@ def run_reconcile(session, ctx) -> dict:
                 status = info.get("status")
                 if status == TERMINAL_OK:
                     _finalize_success(take_store, tid, info, client)
+                    _refresh_session_video(session, take_store, tid)
                     results.append({"id": tid, "status": "succeeded"})
                 elif status in TERMINAL_BAD:
                     err = (info.get("error") or {})

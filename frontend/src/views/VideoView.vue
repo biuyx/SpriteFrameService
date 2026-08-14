@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useStore, refreshFrames, refreshSession, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
@@ -21,6 +21,24 @@ const genFirstFrame = ref('action')   // action(参考图) | frame(当前第N帧
 const genFrameIndex = ref(0)
 const takes = ref({ current: null, takes: [] })
 const genBusy = ref(false)
+const previewTake = ref(null)     // 弹层预览中的 take
+const previewErr = ref(false)
+
+// 生成期间定时刷新版本墙（提交与 take 落盘之间有竞态，且要看到“生成中”状态）
+let takesTimer = null
+function startTakesPolling() {
+  stopTakesPolling()
+  takesTimer = setInterval(loadTakes, 3000)
+}
+function stopTakesPolling() {
+  if (takesTimer) { clearInterval(takesTimer); takesTimer = null }
+}
+onUnmounted(stopTakesPolling)
+
+function openPreview(t) {
+  previewErr.value = false
+  previewTake.value = t
+}
 const ffAvailable = ref(false)        // 是否已有首帧参考图
 const ffVersion = ref(0)              // 参考图缓存戳
 const ffInput = ref(null)
@@ -104,13 +122,25 @@ async function runGenerate() {
     if (genSeed.value !== '' && !isNaN(+genSeed.value)) params.seed = +genSeed.value
     const first_frame = genFirstFrame.value === 'action' ? { kind: 'action' }
       : { kind: 'frame', frame_index: genFrameIndex.value }
+    startTakesPolling()
     await startJob(() => api.generate(store.sessionId,
       { prompt, model: genModel.value, params, first_frame }), {
       title: 'AI 生成视频',
       onDone: async () => {
+        stopTakesPolling()
         await loadGen()
         await refreshSession()
-        toast('生成完成，可在下方版本列表中查看')
+        // 生成的版本已自动启用：初始化抽帧参数与预览
+        if (store.videoInfo) {
+          endTime.value = store.videoInfo.duration
+          fps.value = Math.min(60, Math.max(0.1, store.videoInfo.fps || 10))
+          videoErr.value = ''
+        }
+        toast('生成完成，视频已就绪，可开始抽帧')
+      },
+      onError: async () => {
+        stopTakesPolling()
+        await loadTakes()   // 显示 failed 卡与错误信息
       },
     })
   } catch (e) {
@@ -332,7 +362,28 @@ onMounted(async () => {
         <span class="spacer" style="flex:1"></span>
         <span v-if="takes.current === t.id" class="ok-text" style="font-size:12px">✓ 当前使用</span>
         <button v-else-if="t.status === 'succeeded'" class="small" @click="useTake(t)">用这个</button>
+        <button v-if="t.status === 'succeeded'" class="small" @click="openPreview(t)">预览</button>
         <button class="small danger" @click="removeTake(t)">删除</button>
+      </div>
+    </div>
+
+    <!-- take 视频预览弹层 -->
+    <div v-if="previewTake" class="tk-mask" @click.self="previewTake = null">
+      <div class="tk-box">
+        <div class="tk-head">
+          <b>{{ takeLabel(previewTake) || previewTake.id }}</b>
+          <span v-if="previewTake.prompt" class="hint tk-prompt" :title="previewTake.prompt">
+            {{ previewTake.prompt.slice(0, 60) }}</span>
+          <span class="spacer" style="flex:1"></span>
+          <button v-if="takes.current !== previewTake.id" class="small"
+                  @click="useTake(previewTake); previewTake = null">用这个</button>
+          <button class="small" @click="previewTake = null">✕ 关闭</button>
+        </div>
+        <video v-if="!previewErr" :src="api.takeVideoUrl(store.sessionId, previewTake.id)"
+               controls autoplay loop style="width:100%;max-height:60vh;background:#000"
+               @error="previewErr = true"></video>
+        <div v-else class="hint" style="padding:30px;text-align:center">
+          该视频编码浏览器不支持预览（不影响抽帧与后续处理）</div>
       </div>
     </div>
 
@@ -429,6 +480,16 @@ onMounted(async () => {
 .take-badge.succeeded { background: #4caf5022; color: var(--ok); }
 .take-name { font-weight: 600; }
 .take-prompt { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tk-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 95;
+  display: flex; align-items: center; justify-content: center;
+}
+.tk-box {
+  width: 640px; max-width: 92vw; background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+}
+.tk-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+.tk-prompt { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .danger { border-color: var(--err); color: var(--err); }
 .video-unsupported {
   display: flex; flex-direction: column; align-items: center; justify-content: center;

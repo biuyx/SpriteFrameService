@@ -11,7 +11,7 @@ export function useJobs() {
   return jobs
 }
 
-export async function startJob(startFn, { onDone, title } = {}) {
+export async function startJob(startFn, { onDone, onError, title } = {}) {
   let jobId
   try {
     const res = await startFn()
@@ -48,8 +48,10 @@ export async function startJob(startFn, { onDone, title } = {}) {
       } else if (j.status === 'error') {
         stopPoll(jobId)
         toast(`${item.title} 失败: ${(j.error || '').split('\n')[0]}`)
+        if (onError) onError(j.error)
       } else if (j.status === 'cancelled') {
         stopPoll(jobId)
+        if (onError) onError('已取消')
       } else {
         pollTimers[jobId] = setTimeout(tick, 400)
       }
