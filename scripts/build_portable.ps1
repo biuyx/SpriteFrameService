@@ -390,6 +390,31 @@ $readme = @'
 '@
 # 说明文件用「UTF-8 + BOM + CRLF」：Windows 记事本靠 BOM 才能正确识别中文，
 # 没有 BOM 会按 ANSI 打开显示乱码。
+# 无模型包：把「自带哪些模型」段替换为安装指引，避免误导
+if ($SkipModels) {
+    $modelSectionStart = $readme.IndexOf("【自带哪些模型】")
+    $modelSectionEnd = $readme.IndexOf("【抠图有白边怎么办】")
+    if ($modelSectionStart -ge 0 -and $modelSectionEnd -gt $modelSectionStart) {
+        $replacement = @'
+【本包不含模型】
+  为控制体积，本安装包未打包任何 AI 模型。解压后服务可正常启动，
+  但 AI 抠图 / 姿势分析 / 图像增强功能需先安装模型：
+
+  抠图模型（放 models\ 目录，按需选择）：
+    https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-anime.onnx
+    https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx
+    https://github.com/danielgatis/rembg/releases/download/v0.0.0/silueta.onnx
+  姿势模型与 RealESRGAN 的下载与放置方法见项目 README 的
+  「模型与外部依赖 → 下载与安装模型」一节。
+
+  不装模型时：视频抽帧、颜色抠图（绿幕）、缩放裁剪、导出等功能不受影响。
+
+'@
+        $readme = $readme.Substring(0, $modelSectionStart) + $replacement +
+                  $readme.Substring($modelSectionEnd)
+    }
+}
+
 $readmePath = Join-Path $staging "使用说明.txt"
 $readmeText = ($readme -split "`r?`n") -join "`r`n"
 [IO.File]::WriteAllText($readmePath, $readmeText, (New-Object Text.UTF8Encoding($true)))
