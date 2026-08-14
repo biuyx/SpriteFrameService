@@ -131,6 +131,7 @@ async function runGenerate() {
           endTime.value = store.videoInfo.duration
           fps.value = Math.min(60, Math.max(0.1, store.videoInfo.fps || 10))
           videoErr.value = ''
+          videoVersion.value++
         }
         toast('生成完成，视频已就绪，可开始抽帧')
       },
@@ -151,6 +152,9 @@ async function useTake(t) {
   const r = await api.selectTake(store.sessionId, t.id)
   store.videoInfo = r.video_info
   videoErr.value = ''
+  videoVersion.value++          // 预览切到新版本
+  endTime.value = r.video_info?.duration ?? endTime.value
+  fps.value = Math.min(60, Math.max(0.1, r.video_info?.fps || fps.value))
   await loadTakes()
   toast(`已切换到该版本，可开始抽帧`)
 }
@@ -188,8 +192,9 @@ const fps = ref(10)
 const videoEl = ref(null)
 const videoErr = ref('')
 
+const videoVersion = ref(0)   // 递增使 <video> 重新加载(切版本后 URL 否则不变)
 const videoUrl = computed(() =>
-  store.sessionId ? `/api/sessions/${store.sessionId}/video` : ''
+  store.sessionId ? `/api/sessions/${store.sessionId}/video?v=${videoVersion.value}` : ''
 )
 
 // 浏览器 <video> 能解码的常见编码；cv2 能解析 ≠ 浏览器能播放
@@ -228,10 +233,9 @@ async function uploadFile(file) {
     const srcFps = store.videoInfo.fps || 10
     fps.value = Math.min(60, Math.max(0.1, srcFps))
     endTime.value = store.videoInfo.duration
+    videoVersion.value++
     toast('视频上传成功')
     await refreshSession()
-    await nextTick()
-    if (videoEl.value) videoEl.value.load()
   } catch (e) {
     toast(`上传失败: ${e.message}`)
   } finally {
