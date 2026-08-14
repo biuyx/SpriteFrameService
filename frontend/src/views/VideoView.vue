@@ -343,7 +343,7 @@ onMounted(async () => {
             {{ genBusy ? '生成中...' : '生成' }}</button>
         </div>
         <p class="hint" style="margin:4px 0 0">
-          默认 Mini 模型 + 480p + 4s（成本最低档）；生成约需数分钟，可切到其他页面继续工作。</p>
+          默认 Fast 模型 + 480p + 4s；生成约需数分钟，可切到其他页面继续工作。</p>
         <p v-if="gen.prompt_templates?.notes" class="hint" style="margin:4px 0 0">
           {{ gen.prompt_templates.notes }}</p>
       </template>
