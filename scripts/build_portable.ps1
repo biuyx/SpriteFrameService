@@ -175,6 +175,13 @@ if ($SkipModels) {
 Step 7 "生成启动器与说明"
 New-Item -ItemType Directory -Force -Path (Join-Path $staging "data") | Out-Null
 
+# 更新日志随包分发
+$changelog = Join-Path $root "CHANGELOG.md"
+if (Test-Path $changelog) {
+    Copy-Item $changelog (Join-Path $staging "更新日志.md") -Force
+    Info "更新日志.md"
+}
+
 # .bat 必须是「纯 ASCII + CRLF」：
 #   - 批处理里混中文会与 chcp 65001 冲突（文件是 ANSI/GBK 字节，控制台却按
 #     UTF-8 解析），中文变乱码后会被 cmd 当成命令执行，整个脚本崩掉；
