@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useStore, gotoSprite, toast, askConfirm } from '../stores'
 import api from '../api'
+import BatchImportModal from '../components/BatchImportModal.vue'
 
 const store = useStore()
 const sprites = ref([])
@@ -9,6 +10,7 @@ const legacyCount = ref(0)
 const loading = ref(true)
 const creating = ref(false)
 const newName = ref('')
+const batchOpen = ref(false)
 
 async function load() {
   loading.value = true
@@ -53,6 +55,7 @@ onMounted(load)
       <h2>精灵库</h2>
       <span class="hint" v-if="legacyCount">有 {{ legacyCount }} 个未归档的旧会话，进入任意精灵可认领</span>
       <span class="spacer"></span>
+      <button class="small" @click="batchOpen = true">批量导入</button>
       <button class="primary" @click="creating = true" v-if="!creating">+ 新建精灵</button>
       <template v-else>
         <input v-model="newName" placeholder="精灵名称，如：厨师" @keyup.enter="createSprite"
@@ -87,6 +90,9 @@ onMounted(load)
       </div>
     </div>
   </div>
+
+  <BatchImportModal v-if="batchOpen" @close="batchOpen = false"
+                    @done="load()" />
 </template>
 
 <style scoped>

@@ -55,6 +55,11 @@ const api = {
   openAction: (sid, aid) => request('POST', `/api/sprites/${sid}/actions/${aid}/open`),
   actionCover: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/cover?v=${v}`,
   legacySessions: () => request('GET', '/api/sprites/legacy-sessions'),
+  batchScan: (framesDir, templatesDir) =>
+    request('POST', '/api/sprites/batch-scan', { json: { frames_dir: framesDir, templates_dir: templatesDir } }),
+  batchImport: (payload) => request('POST', '/api/sprites/batch-import', { json: payload }),
+  templates: () => request('GET', '/api/templates'),
+  templateVideoUrl: (tid) => `${BASE}/api/templates/${tid}/video`,
   claimSession: (sid, sessionId, name) =>
     request('POST', `/api/sprites/${sid}/claim`, { json: { session_id: sessionId, name } }),
 

@@ -83,6 +83,38 @@ def resolve_first_frame(session, first_frame: Optional[dict]) -> Optional[str]:
     return None
 
 
+# ------------------------------------------------------------ OSS 哈希缓存
+def _cached_upload(session, data: bytes, ext: str, content_type: str) -> str:
+    """按内容哈希上传 OSS 并缓存 URL（动作目录 .oss_cache.json）。
+
+    同一首帧图/参考视频在多次生成间只上传一次；对象名即哈希，
+    跨动作的相同文件也指向同一对象。
+    """
+    import hashlib
+    import json as _json
+    from app.core.oss_uploader import upload_bytes
+
+    digest = hashlib.md5(data).hexdigest()
+    cache_path = session.storage.root / ".oss_cache.json"
+    cache = {}
+    if cache_path.is_file():
+        try:
+            cache = _json.loads(cache_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            cache = {}
+    if cache.get(digest):
+        return cache[digest]
+    url = upload_bytes(data, f"seedance/sprite-service/refs/{digest}.{ext}",
+                       content_type)
+    cache[digest] = url
+    try:
+        cache_path.write_text(_json.dumps(cache, ensure_ascii=False, indent=1),
+                              encoding="utf-8")
+    except OSError:
+        pass
+    return url
+
+
 # ------------------------------------------------------------ 轮询共用
 def _refresh_session_video(session, take_store: TakeStore, take_id: str) -> None:
     """生成的 take 成为当前版本时，同步刷新会话的视频元数据。
@@ -170,26 +202,28 @@ def run_generate(session, req: dict, ctx) -> dict:
         if not image_url:
             raise ArkError("角色首帧参考图不可用（文件缺失或帧不存在）")
 
-        if req.get("use_reference_video"):
+        template_id = req.get("template_id")
+        if template_id or req.get("use_reference_video"):
             # Ark 硬规则一：first_frame 角色与参考媒体不能同请求混用——
             # 带参考视频时首帧图改以 reference_image 传入，分工写进提示词首句。
-            # Ark 硬规则二（实测）：参考媒体只接受公网 URL，不接受 base64
-            # 内嵌——视频与图都先上传 OSS 换取 URL（skill 的既有流程）。
-            from app.core.oss_uploader import OssError, upload_bytes
-            ref_path = session.storage.root / "reference_video.mp4"
-            if not ref_path.is_file():
-                raise ArkError("参考视频文件缺失")
-
-            ctx.report(3, "上传参考媒体到 OSS...")
-            prefix = f"seedance/sprite-service/{session.id}"
+            # Ark 硬规则二（实测）：参考媒体只接受公网 URL——上传 OSS 换 URL，
+            # 且全部按内容哈希缓存：同一模板/同一图给任意多次生成复用，只传一次。
+            from app.core.oss_uploader import OssError
+            ctx.report(3, "准备参考媒体（OSS）...")
             try:
-                video_url = upload_bytes(ref_path.read_bytes(),
-                                         f"{prefix}/{take_id}_ref.mp4", "video/mp4")
+                if template_id:
+                    from app.services.template_store import template_store
+                    video_url = template_store.ensure_oss_url(template_id)
+                else:
+                    ref_path = session.storage.root / "reference_video.mp4"
+                    if not ref_path.is_file():
+                        raise ArkError("参考视频文件缺失")
+                    video_url = _cached_upload(session, ref_path.read_bytes(),
+                                               "mp4", "video/mp4")
                 # image_url 当前是 data URL，取回原始 JPEG 字节上传
                 img_bytes = base64.b64decode(image_url.split(",", 1)[1])
-                image_pub = upload_bytes(img_bytes,
-                                         f"{prefix}/{take_id}_ff.jpg", "image/jpeg")
-            except OssError as e:
+                image_pub = _cached_upload(session, img_bytes, "jpg", "image/jpeg")
+            except (OssError, FileNotFoundError) as e:
                 raise ArkError(str(e)) from e
 
             role_intro = (

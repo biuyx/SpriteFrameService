@@ -63,7 +63,7 @@ def generate_capabilities():
         "params": {
             "resolution": ["480p", "720p", "1080p"],   # 480p 优先（成本最低）
             "ratio": ["adaptive", "1:1", "16:9", "9:16", "4:3", "3:4"],
-            "duration": [4, 5, 6, 8, 10, 12],          # 默认 4s（mini 下限档）
+            "duration": [4, 5, 6, 7, 8, 10, 12],       # 默认 4s
         },
         "defaults": {"resolution": "480p", "ratio": "adaptive", "duration": 4},
         "concurrent": {"limit": s.generate_max_concurrent,
@@ -86,9 +86,10 @@ class GenerateRequest(BaseModel):
         ..., description='必填：{"kind":"action"} 或 {"kind":"frame","frame_index":N}')
     use_reference_video: bool = Field(
         default=False,
-        description="使用已上传的参考视频（动作/镜头节奏参考）。"
-                    "注意：Ark 不允许 first_frame 与参考媒体混用，启用后首帧图"
-                    "将自动改以 reference_image 角色传入")
+        description="使用动作本地上传的参考视频（与 template_id 二选一）")
+    template_id: Optional[str] = Field(
+        default=None,
+        description="使用模板库中的动作模板作为参考视频（优先于本地参考视频）")
 
 
 @router.post("/sessions/{session_id}/generate")
@@ -111,8 +112,13 @@ def generate_video(session_id: str, req: GenerateRequest):
             status_code=400,
             detail="必须提供角色首帧参考图：上传参考图，或选择已有帧作为首帧")
 
-    if req.use_reference_video:
-        if not (session.storage.root / "reference_video.mp4").is_file():
+    if req.template_id:
+        from app.services.template_store import template_store
+        if template_store.get(req.template_id) is None:
+            raise HTTPException(status_code=400, detail="动作模板不存在")
+    if req.template_id or req.use_reference_video:
+        if (not req.template_id and
+                not (session.storage.root / "reference_video.mp4").is_file()):
             raise HTTPException(status_code=400,
                                 detail="尚未上传参考视频，请先上传或取消勾选")
         # Ark 参考媒体只接受公网 URL，需经 OSS 中转
@@ -121,8 +127,7 @@ def generate_video(session_id: str, req: GenerateRequest):
             raise HTTPException(
                 status_code=400,
                 detail="参考视频需要公网 URL（经 OSS 中转），但未配置 OSS。"
-                       "请设置环境变量 OSS_BUCKET、OSS_PUBLIC_DOMAIN、"
-                       "ALIBABA_CLOUD_ACCESS_KEY_ID/SECRET 后重启服务")
+                       "请在「设置」中配置 OSS，或设置对应环境变量")
 
     payload = req.model_dump()
     payload["model"] = model
@@ -233,6 +238,43 @@ def delete_reference_video(session_id: str):
     if existed:
         p.unlink()
     return {"deleted": existed}
+
+
+# ------------------------------------------------------------ 动作模板库
+class TemplateScanRequest(BaseModel):
+    dir: str = Field(..., description="包含动作模板视频的本机目录")
+
+
+@router.get("/templates")
+def list_templates():
+    from app.services.template_store import template_store
+    return {"templates": template_store.list()}
+
+
+@router.post("/templates/scan")
+def scan_templates(req: TemplateScanRequest):
+    """扫描目录导入动作模板（按 key+变体 去重，幂等）。"""
+    from pathlib import Path as _P
+    from app.services.template_store import template_store
+    try:
+        return template_store.scan_import(_P(req.dir.strip()))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/templates/{template_id}/video")
+def template_video(template_id: str):
+    from app.services.template_store import template_store
+    t = template_store.get(template_id)
+    if t is None or not template_store.path(t).is_file():
+        raise HTTPException(status_code=404, detail="模板不存在")
+    return FileResponse(str(template_store.path(t)), media_type="video/mp4")
+
+
+@router.delete("/templates/{template_id}")
+def delete_template(template_id: str):
+    from app.services.template_store import template_store
+    return {"deleted": template_store.delete(template_id)}
 
 
 # ------------------------------------------------------------ take 管理

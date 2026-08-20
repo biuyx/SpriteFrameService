@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Response
@@ -177,6 +178,160 @@ def action_cover(sprite_id: str, action_id: str):
         raise HTTPException(status_code=404, detail="封面不可读")
     data = encode_preview(img, transparent_checker=True, max_w=320, max_h=320)
     return Response(content=data, media_type="image/png")
+
+
+# ---------- 批量导入（角色×动作矩阵） ----------
+class BatchScanRequest(BaseModel):
+    frames_dir: str = Field(..., description="角色首帧根目录（每子目录一个角色）")
+    templates_dir: Optional[str] = Field(default=None, description="动作模板视频目录（可选）")
+
+
+class BatchImportSprite(BaseModel):
+    dir_name: str
+    name: Optional[str] = None          # 精灵名，缺省用目录名
+    actions: List[str]                  # 动作 key 列表
+
+
+class BatchImportRequest(BaseModel):
+    frames_dir: str
+    templates_dir: Optional[str] = None
+    sprites: List[BatchImportSprite]
+
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def _scan_frames_dir(root: Path) -> List[dict]:
+    result = []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        actions = []
+        for f in sorted(d.iterdir()):
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
+                actions.append({"key": f.stem.strip(), "file": f.name})
+        if actions:
+            result.append({"dir_name": d.name, "actions": actions})
+    return result
+
+
+@router.post("/batch-scan")
+def batch_scan(req: BatchScanRequest):
+    """扫描素材目录，返回 角色×动作 矩阵预览（不写任何数据）。"""
+    root = Path(req.frames_dir.strip())
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"首帧目录不存在: {root}")
+
+    sprites = _scan_frames_dir(root)
+    if not sprites:
+        raise HTTPException(status_code=400,
+                            detail="目录下没有找到「子目录/图片」结构的角色首帧")
+
+    # 模板目录（可选）：只预览将导入的数量，不落库
+    templates_preview = None
+    if req.templates_dir and req.templates_dir.strip():
+        tdir = Path(req.templates_dir.strip())
+        if not tdir.is_dir():
+            raise HTTPException(status_code=400, detail=f"模板目录不存在: {tdir}")
+        from app.services.template_store import (VIDEO_EXTS, parse_template_name,
+                                                 template_store)
+        existing = {(t["key"], t["variant"]) for t in template_store.list()}
+        found, new = [], 0
+        for f in sorted(tdir.iterdir()):
+            if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
+                key, variant, duration = parse_template_name(f.stem)
+                found.append({"key": key, "variant": variant,
+                              "duration_hint": duration, "file": f.name})
+                if (key, variant) not in existing:
+                    new += 1
+        templates_preview = {"found": found, "new_count": new}
+
+    # 已有精灵（同名将复用而不是重复创建）
+    existing_sprites = {sp["name"]: sp["id"] for sp in sprite_store.list_sprites()}
+    for s in sprites:
+        s["existing_sprite_id"] = existing_sprites.get(s["dir_name"])
+
+    return {"sprites": sprites, "templates": templates_preview}
+
+
+@router.post("/batch-import")
+def batch_import(req: BatchImportRequest):
+    """执行批量建档：建精灵与动作、物化首帧、按 key 关联动作模板。幂等。"""
+    root = Path(req.frames_dir.strip())
+    if not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"首帧目录不存在: {root}")
+
+    from app.services.template_store import template_store
+
+    # 1) 模板目录先导入（幂等）
+    templates_result = None
+    if req.templates_dir and req.templates_dir.strip():
+        try:
+            templates_result = template_store.scan_import(Path(req.templates_dir.strip()))
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    # 动作 key → 默认模板（同 key 多变体取第一个，生成前可切换）
+    tpl_by_key = {}
+    for t in template_store.list():
+        tpl_by_key.setdefault(t["key"], t["id"])
+
+    existing_sprites = {sp["name"]: sp["id"] for sp in sprite_store.list_sprites()}
+    stats = {"sprites_created": 0, "sprites_reused": 0,
+             "actions_created": 0, "actions_skipped": 0, "errors": []}
+
+    for spec in req.sprites:
+        src_dir = root / spec.dir_name
+        if not src_dir.is_dir():
+            stats["errors"].append(f"角色目录不存在: {spec.dir_name}")
+            continue
+        name = (spec.name or spec.dir_name).strip()
+
+        if name in existing_sprites:
+            sprite_id = existing_sprites[name]
+            stats["sprites_reused"] += 1
+        else:
+            sprite = sprite_store.create_sprite(name)
+            sprite_id = sprite["id"]
+            existing_sprites[name] = sprite_id
+            stats["sprites_created"] += 1
+
+        existing_actions = {r["name"] for r in
+                            sprite_store.get_sprite(sprite_id).get("actions", [])}
+
+        for key in spec.actions:
+            if key in existing_actions:
+                stats["actions_skipped"] += 1
+                continue
+            # 找首帧图（key 即文件主干）
+            src_img = None
+            for ext in IMAGE_EXTS:
+                p = src_dir / f"{key}{ext}"
+                if p.is_file():
+                    src_img = p
+                    break
+            if src_img is None:
+                stats["errors"].append(f"{name}/{key}: 首帧图缺失")
+                continue
+
+            action = sprite_store.create_action(
+                sprite_id, key,
+                first_frame={"kind": "batch_import", "source": str(src_img),
+                             "file": "first_frame.png"})
+            # 物化首帧（统一转 PNG 名义；源已是 PNG 直接拷贝）
+            dest = sprite_store.action_dir(sprite_id, action["id"]) / "first_frame.png"
+            try:
+                import shutil as _sh
+                _sh.copyfile(src_img, dest)
+            except OSError as e:
+                stats["errors"].append(f"{name}/{key}: 首帧拷贝失败 {e}")
+            # 关联动作模板
+            tid = tpl_by_key.get(key)
+            if tid:
+                sprite_store.update_action(sprite_id, action["id"],
+                                           {"template_id": tid})
+            existing_actions.add(key)
+            stats["actions_created"] += 1
+
+    return {"templates": templates_result, **stats}
 
 
 # ---------- 旧会话认领 ----------

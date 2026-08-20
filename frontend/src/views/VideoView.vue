@@ -46,6 +46,37 @@ const rvAvailable = ref(false)        // 是否已上传参考视频
 const rvUse = ref(false)              // 本次生成是否使用参考视频
 const rvInput = ref(null)
 const rvPreview = ref(false)
+const tplVariants = ref([])           // 本动作 key 的模板变体
+const tplSelected = ref('')           // 选中的模板 id('' = 用本地上传)
+const tplPreview = ref(false)
+
+async function loadTemplates() {
+  tplVariants.value = []
+  try {
+    const r = await api.templates()
+    const key = (store.currentAction?.name || '').trim()
+    tplVariants.value = r.templates.filter((t) => t.key === key)
+    // 默认选中动作关联的模板;无关联但有同 key 模板则选第一个
+    const bound = store.currentAction?.template_id
+    if (bound && tplVariants.value.some((t) => t.id === bound)) {
+      tplSelected.value = bound
+    } else if (tplVariants.value.length) {
+      tplSelected.value = tplVariants.value[0].id
+    } else {
+      tplSelected.value = ''
+    }
+    if (tplSelected.value) rvUse.value = true
+    applyTplDuration()
+  } catch { /* ignore */ }
+}
+
+// 模板携带推荐时长(文件名里的「N秒」)时自动带出
+function applyTplDuration() {
+  const t = tplVariants.value.find((x) => x.id === tplSelected.value)
+  if (t?.duration_hint && gen.value?.params?.duration?.includes(t.duration_hint)) {
+    genDuration.value = t.duration_hint
+  }
+}
 
 async function onRefVideoFile(file) {
   if (!file) return
@@ -75,9 +106,10 @@ async function loadGen() {
     const d = gen.value.defaults || {}
     if (!genModel.value) genModel.value = gen.value.default_model
     genRes.value = genRes.value || d.resolution || '480p'
-    // 提示词为空时按动作名自动预填模板
-    if (!genPrompt.value.trim()) genPrompt.value = templateForAction()
   } catch { gen.value = null }
+  await loadTemplates()
+  // 提示词预填必须在模板加载之后——带参考视频与否决定用短提示词还是绿幕长模板
+  if (gen.value && !genPrompt.value.trim()) genPrompt.value = templateForAction()
   // 探测首帧参考图/参考视频是否已设置
   try {
     const r = await fetch(api.firstFrameUrl(store.sessionId, Date.now()), { credentials: 'same-origin' })
@@ -115,6 +147,13 @@ function templateForAction() {
   const pt = gen.value?.prompt_templates
   const name = (store.currentAction?.name || '').trim()
   if (!pt || !name) return ''
+  // 带参考视频(reference-driven)时动作由视频定义,提示词只约束镜头与背景
+  // (实战验证的短提示词;绿幕长模板是纯 i2v 用的,叠加反而互相干扰)
+  if (rvUse.value && (tplSelected.value || rvAvailable.value)) {
+    const t = tplVariants.value.find((x) => x.id === tplSelected.value)
+    const label = t?.variant || name
+    return `${label}：图片参考视频进行动作，固定镜头，无运镜，背景不变。`
+  }
   const lower = name.toLowerCase()
   // 1) 精确命中(含别名)
   const key = pt.templates[lower] ? lower : pt.aliases[name] || pt.aliases[lower]
@@ -153,7 +192,8 @@ async function runGenerate() {
     startTakesPolling()
     await startJob(() => api.generate(store.sessionId,
       { prompt, model: genModel.value, params, first_frame,
-        use_reference_video: rvUse.value && rvAvailable.value }), {
+        template_id: rvUse.value && tplSelected.value ? tplSelected.value : null,
+        use_reference_video: rvUse.value && !tplSelected.value && rvAvailable.value }), {
       title: 'AI 生成视频',
       onDone: async () => {
         stopTakesPolling()
@@ -377,14 +417,25 @@ onMounted(async () => {
         </div>
         <div class="row" style="align-items:center">
           <span class="hint">参考视频（可选，动作/镜头节奏参考）：</span>
-          <template v-if="rvAvailable">
+          <template v-if="tplVariants.length">
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+              <input type="checkbox" v-model="rvUse" /> 使用模板</label>
+            <select v-model="tplSelected" style="max-width:150px"
+                    @change="applyTplDuration(); genPrompt = templateForAction()">
+              <option v-for="t in tplVariants" :key="t.id" :value="t.id">
+                {{ t.variant || t.key }}{{ t.duration_hint ? `（${t.duration_hint}s）` : '' }}</option>
+              <option value="">（本地上传的视频）</option>
+            </select>
+            <button v-if="tplSelected" class="small" @click="tplPreview = true">预览模板</button>
+          </template>
+          <template v-if="rvAvailable && (!tplVariants.length || !tplSelected)">
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
               <input type="checkbox" v-model="rvUse" /> 本次生成使用</label>
             <button class="small" @click="rvPreview = true">预览</button>
             <button class="small" @click="rvInput.click()">更换</button>
             <button class="small danger" @click="clearRefVideo">清除</button>
           </template>
-          <button v-else class="small" @click="rvInput.click()">上传参考视频</button>
+          <button v-if="!rvAvailable && !tplVariants.length" class="small" @click="rvInput.click()">上传参考视频</button>
           <input ref="rvInput" type="file" accept="video/*" style="display:none"
                  @change="e => onRefVideoFile(e.target.files[0])" />
         </div>
@@ -414,6 +465,16 @@ onMounted(async () => {
         <button v-else-if="t.status === 'succeeded'" class="small" @click="useTake(t)">用这个</button>
         <button v-if="t.status === 'succeeded'" class="small" @click="openPreview(t)">预览</button>
         <button class="small danger" @click="removeTake(t)">删除</button>
+      </div>
+    </div>
+
+    <!-- 模板预览弹层 -->
+    <div v-if="tplPreview" class="tk-mask" @click.self="tplPreview = false">
+      <div class="tk-box">
+        <div class="tk-head"><b>动作模板预览</b><span class="spacer" style="flex:1"></span>
+          <button class="small" @click="tplPreview = false">✕ 关闭</button></div>
+        <video :src="api.templateVideoUrl(tplSelected)"
+               controls autoplay loop style="width:100%;max-height:60vh;background:#000"></video>
       </div>
     </div>
 
