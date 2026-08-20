@@ -10,6 +10,11 @@ const saving = ref(false)
 const current = ref(null)      // GET /settings 结果
 const newKey = ref('')         // 留空 = 不修改
 const concurrent = ref(5)
+// OSS 输入(留空 = 不修改)
+const ossBucket = ref('')
+const ossDomain = ref('')
+const ossAk = ref('')
+const ossSk = ref('')
 
 async function load() {
   loading.value = true
@@ -30,9 +35,14 @@ async function save() {
     if (newKey.value.trim()) patch.ark_api_key = newKey.value.trim()
     if (concurrent.value !== current.value.generate_max_concurrent)
       patch.generate_max_concurrent = concurrent.value
+    if (ossBucket.value.trim()) patch.oss_bucket = ossBucket.value.trim()
+    if (ossDomain.value.trim()) patch.oss_public_domain = ossDomain.value.trim()
+    if (ossAk.value.trim()) patch.oss_access_key_id = ossAk.value.trim()
+    if (ossSk.value.trim()) patch.oss_access_key_secret = ossSk.value.trim()
     if (!Object.keys(patch).length) { emit('close'); return }
     current.value = await api.saveSettings(patch)
     newKey.value = ''
+    ossBucket.value = ossDomain.value = ossAk.value = ossSk.value = ''
     toast('设置已保存并生效')
     emit('close')
   } catch (e) {
@@ -47,6 +57,22 @@ async function clearKey() {
   saving.value = true
   try {
     current.value = await api.saveSettings({ ark_api_key: '' })
+    toast('已清除')
+  } catch (e) {
+    toast(`操作失败: ${e.message}`)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function clearOss() {
+  if (!(await askConfirm('清除配置文件中的 OSS 配置？（若系统环境变量存在，将回退使用它）'))) return
+  saving.value = true
+  try {
+    current.value = await api.saveSettings({
+      oss_bucket: '', oss_public_domain: '', oss_endpoint: '',
+      oss_access_key_id: '', oss_access_key_secret: '',
+    })
     toast('已清除')
   } catch (e) {
     toast(`操作失败: ${e.message}`)
@@ -93,6 +119,28 @@ onMounted(load)
           </div>
         </div>
 
+        <div class="set-group">
+          <label class="set-label">OSS 对象存储（参考视频功能需要）</label>
+          <div class="set-row">
+            <span class="key-now" v-if="current.oss?.configured">
+              当前：{{ current.oss.bucket }} · {{ current.oss.public_domain }}
+              · AK {{ current.oss.access_key_id_masked }}
+              <em v-if="current.oss.from_file?.length">（配置文件）</em>
+              <em v-else>（系统环境变量）</em>
+            </span>
+            <span class="key-now" v-else>未配置——生成时使用参考视频需先配置</span>
+            <button v-if="current.oss?.from_file?.length" class="small"
+                    :disabled="saving" @click="clearOss">清除</button>
+          </div>
+          <div class="oss-grid">
+            <input v-model="ossBucket" placeholder="Bucket（留空不修改）" autocomplete="off" />
+            <input v-model="ossDomain" placeholder="公网域名，如 https://assets.example.com" autocomplete="off" />
+            <input v-model="ossAk" placeholder="AccessKey ID" autocomplete="off" />
+            <input v-model="ossSk" type="password" placeholder="AccessKey Secret" autocomplete="off" />
+          </div>
+          <p class="hint">用于把参考视频/参考图上传为公网 URL（Ark 要求）。保存到 backend\.env，立即生效。</p>
+        </div>
+
         <div class="modal-foot">
           <button class="primary" :disabled="saving" @click="save">
             {{ saving ? '保存中...' : '保存' }}</button>
@@ -120,5 +168,7 @@ onMounted(load)
 .key-now { font-size: 12px; color: var(--text-dim); font-family: Consolas, monospace; }
 .key-now em { font-style: normal; color: var(--warn); }
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; margin-top: 8px; }
+.oss-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
+.oss-grid input { width: 100%; }
 .hint { font-size: 11px; color: var(--text-dim); margin: 4px 0 0; }
 </style>

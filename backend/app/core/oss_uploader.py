@@ -3,7 +3,8 @@
 用途：Ark 的参考媒体（reference_video/reference_image）只接受公网 URL，
 不接受 base64 内嵌——生成前需把本地媒体上传 OSS 换取 URL。
 
-凭证与配置全部从环境变量读取（与 skill 的既有流程一致）：
+凭证与配置读取顺序：backend/.env 显式配置（设置面板写入）优先，
+回退系统环境变量（与 seedance skill 的既有流程兼容）：
     OSS_BUCKET           bucket 名
     OSS_PUBLIC_DOMAIN    绑定的公网域名（同时用作上传域名，除非设了 ENDPOINT）
     OSS_ENDPOINT         可选，公网域名不能收签名 PUT 时使用
@@ -24,12 +25,37 @@ import urllib.parse
 
 import httpx
 
+from app.config import _BACKEND_DIR
+
+_ENV_FILE = _BACKEND_DIR / ".env"
+
 
 class OssError(Exception):
     """OSS 配置缺失或上传失败（信息不含密钥）。"""
 
 
+def _env_file_values() -> dict:
+    """读取 backend/.env（每次现读，设置面板保存后立即生效）。"""
+    try:
+        result = {}
+        for line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            result[k.strip()] = v.strip()
+        return result
+    except OSError:
+        return {}
+
+
 def _env(*names: str) -> str:
+    """backend/.env 显式配置优先，回退系统环境变量。"""
+    file_vals = _env_file_values()
+    for n in names:
+        v = file_vals.get(n, "").strip()
+        if v:
+            return v
     for n in names:
         v = os.environ.get(n, "").strip()
         if v:
