@@ -145,6 +145,94 @@ def generate_video(session_id: str, req: GenerateRequest):
     return {"job_id": job.id}
 
 
+# ------------------------------------------------------------ 批量生成
+class BatchGenerateRequest(BaseModel):
+    action_ids: list[str] = Field(..., min_length=1, max_length=200)
+    model: Optional[str] = None
+    resolution: str = Field(default="480p")
+    ratio: str = Field(default="adaptive")
+
+
+def _default_generate_payload(session, action: dict, template: dict,
+                              model: str, resolution: str, ratio: str) -> dict:
+    """按动作的默认配置构造生成请求（与前端单动作面板的默认逻辑一致）。"""
+    variant = template.get("variant") or action.get("name", "")
+    prompt = f"{variant}：图片参考视频进行动作，固定镜头，无运镜，背景不变。"
+    duration = template.get("duration_hint") or 4
+    return {
+        "prompt": prompt,
+        "model": model,
+        "params": {"resolution": resolution, "ratio": ratio, "duration": duration},
+        "first_frame": {"kind": "action"},
+        "template_id": template["id"],
+        "use_reference_video": False,
+    }
+
+
+@router.post("/sprites/{sprite_id}/batch-generate")
+def batch_generate(sprite_id: str, req: BatchGenerateRequest):
+    """为多个动作按各自默认配置提交生成任务（并发闸门自动限流排队）。
+
+    每个动作要求：首帧参考图已物化 + 已关联动作模板；不满足的跳过并给出
+    原因，不影响其他动作。
+    """
+    s = get_settings()
+    if not s.generate_enabled:
+        raise HTTPException(status_code=400, detail="未配置 Ark API Key，无法生成")
+    from app.core.oss_uploader import oss_configured
+    if not oss_configured():
+        raise HTTPException(status_code=400,
+                            detail="批量生成使用动作模板（需 OSS 中转），请先在「设置」配置 OSS")
+
+    model = req.model or s.ark_model
+    if model not in {m["id"] for m in s.ark_models_list}:
+        raise HTTPException(status_code=400, detail=f"不支持的模型: {model}")
+
+    from app.services.sprite_store import sprite_store
+    from app.services.template_store import template_store
+
+    submitted, skipped = [], []
+    for aid in req.action_ids:
+        if sprite_store.sprite_of_action(aid) != sprite_id:
+            skipped.append({"action_id": aid, "name": aid, "reason": "不属于该精灵"})
+            continue
+        try:
+            action = sprite_store.get_action(sprite_id, aid)
+        except Exception:
+            skipped.append({"action_id": aid, "name": aid, "reason": "动作不存在"})
+            continue
+        name = action.get("name", aid)
+
+        session = get_session(aid)
+        if not (session.storage.root / "first_frame.png").is_file():
+            skipped.append({"action_id": aid, "name": name, "reason": "缺少首帧参考图"})
+            continue
+        template = template_store.get(action.get("template_id") or "")
+        if template is None:
+            skipped.append({"action_id": aid, "name": name,
+                            "reason": "未关联动作模板（请进入动作手动生成）"})
+            continue
+
+        payload = _default_generate_payload(session, action, template,
+                                            model, req.resolution, req.ratio)
+
+        def _job(ctx, _session=session, _payload=payload):
+            from app.core.video_generator import run_generate
+            generate_gate.acquire(ctx)
+            try:
+                return run_generate(_session, _payload, ctx)
+            finally:
+                generate_gate.release()
+
+        job = job_manager.submit("generate", _job, pool="io")
+        submitted.append({"action_id": aid, "name": name, "job_id": job.id,
+                          "variant": template.get("variant"),
+                          "duration": payload["params"]["duration"]})
+
+    return {"submitted": submitted, "skipped": skipped,
+            "model": model, "resolution": req.resolution}
+
+
 # ------------------------------------------------------------ 首帧参考图
 @router.post("/sessions/{session_id}/first-frame")
 async def upload_first_frame(session_id: str, file: UploadFile = File(...)):

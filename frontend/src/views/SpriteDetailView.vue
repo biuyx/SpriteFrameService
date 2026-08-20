@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useStore, gotoLibrary, openAction, toast, askConfirm } from '../stores'
 import api from '../api'
+import BatchGenerateModal from '../components/BatchGenerateModal.vue'
 
 const store = useStore()
 const actions = ref([])
@@ -12,6 +13,7 @@ const creating = ref(false)
 const claiming = ref(false)
 const newName = ref('')
 const coverV = ref(Date.now() % 100000)
+const batchGenOpen = ref(false)
 
 const STATUS_LABEL = { new: '未开始', active: '进行中', final: '已定稿' }
 
@@ -78,6 +80,7 @@ onMounted(load)
       <button v-if="legacy.length" class="small" @click="claiming = !claiming">
         认领旧会话 ({{ legacy.length }})
       </button>
+      <button v-if="actions.length" class="small" @click="batchGenOpen = true">批量生成</button>
       <button class="primary" @click="creating = !creating">+ 新建动作</button>
     </div>
 
@@ -132,6 +135,10 @@ onMounted(load)
       </div>
     </div>
   </div>
+
+  <BatchGenerateModal v-if="batchGenOpen" :actions="actions"
+                      @close="batchGenOpen = false; load()"
+                      @done="load()" />
 </template>
 
 <style scoped>

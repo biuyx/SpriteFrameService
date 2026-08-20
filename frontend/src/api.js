@@ -58,6 +58,8 @@ const api = {
   batchScan: (framesDir, templatesDir) =>
     request('POST', '/api/sprites/batch-scan', { json: { frames_dir: framesDir, templates_dir: templatesDir } }),
   batchImport: (payload) => request('POST', '/api/sprites/batch-import', { json: payload }),
+  batchGenerate: (sid, payload) =>
+    request('POST', `/api/sprites/${sid}/batch-generate`, { json: payload }),
   templates: () => request('GET', '/api/templates'),
   templateVideoUrl: (tid) => `${BASE}/api/templates/${tid}/video`,
   claimSession: (sid, sessionId, name) =>

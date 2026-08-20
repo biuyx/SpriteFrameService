@@ -308,11 +308,29 @@ class SpriteStore:
         has_video = video_dir.is_dir() and any(
             f.is_file() and ".part" not in f.name for f in video_dir.iterdir()
         )
+
+        # 生成成功的版本数与进行中数（批量生成的勾选依据）
+        generated = generating = 0
+        tj = video_dir / "takes.json"
+        if tj.is_file():
+            try:
+                for t in json.loads(tj.read_text(encoding="utf-8")).get("takes", []):
+                    if t.get("source") == "generate":
+                        if t.get("status") == "succeeded":
+                            generated += 1
+                        elif t.get("status") in ("pending", "running"):
+                            generating += 1
+            except (json.JSONDecodeError, OSError):
+                pass
+
         return {
             "has_video": has_video,
             "frame_count": count("frames/raw", "*.png"),
             "processed_count": count("frames/proc", "*.png"),
             "export_count": count("exports"),
+            "generated_count": generated,
+            "generating_count": generating,
+            "has_first_frame": (d / "first_frame.png").is_file(),
         }
 
     def frame_image_path(self, sprite_id: str, action_id: str,
