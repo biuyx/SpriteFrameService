@@ -171,13 +171,27 @@ def run_generate(session, req: dict, ctx) -> dict:
             raise ArkError("角色首帧参考图不可用（文件缺失或帧不存在）")
 
         if req.get("use_reference_video"):
-            # Ark 硬规则：first_frame 角色与参考媒体不能同请求混用。
-            # 带参考视频时，首帧图改以 reference_image 传入，
-            # 各参考的分工在提示词首句显式声明（官方指南建议）。
+            # Ark 硬规则一：first_frame 角色与参考媒体不能同请求混用——
+            # 带参考视频时首帧图改以 reference_image 传入，分工写进提示词首句。
+            # Ark 硬规则二（实测）：参考媒体只接受公网 URL，不接受 base64
+            # 内嵌——视频与图都先上传 OSS 换取 URL（skill 的既有流程）。
+            from app.core.oss_uploader import OssError, upload_bytes
             ref_path = session.storage.root / "reference_video.mp4"
             if not ref_path.is_file():
                 raise ArkError("参考视频文件缺失")
-            video_b64 = base64.b64encode(ref_path.read_bytes()).decode("ascii")
+
+            ctx.report(3, "上传参考媒体到 OSS...")
+            prefix = f"seedance/sprite-service/{session.id}"
+            try:
+                video_url = upload_bytes(ref_path.read_bytes(),
+                                         f"{prefix}/{take_id}_ref.mp4", "video/mp4")
+                # image_url 当前是 data URL，取回原始 JPEG 字节上传
+                img_bytes = base64.b64decode(image_url.split(",", 1)[1])
+                image_pub = upload_bytes(img_bytes,
+                                         f"{prefix}/{take_id}_ff.jpg", "image/jpeg")
+            except OssError as e:
+                raise ArkError(str(e)) from e
+
             role_intro = (
                 "参考图1为角色的形象、脸部、发型与服装，全程严格保持一致，"
                 "不得改变角色设计。参考视频1仅作为动作与镜头节奏的参考，"
@@ -185,10 +199,9 @@ def run_generate(session, req: dict, ctx) -> dict:
             )
             content = [
                 {"type": "text", "text": role_intro + req.get("prompt", "")},
-                {"type": "image_url", "image_url": {"url": image_url},
+                {"type": "image_url", "image_url": {"url": image_pub},
                  "role": "reference_image"},
-                {"type": "video_url",
-                 "video_url": {"url": "data:video/mp4;base64," + video_b64},
+                {"type": "video_url", "video_url": {"url": video_url},
                  "role": "reference_video"},
             ]
         else:

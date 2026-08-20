@@ -111,10 +111,18 @@ def generate_video(session_id: str, req: GenerateRequest):
             status_code=400,
             detail="必须提供角色首帧参考图：上传参考图，或选择已有帧作为首帧")
 
-    if req.use_reference_video and not (
-            session.storage.root / "reference_video.mp4").is_file():
-        raise HTTPException(status_code=400,
-                            detail="尚未上传参考视频，请先上传或取消勾选")
+    if req.use_reference_video:
+        if not (session.storage.root / "reference_video.mp4").is_file():
+            raise HTTPException(status_code=400,
+                                detail="尚未上传参考视频，请先上传或取消勾选")
+        # Ark 参考媒体只接受公网 URL，需经 OSS 中转
+        from app.core.oss_uploader import oss_configured
+        if not oss_configured():
+            raise HTTPException(
+                status_code=400,
+                detail="参考视频需要公网 URL（经 OSS 中转），但未配置 OSS。"
+                       "请设置环境变量 OSS_BUCKET、OSS_PUBLIC_DOMAIN、"
+                       "ALIBABA_CLOUD_ACCESS_KEY_ID/SECRET 后重启服务")
 
     payload = req.model_dump()
     payload["model"] = model
