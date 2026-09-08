@@ -70,7 +70,13 @@ function startDrag(e) {
   window.addEventListener('mouseup', onUp)
 }
 
-watch(collapsed, (c) => { if (popped.value && c) popped.value = false })</script>
+watch(collapsed, (c) => { if (popped.value && c) popped.value = false })
+
+// 没有帧时自动折叠（不占工作区），抽出帧后自动展开
+watch(() => store.frameCount, (n, old) => {
+  if (n === 0) collapsed.value = true
+  else if (old === 0 && n > 0) collapsed.value = false
+}, { immediate: true })</script>
 
 <template>
   <div

@@ -1,7 +1,7 @@
 // 后台任务跟踪：提交 + 轮询进度 + 结果
 import { reactive } from 'vue'
 import api from './api'
-import { toast } from './stores'
+import { toast, useStore } from './stores'
 
 const jobs = reactive({ items: [] })   // 最近的 job，含轮询句柄
 
@@ -21,6 +21,8 @@ export async function startJob(startFn, { onDone, onError, title } = {}) {
     throw e
   }
 
+  // 记下任务属于哪个精灵/动作：任务面板可显示上下文并一键跳转
+  const store = useStore()
   const item = reactive({
     id: jobId,
     title: title || '任务',
@@ -29,6 +31,11 @@ export async function startJob(startFn, { onDone, onError, title } = {}) {
     message: '',
     result: null,
     error: null,
+    spriteId: store.currentSprite?.id || null,
+    spriteName: store.currentSprite?.name || '',
+    actionId: store.currentAction?.id || null,
+    actionName: store.currentAction?.name || '',
+    startedAt: Date.now(),
   })
   jobs.items.unshift(item)
   if (jobs.items.length > 30) jobs.items.pop()

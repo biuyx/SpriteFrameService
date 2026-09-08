@@ -3,7 +3,10 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useStore, toast, askConfirm } from '../stores'
 import api from '../api'
 
-const props = defineProps({ actions: { type: Array, required: true } })
+const props = defineProps({
+  actions: { type: Array, required: true },
+  preselected: { type: Array, default: null },   // 看板多选带入：只勾选这些（且可生成）
+})
 const emit = defineEmits(['close', 'done'])
 const store = useStore()
 
@@ -27,8 +30,10 @@ onMounted(async () => {
     const t = await api.templates()
     for (const x of t.templates) templatesById.value[x.id] = x
   } catch (e) { toast(`加载失败: ${e.message}`) }
+  const pre = props.preselected ? new Set(props.preselected) : null
   for (const a of props.actions) {
-    checked.value[a.id] = eligible(a) && !a.summary?.generated_count && !a.summary?.generating_count
+    checked.value[a.id] = pre ? (pre.has(a.id) && eligible(a))
+      : (eligible(a) && !a.summary?.generated_count && !a.summary?.generating_count)
   }
   try {
     const r = await api.resolvePrompts('video_ref', store.currentSprite.id, props.actions.map(a => a.id))

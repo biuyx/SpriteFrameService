@@ -3,7 +3,10 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useStore, toast, askConfirm } from '../stores'
 import api from '../api'
 
-const props = defineProps({ actions: { type: Array, required: true } })
+const props = defineProps({
+  actions: { type: Array, required: true },
+  preselected: { type: Array, default: null },   // 看板多选带入
+})
 const emit = defineEmits(['close', 'done'])
 const store = useStore()
 
@@ -24,8 +27,9 @@ onMounted(async () => {
     const t = await api.templates()
     for (const x of t.templates) templatesById.value[x.id] = x
   } catch (e) { toast(`加载模板失败: ${e.message}`) }
+  const pre = props.preselected ? new Set(props.preselected) : null
   for (const a of props.actions) {
-    checked.value[a.id] = eligible(a) && !a.summary?.frame_count
+    checked.value[a.id] = pre ? (pre.has(a.id) && eligible(a)) : (eligible(a) && !a.summary?.frame_count)
   }
 })
 

@@ -1,26 +1,27 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { gotoSprite, toast, askConfirm } from '../stores'
+import { ref, computed, watch, onMounted } from 'vue'
+import { useStore, gotoSprite, toast, askConfirm } from '../stores'
 import api from '../api'
 import BatchImportModal from '../components/BatchImportModal.vue'
-import TemplateLibraryModal from '../components/TemplateLibraryModal.vue'
-import ProjectTransferModal from '../components/ProjectTransferModal.vue'
-import FfSetLibraryModal from '../components/FfSetLibraryModal.vue'
-import PromptLibraryModal from '../components/PromptLibraryModal.vue'
 
+const store = useStore()
 const sprites = ref([])
 const legacyCount = ref(0)
 const loading = ref(true)
 const batchOpen = ref(false)
-const tplLibOpen = ref(false)
-const transferOpen = ref(false)
-const ffsetOpen = ref(false)
-const promptOpen = ref(false)
+// 全局资源（项目包导入等）变动后重载列表
+watch(() => store.libraryVersion, () => load())
 
-// 工具栏状态
-const keyword = ref('')
-const category = ref('')          // '' = 全部分类
-const sortBy = ref('created_desc')
+// 工具栏状态（筛选/排序记在本机，下次进来保持）
+const PREF_KEY = 'sfs.library.prefs'
+let prefs = {}
+try { prefs = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') } catch { prefs = {} }
+const keyword = ref(prefs.keyword || '')
+const category = ref(prefs.category || '')          // '' = 全部分类
+const sortBy = ref(prefs.sortBy || 'created_desc')
+watch([keyword, category, sortBy], ([k, c, s]) => {
+  try { localStorage.setItem(PREF_KEY, JSON.stringify({ keyword: k, category: c, sortBy: s })) } catch { /* ignore */ }
+})
 
 // 新建
 const creating = ref(false)
@@ -141,10 +142,6 @@ onMounted(load)
       </select>
       <span class="spacer"></span>
       <span class="hint" v-if="legacyCount">{{ legacyCount }} 个旧会话待认领</span>
-      <button class="small" @click="tplLibOpen = true">参考视频库</button>
-      <button class="small" @click="ffsetOpen = true">参考首帧库</button>
-      <button class="small" @click="promptOpen = true">提示词库</button>
-      <button class="small" @click="transferOpen = true">导出/导入</button>
       <button class="small" @click="batchOpen = true">批量导入</button>
       <button class="primary" @click="creating = true">+ 新建精灵</button>
     </div>
@@ -232,11 +229,6 @@ onMounted(load)
 
   <BatchImportModal v-if="batchOpen" @close="batchOpen = false"
                     @done="load()" />
-  <TemplateLibraryModal v-if="tplLibOpen" @close="tplLibOpen = false" />
-  <FfSetLibraryModal v-if="ffsetOpen" @close="ffsetOpen = false" />
-  <PromptLibraryModal v-if="promptOpen" @close="promptOpen = false" />
-  <ProjectTransferModal v-if="transferOpen" @close="transferOpen = false"
-                        @imported="load()" />
 </template>
 
 <style scoped>

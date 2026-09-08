@@ -6,6 +6,9 @@ const state = reactive({
   view: 'library',
   currentSprite: null,    // {id, name, preset}
   currentAction: null,    // {id, name, status, ...}
+  spriteActions: [],      // 当前精灵的动作列表（含 summary）：工作台动作切换器/流水线状态用
+  lastActionId: null,     // 从工作台返回看板时定位高亮的动作
+  libraryVersion: 0,      // 全局资源变动（项目包导入等）后递增，精灵库据此重载
 
   sessionId: null,        // = 打开中的 action_id
   videoInfo: null,
@@ -72,7 +75,16 @@ export async function openAction(spriteId, actionId) {
   state.videoInfo = r.session.video_info
   state.view = 'workbench'
   await refreshFrames()
+  loadSpriteActions(spriteId)   // 切换器与流水线状态用，不阻塞打开
   return r
+}
+
+// 当前精灵的动作列表（含 summary）；同精灵重复调用只刷新数据
+export async function loadSpriteActions(spriteId) {
+  try {
+    const r = await api.actions(spriteId)
+    if (state.currentSprite?.id === spriteId) state.spriteActions = r.actions
+  } catch { /* 列表不可用不影响工作台 */ }
 }
 
 // 返回上一层
@@ -81,11 +93,13 @@ export function gotoLibrary() {
   state.currentSprite = null
   state.currentAction = null
   state.sessionId = null
+  state.spriteActions = []
   resetProject()
 }
 
 export function gotoSprite(sprite) {
   if (sprite) state.currentSprite = sprite
+  state.lastActionId = state.currentAction?.id || null   // 看板定位刚离开的动作
   state.view = 'sprite'
   state.currentAction = null
   state.sessionId = null
