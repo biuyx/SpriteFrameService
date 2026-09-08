@@ -9,11 +9,13 @@ from . import (
     background,
     capabilities,
     export_api,
+    ffsets,
     frames,
     generate,
     history_api,
     image_ops,
     jobs,
+    project_io,
     sessions,
     settings_api,
     sprites,
@@ -34,4 +36,6 @@ api_router.include_router(export_api.router)
 api_router.include_router(history_api.router)
 api_router.include_router(generate.router)
 api_router.include_router(settings_api.router)
+api_router.include_router(project_io.router)
+api_router.include_router(ffsets.router)
 api_router.include_router(jobs.router)

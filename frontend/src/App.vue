@@ -132,18 +132,24 @@ function backToBoard() {
 <template>
   <LoginView v-if="needLogin" :notice="loginNotice" @authenticated="onAuthenticated" />
 
-  <!-- 一层：精灵库 -->
-  <div class="toplevel" v-else-if="ready && store.view === 'library'">
-    <SpriteLibraryView />
-    <div class="corner-ops">
+  <!-- 一层/二层：精灵库 与 动作看板，共用统一顶栏（避免浮动按钮与页头重叠） -->
+  <div class="toplevel" v-else-if="ready && (store.view === 'library' || store.view === 'sprite')">
+    <div class="topbar">
+      <span class="brand-mini">精灵帧工作室</span>
+      <span class="crumb">
+        <template v-if="store.view === 'sprite'">
+          <a @click="gotoLibrary">精灵库</a> / <b>{{ store.currentSprite?.name }}</b>
+        </template>
+        <b v-else>精灵库</b>
+      </span>
+      <span class="spacer"></span>
       <button class="small" @click="settingsOpen = true">⚙ 设置</button>
       <button v-if="authRequired" class="small" @click="doLogout">退出登录</button>
     </div>
-  </div>
-
-  <!-- 二层：动作看板 -->
-  <div class="toplevel" v-else-if="ready && store.view === 'sprite'">
-    <SpriteDetailView />
+    <div class="toplevel-body">
+      <SpriteLibraryView v-if="store.view === 'library'" />
+      <SpriteDetailView v-else />
+    </div>
   </div>
 
   <!-- 三层：动作工作台 -->
@@ -236,8 +242,9 @@ function backToBoard() {
 </template>
 
 <style scoped>
-.toplevel { height: 100%; position: relative; }
-.corner-ops { position: absolute; top: 18px; right: 24px; display: flex; gap: 8px; }
+.toplevel { height: 100%; display: flex; flex-direction: column; }
+.toplevel-body { flex: 1; min-height: 0; }
+.brand-mini { font-size: 14px; font-weight: 700; margin-right: 4px; }
 .cfm-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100;
   display: flex; align-items: center; justify-content: center;

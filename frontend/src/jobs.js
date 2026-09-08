@@ -56,6 +56,15 @@ export async function startJob(startFn, { onDone, onError, title } = {}) {
         pollTimers[jobId] = setTimeout(tick, 400)
       }
     } catch (e) {
+      if (e.status === 404) {
+        // 任务记录没了（服务重启）——按失败终止，不能无限重试刷屏
+        stopPoll(jobId)
+        item.status = 'error'
+        item.error = '任务记录不存在（服务可能已重启）'
+        toast(`${item.title} 中断: 服务已重启，请重新发起`)
+        if (onError) onError(item.error)
+        return
+      }
       // 网络瞬断时继续轮询
       pollTimers[jobId] = setTimeout(tick, 1500)
     }

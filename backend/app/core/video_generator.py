@@ -15,11 +15,20 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import httpx
 import numpy as np
 
 from app.config import get_settings
 from app.core.ark_client import ArkClient, ArkError
 from app.services.take_store import TakeStore
+
+
+class PollInterrupted(RuntimeError):
+    """轮询中断但远端任务未到终态（网络中断/本地等待超时）。
+
+    远端任务已创建、正在计费执行——take 必须保持 running，
+    之后打开动作时自动重挂（reconcile）取回结果，而不是判死丢件。
+    """
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +148,17 @@ def _finalize_success(take_store: TakeStore, take_id: str, info: dict,
     if not url:
         raise ArkError("任务成功但响应缺少 video_url")
     dest = take_store.path(take_id)
-    size = client.download(url, dest)
+    # 下载幂等，网络波动重试；仍失败则由外层保持 running，重挂时再下载
+    last_err = None
+    for attempt in range(4):
+        try:
+            size = client.download(url, dest)
+            break
+        except httpx.HTTPError as e:
+            last_err = e
+            time.sleep(5 * (attempt + 1))
+    else:
+        raise last_err
     take = take_store.update(take_id, {
         "status": "succeeded",
         "bytes": size,
@@ -160,10 +179,26 @@ def poll_until_done(client: ArkClient, task_id: str, ctx=None,
     deadline = time.time() + (timeout or get_settings().ark_timeout_seconds)
     delay = POLL_INITIAL
     started = time.time()
+    net_fails = 0
     while True:
         if ctx is not None and ctx.cancelled():
             raise ArkError("已请求取消")
-        info = client.get_task(task_id)
+        try:
+            info = client.get_task(task_id)
+            net_fails = 0
+        except httpx.HTTPError as e:
+            # 网络波动：查询是幂等的，重试而不是判死——远端任务已在计费执行
+            net_fails += 1
+            if net_fails >= 8:
+                raise PollInterrupted(
+                    f"轮询连续失败 {net_fails} 次（{type(e).__name__}）——"
+                    f"远端任务仍在执行，重新打开该动作可自动重挂取回")
+            if ctx is not None:
+                elapsed = int(time.time() - started)
+                ctx.report(min(90, 10 + elapsed / 3),
+                           f"网络波动，重试 {net_fails}/8 ...")
+            time.sleep(min(POLL_MAX, delay + 5))
+            continue
         status = info.get("status")
         if status == TERMINAL_OK:
             return info
@@ -172,7 +207,9 @@ def poll_until_done(client: ArkClient, task_id: str, ctx=None,
             msg = err.get("message") if isinstance(err, dict) else str(err)
             raise ArkError(f"远端任务{status}: {msg or '无详情'}")
         if time.time() > deadline:
-            raise ArkError(f"等待超时（任务仍在远端执行，ID={task_id}，可稍后重挂）")
+            raise PollInterrupted(
+                f"本地等待超时（任务仍在远端执行，ID={task_id}），"
+                f"重新打开该动作可自动重挂取回")
         if ctx is not None:
             elapsed = int(time.time() - started)
             ctx.report(min(90, 10 + elapsed / 3), f"生成中（{status}，已等待 {elapsed}s）...")
@@ -193,6 +230,8 @@ def run_generate(session, req: dict, ctx) -> dict:
         model=model, prompt=req.get("prompt", ""),
         params=params, first_frame=req.get("first_frame"),
         used_reference_video=bool(req.get("use_reference_video")),
+        # 记录所用模板：结果版本可与参考视频做对比回看
+        template_id=req.get("template_id") or None,
     )
     take_id = take["id"]
 
@@ -280,7 +319,18 @@ def run_generate(session, req: dict, ctx) -> dict:
         ctx.report(100, "生成完成")
         return {"take": take}
     except Exception as e:
-        take_store.update(take_id, {"status": "failed", "error": str(e)[:300]})
+        rec = take_store.get(take_id) or {}
+        # 远端任务已创建且不是远端终态失败（网络中断/下载失败/本地超时）：
+        # 保持 running，打开动作时自动重挂取回——付费结果不能丢
+        recoverable = (bool(rec.get("remote_task_id"))
+                       and not isinstance(e, ArkError))
+        if recoverable:
+            take_store.update(take_id, {
+                "status": "running",
+                "error": f"轮询中断（重新打开该动作自动重挂取回）: {str(e)[:180]}",
+            })
+        else:
+            take_store.update(take_id, {"status": "failed", "error": str(e)[:300]})
         raise
 
 
@@ -314,6 +364,10 @@ def run_reconcile(session, ctx) -> dict:
                     results.append({"id": tid, "status": status or "running"})
             except ArkError as e:
                 results.append({"id": tid, "status": "error", "detail": str(e)[:120]})
+            except httpx.HTTPError as e:
+                # 网络错误：take 保持 running，下次重挂再试；不影响其余条目
+                results.append({"id": tid, "status": "network_error",
+                                "detail": f"{type(e).__name__}: {str(e)[:100]}"})
     finally:
         client.close()
     return {"reconciled": len(results), "results": results}

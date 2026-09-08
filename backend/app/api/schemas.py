@@ -13,6 +13,8 @@ class ExtractRequest(BaseModel):
     start_time: float = Field(0, ge=0, description="开始时间(秒)")
     end_time: float = Field(10, gt=0, description="结束时间(秒)")
     fps: float = Field(10, gt=0, le=60, description="提取帧率")
+    # 指定模板时，抽帧后按该模板规则的保留集自动删除多余帧（帧数与校准不符则跳过）
+    template_rule_id: Optional[str] = Field(default=None)
 
 
 class SelectionRequest(BaseModel):

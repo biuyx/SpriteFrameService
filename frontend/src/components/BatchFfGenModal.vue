@@ -3,56 +3,64 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useStore, toast, askConfirm } from '../stores'
 import api from '../api'
 
+// 批量生成首帧：立绘 + 参考首帧集 → Seedream 生图（按张计费）
 const props = defineProps({ actions: { type: Array, required: true } })
 const emit = defineEmits(['close', 'done'])
 const store = useStore()
 
-const gen = ref(null)
-const model = ref('')
-const resolution = ref('480p')
-const checked = ref({})            // action_id -> bool
+const sets = ref([])
+const setId = ref('')
 const templatesById = ref({})
-const phase = ref('pick')          // pick | running
-const rows = ref([])               // 进度行 [{action_id,name,job_id,status,progress,message,error,variant,duration}]
+const refs = ref([])               // 精灵首帧图库（找立绘标记）
+const checked = ref({})
+const phase = ref('pick')
+const rows = ref([])
 const skippedRows = ref([])
 
-// 可生成 = 有首帧 + 有模板;默认勾选其中未生成过的
-const eligible = (a) => a.summary?.has_first_frame && !!a.template_id
+const hasFront = computed(() => refs.value.some(r => r.role === 'front'))
+const hasBack = computed(() => refs.value.some(r => r.role === 'back'))
+const curSet = computed(() => sets.value.find(s => s.id === setId.value) || null)
+const setKeys = computed(() => new Set((curSet.value?.frames || []).map(f => f.key)))
+
+function actionKey(a) {
+  return templatesById.value[a.template_id]?.key || a.name
+}
+const eligible = (a) => hasFront.value && setKeys.value.has(actionKey(a))
+
 onMounted(async () => {
   try {
-    gen.value = await api.genCapabilities()
-    model.value = gen.value.default_model
-    const t = await api.templates()
+    const [s, t, r] = await Promise.all([
+      api.ffsets(), api.templates(), api.spriteRefs(store.currentSprite.id),
+    ])
+    sets.value = s.sets
     for (const x of t.templates) templatesById.value[x.id] = x
+    refs.value = r.refs
+    if (sets.value.length) setId.value = sets.value[0].id
+    resetChecks()
   } catch (e) { toast(`加载失败: ${e.message}`) }
-  for (const a of props.actions) {
-    checked.value[a.id] = eligible(a) && !a.summary?.generated_count && !a.summary?.generating_count
-  }
 })
 
-function tplLabel(a) {
-  const t = templatesById.value[a.template_id]
-  if (!t) return ''
-  return `${t.variant || t.key}${t.duration_hint ? `·${t.duration_hint}s` : ''}`
+function resetChecks() {
+  for (const a of props.actions)
+    checked.value[a.id] = eligible(a) && !a.summary?.has_first_frame
 }
 
 const selectedIds = computed(() =>
   props.actions.filter(a => checked.value[a.id]).map(a => a.id))
 
-function selectUngen() {
-  for (const a of props.actions)
-    checked.value[a.id] = eligible(a) && !a.summary?.generated_count
-}
+function selectMissing() { resetChecks() }
 function selectNone() { for (const a of props.actions) checked.value[a.id] = false }
 
 async function start() {
   const n = selectedIds.value.length
   if (!n) return toast('请至少勾选一个动作')
+  const overwrite = props.actions.filter(a => checked.value[a.id] && a.summary?.has_first_frame).length
+  const warn = overwrite ? `\n其中 ${overwrite} 个已有首帧，将被覆盖。` : ''
   if (!(await askConfirm(
-    `提交 ${n} 个生成任务？\n模型 ${model.value.includes('mini') ? 'Mini' : model.value.includes('fast') ? 'Fast' : 'Pro'} · ${resolution.value}，时长按各动作模板。\n每个任务按 Ark 实际用量计费。`))) return
+    `用参考集「${curSet.value?.name}」为 ${n} 个动作生成首帧？\n生图按张计费（Seedream）。${warn}`))) return
   try {
-    const r = await api.batchGenerate(store.currentSprite.id, {
-      action_ids: selectedIds.value, model: model.value, resolution: resolution.value,
+    const r = await api.batchGenFirstFrames(store.currentSprite.id, {
+      action_ids: selectedIds.value, set_id: setId.value,
     })
     skippedRows.value = r.skipped
     rows.value = r.submitted.map(x => ({ ...x, status: 'queued', progress: 0, message: '', error: null }))
@@ -65,11 +73,7 @@ async function start() {
 }
 
 let timer = null
-function startPolling() {
-  stopPolling()
-  timer = setInterval(poll, 2500)
-  poll()
-}
+function startPolling() { stopPolling(); timer = setInterval(poll, 2000); poll() }
 function stopPolling() { if (timer) { clearInterval(timer); timer = null } }
 onUnmounted(stopPolling)
 
@@ -84,11 +88,7 @@ async function poll() {
       row.message = j.message
       row.error = j.error
     } catch (e) {
-      if (e.status === 404) {         // 服务重启任务丢失：终止而不是无限重试
-        row.status = 'error'
-        row.error = '任务记录不存在（服务可能已重启）'
-      }
-      /* 其他错误视为网络瞬断,下轮再试 */
+      if (e.status === 404) { row.status = 'error'; row.error = '任务记录不存在（服务可能已重启）' }
     }
     if (!['done', 'error', 'cancelled'].includes(row.status)) active = true
   }
@@ -96,14 +96,14 @@ async function poll() {
     stopPolling()
     emit('done')
     const fail = rows.value.filter(r => r.status !== 'done').length
-    toast(fail ? `批量生成结束：${rows.value.length - fail} 成功 / ${fail} 失败` : '批量生成全部完成')
+    toast(fail ? `首帧生成结束：${rows.value.length - fail} 成功 / ${fail} 失败` : '首帧全部生成完成')
   }
 }
 
 async function retry(row) {
   try {
-    const r = await api.batchGenerate(store.currentSprite.id, {
-      action_ids: [row.action_id], model: model.value, resolution: resolution.value,
+    const r = await api.batchGenFirstFrames(store.currentSprite.id, {
+      action_ids: [row.action_id], set_id: setId.value,
     })
     if (r.submitted.length) {
       Object.assign(row, { ...r.submitted[0], status: 'queued', progress: 0, message: '', error: null })
@@ -115,8 +115,6 @@ async function retry(row) {
 }
 
 const doneCount = computed(() => rows.value.filter(r => r.status === 'done').length)
-const failCount = computed(() => rows.value.filter(r => r.status === 'error').length)
-
 const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成', error: '✗ 失败', cancelled: '已取消' }
 </script>
 
@@ -124,25 +122,29 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
   <div class="modal-mask" @click.self="emit('close')">
     <div class="modal">
       <div class="modal-head">
-        <h3>批量生成（{{ store.currentSprite?.name }}）</h3>
+        <h3>批量生成首帧（{{ store.currentSprite?.name }}）</h3>
         <button class="small" @click="emit('close')">✕</button>
       </div>
 
-      <!-- 勾选阶段 -->
       <template v-if="phase === 'pick'">
-        <div class="row" style="gap:10px;margin-bottom:8px;align-items:center">
-          <div class="field inline"><label>模型</label>
-            <select v-model="model">
-              <option v-for="m in gen?.models || []" :key="m.id" :value="m.id">{{ m.label }}</option>
+        <div class="row" style="gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <div class="field inline"><label>参考首帧集</label>
+            <select v-model="setId" @change="resetChecks">
+              <option v-for="s in sets" :key="s.id" :value="s.id">
+                {{ s.name }}（{{ s.frames.length }} 张{{ s.group ? ` · ${s.group}` : '' }}）</option>
             </select></div>
-          <div class="field inline"><label>分辨率</label>
-            <select v-model="resolution">
-              <option v-for="r in gen?.params?.resolution || []" :key="r">{{ r }}</option>
-            </select></div>
-          <span class="hint">时长按各动作模板的推荐值</span>
+          <span :class="hasFront ? 'ok-text' : 'warn-text'">
+            正面立绘 {{ hasFront ? '✓' : '未标记' }}</span>
+          <span :class="hasBack ? 'ok-text' : 'hint'">
+            背面立绘 {{ hasBack ? '✓' : '未标记（背面动作将用正面立绘代替）' }}</span>
         </div>
+        <p v-if="!hasFront" class="warn-text" style="margin:0 0 6px;font-size:12px">
+          请先在「首帧图库」上传立绘并点图片左下角标记「正面立绘」。</p>
+        <p v-if="!sets.length" class="warn-text" style="margin:0 0 6px;font-size:12px">
+          还没有参考首帧集——先到精灵库「参考首帧库」导入或从完成的精灵归档。</p>
+
         <div class="row" style="gap:8px;margin-bottom:6px">
-          <button class="small" @click="selectUngen">选未生成的</button>
+          <button class="small" @click="selectMissing">选缺首帧的</button>
           <button class="small" @click="selectNone">全不选</button>
           <span class="hint">已勾选 {{ selectedIds.length }} 个</span>
         </div>
@@ -151,38 +153,34 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
                  :class="{ disabled: !eligible(a) }">
             <input type="checkbox" v-model="checked[a.id]" :disabled="!eligible(a)" />
             <b>{{ a.name }}</b>
-            <span class="hint">{{ tplLabel(a) }}</span>
+            <span class="hint">{{ actionKey(a) }}</span>
             <span class="spacer" style="flex:1"></span>
-            <span v-if="!a.summary?.has_first_frame" class="warn-text">缺首帧</span>
-            <span v-else-if="!a.template_id" class="warn-text">无模板</span>
-            <span v-else-if="a.summary?.generating_count" class="warn-text">生成中</span>
-            <span v-else-if="a.summary?.generated_count" class="ok-text">已有 {{ a.summary.generated_count }} 版</span>
+            <span v-if="!setKeys.has(actionKey(a))" class="warn-text">参考集缺此动作</span>
+            <span v-else-if="a.summary?.has_first_frame" class="hint">已有首帧（将覆盖）</span>
+            <span v-else class="warn-text">缺首帧</span>
           </label>
         </div>
         <div class="modal-foot">
           <button class="primary" :disabled="!selectedIds.length" @click="start">
-            开始生成（{{ selectedIds.length }} 个）</button>
+            开始生成（{{ selectedIds.length }} 张）</button>
           <button @click="emit('close')">取消</button>
         </div>
       </template>
 
-      <!-- 进度阶段 -->
       <template v-else>
         <div class="prog-summary">
           完成 {{ doneCount }} / {{ rows.length }}
-          <span v-if="failCount" class="warn-text">（失败 {{ failCount }}）</span>
           <div class="prog-bar"><div class="prog-fill"
                :style="{ width: (doneCount / rows.length * 100) + '%' }"></div></div>
         </div>
         <div class="act-list">
           <div v-for="r in rows" :key="r.action_id" class="act-row">
             <b>{{ r.name }}</b>
-            <span class="hint">{{ r.variant }}{{ r.duration ? `·${r.duration}s` : '' }}</span>
+            <span class="hint">{{ r.message }}</span>
             <span class="spacer" style="flex:1"></span>
-            <span :class="{ 'ok-text': r.status === 'done', 'warn-text': r.status === 'error' }">
-              {{ STATUS_TXT[r.status] || r.status }}
-              <template v-if="r.status === 'running'"> {{ Math.round(r.progress) }}%</template>
-            </span>
+            <span :class="{ 'ok-text': r.status === 'done', 'warn-text': r.status === 'error' }"
+                  :title="r.error || ''">
+              {{ STATUS_TXT[r.status] || r.status }}</span>
             <button v-if="r.status === 'error'" class="small" @click="retry(r)">重试</button>
           </div>
           <div v-for="s in skippedRows" :key="s.action_id" class="act-row disabled">
@@ -190,7 +188,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <span class="warn-text">跳过：{{ s.reason }}</span>
           </div>
         </div>
-        <p class="hint" style="margin-top:6px">可关闭本窗口，任务在后台继续（任务面板可见）。</p>
+        <p class="hint" style="margin-top:6px">生成完成后到看板/工作台确认效果，不满意的可单独重新生成。</p>
         <div class="modal-foot">
           <button @click="emit('close')">关闭</button>
         </div>
@@ -205,14 +203,14 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
   display: flex; align-items: center; justify-content: center;
 }
 .modal {
-  width: 600px; max-width: 94vw; max-height: 86vh; overflow-y: auto;
+  width: 620px; max-width: 94vw; max-height: 86vh; overflow-y: auto;
   background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: 8px; padding: 16px 20px 18px;
 }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .modal-head h3 { margin: 0; font-size: 16px; }
 .act-list {
-  border: 1px solid var(--border); border-radius: 5px; max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 5px; max-height: 300px; overflow-y: auto;
   margin-bottom: 12px;
 }
 .act-row {
@@ -226,8 +224,6 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
 .ok-text { color: var(--ok); font-size: 12px; }
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; }
 .prog-summary { font-size: 13px; margin-bottom: 10px; }
-.prog-bar {
-  height: 6px; background: var(--bg-input); border-radius: 3px; margin-top: 6px; overflow: hidden;
-}
+.prog-bar { height: 6px; background: var(--bg-input); border-radius: 3px; margin-top: 6px; overflow: hidden; }
 .prog-fill { height: 100%; background: var(--accent); transition: width .4s; }
 </style>

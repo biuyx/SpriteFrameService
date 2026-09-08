@@ -3,6 +3,9 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useStore, refreshFrames, refreshSession, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
+import TemplateLibraryModal from '../components/TemplateLibraryModal.vue'
+import FirstFrameLibraryModal from '../components/FirstFrameLibraryModal.vue'
+import SaveRuleButton from '../components/SaveRuleButton.vue'
 
 const store = useStore()
 const dragOver = ref(false)
@@ -39,26 +42,124 @@ function openPreview(t) {
   previewErr.value = false
   previewTake.value = t
 }
+
+// ---- 生成结果 × 参考视频 对比 ----
+const compareTake = ref(null)
+const cmpRefEl = ref(null)
+const cmpGenEl = ref(null)
+const cmpRefErr = ref(false)
+const cmpGenErr = ref(false)
+const cmpPaused = ref(false)
+
+function canCompare(t) {
+  return t.status === 'succeeded' && (t.template_id || t.used_reference_video)
+}
+function openCompare(t) {
+  cmpRefErr.value = false
+  cmpGenErr.value = false
+  cmpPaused.value = false
+  compareTake.value = t
+}
+function cmpRefUrl(t) {
+  return t.template_id ? api.templateVideoUrl(t.template_id)
+    : api.referenceVideoUrl(store.sessionId, Date.now())
+}
+function cmpRefLabel(t) {
+  if (!t.template_id) return '本地参考视频'
+  const tpl = tplAll.value.find((x) => x.id === t.template_id)
+  return tpl ? `模板 · ${tpl.variant || tpl.key}` : '模板（已从库中删除）'
+}
+function cmpEach(fn) {
+  for (const v of [cmpRefEl.value, cmpGenEl.value]) if (v) fn(v)
+}
+function cmpToggle() {
+  cmpPaused.value = !cmpPaused.value
+  cmpEach((v) => (cmpPaused.value ? v.pause() : v.play().catch(() => {})))
+}
+function cmpRestart() {
+  cmpPaused.value = false
+  cmpEach((v) => { v.currentTime = 0; v.play().catch(() => {}) })
+}
 const ffAvailable = ref(false)        // 是否已有首帧参考图
 const ffVersion = ref(0)              // 参考图缓存戳
 const ffInput = ref(null)
+const ffLibOpen = ref(false)          // 首帧参考图库弹窗
+
+function onFfApplied() {
+  ffAvailable.value = true
+  ffVersion.value = Date.now()
+  genFirstFrame.value = 'action'
+  toast('已从图库设置首帧参考图')
+}
+
+// ---- AI 生成首帧（立绘 + 参考首帧集 → Seedream）----
+const ffGenOpen = ref(false)
+const ffGenSets = ref([])
+const ffGenSetId = ref('')
+
+async function openFfGen() {
+  try {
+    const s = await api.ffsets()
+    ffGenSets.value = s.sets
+    if (!s.sets.length) return toast('还没有参考首帧集——先到精灵库「参考首帧库」导入或归档')
+    if (!ffGenSetId.value) ffGenSetId.value = s.sets[0].id
+    ffGenOpen.value = true
+  } catch (e) { toast(`加载参考首帧库失败: ${e.message}`) }
+}
+
+async function runFfGen() {
+  if (!ffGenSetId.value) return toast('请选择参考首帧集')
+  const warn = ffAvailable.value ? '当前首帧将被覆盖。' : ''
+  if (!(await askConfirm(`AI 生成本动作首帧？（生图按张计费）${warn}`))) return
+  ffGenOpen.value = false
+  await startJob(() => api.genFirstFrame(store.currentSprite.id, store.sessionId,
+                                         { set_id: ffGenSetId.value }), {
+    title: 'AI 生成首帧',
+    onDone: async () => {
+      ffAvailable.value = true
+      ffVersion.value = Date.now()
+      genFirstFrame.value = 'action'
+    },
+  })
+}
 const rvAvailable = ref(false)        // 是否已上传参考视频
 const rvUse = ref(false)              // 本次生成是否使用参考视频
 const rvInput = ref(null)
 const rvPreview = ref(false)
-const tplVariants = ref([])           // 本动作 key 的模板变体
-const tplSelected = ref('')           // 选中的模板 id('' = 用本地上传)
+const tplAll = ref([])                // 参考视频库全部模板
+const tplVariants = ref([])           // 其中匹配本动作名的（推荐组）
+const tplSelected = ref('')           // 选中的模板 id('' = 不使用/本地上传)
 const tplPreview = ref(false)
+const tplLibOpen = ref(false)         // 参考视频库管理弹窗
+
+// 其余模板（模板库组）：推荐组之外的所有模板
+const tplOthers = computed(() =>
+  tplAll.value.filter((t) => !tplVariants.value.some((v) => v.id === t.id)))
+
+function tplOptLabel(t) {
+  const parts = [t.key]
+  if (t.variant) parts.push(t.variant)
+  return parts.join(' · ') + (t.duration_hint ? `（${t.duration_hint}s）` : '')
+}
 
 async function loadTemplates() {
   tplVariants.value = []
+  tplAll.value = []
   try {
     const r = await api.templates()
+    tplAll.value = r.templates
     const key = (store.currentAction?.name || '').trim()
-    tplVariants.value = r.templates.filter((t) => t.key === key)
-    // 默认选中动作关联的模板;无关联但有同 key 模板则选第一个
+    let matching = r.templates.filter((t) => t.key === key)
+    // 动作名不含 key 时（库导入的动作名=变体名），按已绑定模板的 key 找同门变体
+    const boundTpl = r.templates.find((t) => t.id === store.currentAction?.template_id)
+    if (!matching.length && boundTpl) {
+      matching = r.templates.filter((t) => t.key === boundTpl.key)
+    }
+    tplVariants.value = matching
+    // 默认选中动作关联的模板;无关联但有同 key 模板则选第一个;
+    // 不匹配的库模板不自动选（避免误用错误动作的参考视频）
     const bound = store.currentAction?.template_id
-    if (bound && tplVariants.value.some((t) => t.id === bound)) {
+    if (bound && tplAll.value.some((t) => t.id === bound)) {
       tplSelected.value = bound
     } else if (tplVariants.value.length) {
       tplSelected.value = tplVariants.value[0].id
@@ -72,7 +173,7 @@ async function loadTemplates() {
 
 // 模板携带推荐时长(文件名里的「N秒」)时自动带出
 function applyTplDuration() {
-  const t = tplVariants.value.find((x) => x.id === tplSelected.value)
+  const t = tplAll.value.find((x) => x.id === tplSelected.value)
   if (t?.duration_hint && gen.value?.params?.duration?.includes(t.duration_hint)) {
     genDuration.value = t.duration_hint
   }
@@ -119,7 +220,8 @@ async function loadGen() {
     const r = await fetch(api.referenceVideoUrl(store.sessionId, Date.now()),
                           { method: 'GET', headers: { Range: 'bytes=0-0' }, credentials: 'same-origin' })
     rvAvailable.value = r.ok
-    if (!r.ok) rvUse.value = false
+    // 没上传过本地参考视频只影响本地路径；选中了库模板时保持默认勾选
+    if (!r.ok && !tplSelected.value) rvUse.value = false
   } catch { rvAvailable.value = false }
   await loadTakes()
 }
@@ -150,9 +252,8 @@ function templateForAction() {
   // 带参考视频(reference-driven)时动作由视频定义,提示词只约束镜头与背景
   // (实战验证的短提示词;绿幕长模板是纯 i2v 用的,叠加反而互相干扰)
   if (rvUse.value && (tplSelected.value || rvAvailable.value)) {
-    const t = tplVariants.value.find((x) => x.id === tplSelected.value)
-    const label = t?.variant || name
-    return `${label}：图片参考视频进行动作，固定镜头，无运镜，背景不变。`
+    // 统一固定短提示词，不带动作名前缀（动作由参考视频定义）
+    return '图片参考视频进行动作，固定镜头，无运镜，背景不变，角色位置朝向需要和参考视频完全一致。'
   }
   const lower = name.toLowerCase()
   // 1) 精确命中(含别名)
@@ -205,6 +306,7 @@ async function runGenerate() {
           fps.value = Math.min(60, Math.max(0.1, store.videoInfo.fps || 10))
           videoErr.value = ''
           videoVersion.value++
+          if (!store.frameCount) applyExtractRule()
         }
         toast('生成完成，视频已就绪，可开始抽帧')
       },
@@ -229,6 +331,7 @@ async function useTake(t) {
   endTime.value = r.video_info?.duration ?? endTime.value
   fps.value = Math.min(60, Math.max(0.1, r.video_info?.fps || fps.value))
   await loadTakes()
+  if (!store.frameCount) applyExtractRule()
   toast(`已切换到该版本，可开始抽帧`)
 }
 
@@ -264,6 +367,33 @@ const endTime = ref(10)
 const fps = ref(10)
 const videoEl = ref(null)
 const videoErr = ref('')
+
+// ---- 参考抽帧规则：存于模板，同模板生成的视频节奏一致，参数校准一次即可 ----
+const ruleApplied = ref(false)
+const ruleTpl = computed(() => {
+  // 规则归属：当前视频版本生成时用的模板优先，其次动作绑定的模板
+  const cur = (takes.value.takes || []).find((t) => t.id === takes.value.current)
+  const tid = cur?.template_id || store.currentAction?.template_id
+  return tplAll.value.find((x) => x.id === tid) || null
+})
+const activeRule = computed(() => ruleTpl.value?.extract_rule || null)
+
+function applyExtractRule() {
+  const r = activeRule.value
+  if (!r || !store.videoInfo) return
+  startTime.value = Math.min(r.start, store.videoInfo.duration)
+  endTime.value = Math.min(r.end, store.videoInfo.duration)
+  fps.value = r.fps
+  ruleApplied.value = true
+}
+
+async function refreshTplsAfterRuleSave() {
+  try {
+    const r = await api.templates()
+    tplAll.value = r.templates
+    ruleApplied.value = true
+  } catch { /* ignore */ }
+}
 
 const videoVersion = ref(0)   // 递增使 <video> 重新加载(切版本后 URL 否则不变)
 const videoUrl = computed(() =>
@@ -326,6 +456,8 @@ async function extract() {
       start_time: startTime.value,
       end_time: endTime.value,
       fps: fps.value,
+      // 沿用规则时带上模板：抽帧后按保留集自动删多余帧
+      template_rule_id: ruleApplied.value && ruleTpl.value ? ruleTpl.value.id : null,
     }),
     {
       title: `抽帧 (${fps.value} fps)`,
@@ -344,6 +476,8 @@ onMounted(async () => {
     fps.value = Math.min(60, Math.max(0.1, srcFps))
   }
   await loadGen()
+  // 未抽过帧时，自动沿用模板的参考抽帧规则
+  if (store.videoInfo && !store.frameCount) applyExtractRule()
   // 有未完结的远端生成任务时自动重挂（重启后取回结果）
   const running = (takes.value.takes || []).some(
     (t) => t.source === 'generate' && (t.status === 'running' || t.status === 'pending'))
@@ -386,6 +520,8 @@ onMounted(async () => {
                 <label>帧</label><input type="number" v-model.number="genFrameIndex" :min="0" :max="store.frameCount - 1" style="width:70px" />
               </div>
               <button class="small" @click="ffInput.click()">{{ ffAvailable ? '更换参考图' : '上传参考图' }}</button>
+              <button class="small" title="从精灵首帧图库选择（一张图可用于多个动作）" @click="ffLibOpen = true">从图库选</button>
+              <button class="small" title="立绘 + 参考首帧集 → AI 生成本动作首帧（按张计费）" @click="openFfGen">AI 生成首帧</button>
               <button class="small" title="按动作名重新填入模板提示词" @click="applyTemplate">模板提示词</button>
               <span v-if="!canGenerate" class="warn-text">生成必须提供角色首帧参考图</span>
             </div>
@@ -417,32 +553,38 @@ onMounted(async () => {
         </div>
         <div class="row" style="align-items:center">
           <span class="hint">参考视频（可选，动作/镜头节奏参考）：</span>
-          <template v-if="tplVariants.length">
+          <template v-if="tplAll.length">
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
               <input type="checkbox" v-model="rvUse" /> 使用模板</label>
-            <select v-model="tplSelected" style="max-width:150px"
+            <select v-model="tplSelected" style="max-width:210px"
                     @change="applyTplDuration(); genPrompt = templateForAction()">
-              <option v-for="t in tplVariants" :key="t.id" :value="t.id">
-                {{ t.variant || t.key }}{{ t.duration_hint ? `（${t.duration_hint}s）` : '' }}</option>
-              <option value="">（本地上传的视频）</option>
+              <optgroup v-if="tplVariants.length" label="推荐（匹配动作名）">
+                <option v-for="t in tplVariants" :key="t.id" :value="t.id">
+                  {{ t.variant || t.key }}{{ t.duration_hint ? `（${t.duration_hint}s）` : '' }}</option>
+              </optgroup>
+              <optgroup v-if="tplOthers.length" label="参考视频库">
+                <option v-for="t in tplOthers" :key="t.id" :value="t.id">{{ tplOptLabel(t) }}</option>
+              </optgroup>
+              <option value="">（不使用 / 本地上传）</option>
             </select>
             <button v-if="tplSelected" class="small" @click="tplPreview = true">预览模板</button>
           </template>
-          <template v-if="rvAvailable && (!tplVariants.length || !tplSelected)">
+          <template v-if="rvAvailable && !tplSelected">
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
               <input type="checkbox" v-model="rvUse" /> 本次生成使用</label>
             <button class="small" @click="rvPreview = true">预览</button>
             <button class="small" @click="rvInput.click()">更换</button>
             <button class="small danger" @click="clearRefVideo">清除</button>
           </template>
-          <button v-if="!rvAvailable && !tplVariants.length" class="small" @click="rvInput.click()">上传参考视频</button>
+          <button v-if="!rvAvailable && !tplSelected" class="small" @click="rvInput.click()">上传参考视频</button>
+          <button class="small" title="管理参考视频库（上传/OSS/编辑）" @click="tplLibOpen = true">管理库</button>
           <input ref="rvInput" type="file" accept="video/*" style="display:none"
                  @change="e => onRefVideoFile(e.target.files[0])" />
         </div>
         <p v-if="rvUse && rvAvailable" class="hint" style="margin:2px 0 0">
           已启用参考视频：角色形象仍以参考图为准，视频仅提供动作与镜头节奏。</p>
         <p class="hint" style="margin:4px 0 0">
-          默认 Fast 模型 + 480p + 4s；生成约需数分钟，可切到其他页面继续工作。</p>
+          默认 Mini 模型 + 480p + 4s；生成约需数分钟，可切到其他页面继续工作。</p>
         <p v-if="gen.prompt_templates?.notes" class="hint" style="margin:4px 0 0">
           {{ gen.prompt_templates.notes }}</p>
       </template>
@@ -464,9 +606,41 @@ onMounted(async () => {
         <span v-if="takes.current === t.id" class="ok-text" style="font-size:12px">✓ 当前使用</span>
         <button v-else-if="t.status === 'succeeded'" class="small" @click="useTake(t)">用这个</button>
         <button v-if="t.status === 'succeeded'" class="small" @click="openPreview(t)">预览</button>
+        <button v-if="canCompare(t)" class="small" title="与参考视频并排对比" @click="openCompare(t)">对比</button>
         <button class="small danger" @click="removeTake(t)">删除</button>
       </div>
     </div>
+
+    <!-- 参考视频库管理 -->
+    <TemplateLibraryModal v-if="tplLibOpen"
+                          @close="tplLibOpen = false"
+                          @changed="loadTemplates" />
+
+    <!-- AI 生成首帧：选参考集 -->
+    <div v-if="ffGenOpen" class="tk-mask" @click.self="ffGenOpen = false">
+      <div class="ffgen-box">
+        <h3 style="margin:0 0 12px;font-size:15px">AI 生成首帧</h3>
+        <div class="field" style="margin-bottom:12px"><label>参考首帧集（姿势模板）</label>
+          <select v-model="ffGenSetId" style="width:100%">
+            <option v-for="s in ffGenSets" :key="s.id" :value="s.id">
+              {{ s.name }}（{{ s.frames.length }} 张{{ s.group ? ` · ${s.group}` : '' }}）</option>
+          </select></div>
+        <p class="hint" style="margin:0 0 12px">
+          用本精灵已标记的立绘（正/背面）+ 参考集中同动作的首帧生成；
+          立绘在「首帧图库」里上传并点图片左下角标记。</p>
+        <div class="row" style="justify-content:flex-end;gap:10px">
+          <button class="primary" @click="runFfGen">生成</button>
+          <button @click="ffGenOpen = false">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 首帧参考图库（精灵级共享） -->
+    <FirstFrameLibraryModal v-if="ffLibOpen"
+                            :sprite-id="store.currentSprite.id"
+                            :current-action-id="store.sessionId"
+                            @close="ffLibOpen = false"
+                            @applied="onFfApplied" />
 
     <!-- 模板预览弹层 -->
     <div v-if="tplPreview" class="tk-mask" @click.self="tplPreview = false">
@@ -485,6 +659,36 @@ onMounted(async () => {
           <button class="small" @click="rvPreview = false">✕ 关闭</button></div>
         <video :src="api.referenceVideoUrl(store.sessionId, Date.now())"
                controls autoplay loop style="width:100%;max-height:60vh;background:#000"></video>
+      </div>
+    </div>
+
+    <!-- 生成结果 × 参考视频 对比弹层 -->
+    <div v-if="compareTake" class="tk-mask" @click.self="compareTake = null">
+      <div class="cmp-box">
+        <div class="tk-head">
+          <b>对比：{{ takeLabel(compareTake) || compareTake.id }}</b>
+          <button class="small" @click="cmpToggle">{{ cmpPaused ? '▶ 播放' : '⏸ 暂停' }}</button>
+          <button class="small" @click="cmpRestart">⟲ 同步重播</button>
+          <span class="spacer" style="flex:1"></span>
+          <button class="small" @click="compareTake = null">✕ 关闭</button>
+        </div>
+        <div class="cmp-grid">
+          <div class="cmp-cell">
+            <div class="cmp-label">{{ cmpRefLabel(compareTake) }}</div>
+            <video v-if="!cmpRefErr" ref="cmpRefEl" :src="cmpRefUrl(compareTake)"
+                   autoplay loop muted @error="cmpRefErr = true"></video>
+            <div v-else class="cmp-missing">参考视频不可用（可能已被删除或替换）</div>
+          </div>
+          <div class="cmp-cell">
+            <div class="cmp-label">生成结果
+              <span class="hint" v-if="compareTake.seed != null">seed {{ compareTake.seed }}</span></div>
+            <video v-if="!cmpGenErr" ref="cmpGenEl" :src="api.takeVideoUrl(store.sessionId, compareTake.id)"
+                   autoplay loop muted @error="cmpGenErr = true"></video>
+            <div v-else class="cmp-missing">该视频编码浏览器不支持预览</div>
+          </div>
+        </div>
+        <p class="hint" style="margin:8px 0 0">
+          两侧循环播放；时长不同会渐渐错位，点「同步重播」重新对齐。检查动作节奏、角色朝向与位置是否一致。</p>
       </div>
     </div>
 
@@ -561,8 +765,18 @@ onMounted(async () => {
         <button class="small" @click="startTime = store.videoInfo.duration / 2; endTime = store.videoInfo.duration">后50%</button>
         <span class="hint">预计抽帧: {{ estimate }} 帧</span>
       </div>
-      <div class="row">
+      <div class="row" style="align-items:center">
         <button class="primary" @click="extract">提取帧</button>
+        <template v-if="ruleTpl">
+          <span v-if="activeRule && ruleApplied" class="rule-chip">
+            ✓ 已沿用模板规则「{{ ruleTpl.variant || ruleTpl.key }}」<template
+              v-if="activeRule.keep">· 自动保留 {{ activeRule.keep.length }}/{{ activeRule.total }} 帧</template></span>
+          <button v-else-if="activeRule" class="small"
+                  @click="applyExtractRule">
+            沿用模板规则（{{ activeRule.start }}–{{ activeRule.end }}s @{{ activeRule.fps
+            }}{{ activeRule.keep ? ` · 留${activeRule.keep.length}帧` : '' }}）</button>
+          <SaveRuleButton @saved="refreshTplsAfterRuleSave" />
+        </template>
       </div>    </div>
   </div>
 </template>
@@ -585,6 +799,10 @@ onMounted(async () => {
 .ff-empty { font-size: 11px; color: var(--text-dim); text-align: center; line-height: 1.6; }
 .warn-text { color: var(--warn); font-size: 12px; }
 .ok-text { color: var(--ok); }
+.rule-chip {
+  font-size: 12px; color: var(--ok); background: #4caf5018;
+  padding: 3px 10px; border-radius: 10px;
+}
 .take-list { margin-top: 4px; }
 .take-row {
   display: flex; align-items: center; gap: 10px; padding: 7px 12px;
@@ -610,6 +828,25 @@ onMounted(async () => {
   border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
 }
 .tk-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+.ffgen-box {
+  width: 380px; max-width: 92vw; background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px;
+}
+.cmp-box {
+  width: 980px; max-width: 96vw; background: var(--bg-panel);
+  border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+}
+.cmp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.cmp-cell { min-width: 0; }
+.cmp-label {
+  font-size: 12px; color: var(--text-dim); margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.cmp-cell video { width: 100%; max-height: 56vh; background: #000; display: block; border-radius: 4px; }
+.cmp-missing {
+  display: flex; align-items: center; justify-content: center; min-height: 200px;
+  color: var(--text-dim); font-size: 12px; background: var(--bg-input); border-radius: 4px;
+}
 .tk-prompt { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .danger { border-color: var(--err); color: var(--err); }
 .video-unsupported {

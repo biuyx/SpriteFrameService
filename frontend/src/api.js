@@ -27,7 +27,9 @@ async function request(method, path, { json, form, blob } = {}) {
     // 不触发「登录已过期」的全局回调，否则会重复报错
     const isAuthEndpoint = path.startsWith('/api/auth/')
     if (res.status === 401 && onUnauthorized && !isAuthEndpoint) onUnauthorized(detail)
-    throw new Error(detail)
+    const err = new Error(detail)
+    err.status = res.status   // 让调用方能区分 404（资源没了）与网络瞬断
+    throw err
   }
   if (blob) return res.blob()
   const ct = res.headers.get('content-type') || ''
@@ -54,16 +56,60 @@ const api = {
   deleteAction: (sid, aid) => request('DELETE', `/api/sprites/${sid}/actions/${aid}`),
   openAction: (sid, aid) => request('POST', `/api/sprites/${sid}/actions/${aid}/open`),
   actionCover: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/cover?v=${v}`,
+  // 精灵首帧参考图库（一张图可用于多个动作）
+  spriteRefs: (sid) => request('GET', `/api/sprites/${sid}/refs`),
+  uploadSpriteRef: (sid, file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('POST', `/api/sprites/${sid}/refs`, { form })
+  },
+  spriteRefImageUrl: (sid, rid, v = 0) => `${BASE}/api/sprites/${sid}/refs/${rid}/image?v=${v}`,
+  patchSpriteRef: (sid, rid, patch) => request('PATCH', `/api/sprites/${sid}/refs/${rid}`, { json: patch }),
+  deleteSpriteRef: (sid, rid) => request('DELETE', `/api/sprites/${sid}/refs/${rid}`),
+
+  // 参考首帧集（完成角色的全套动作首帧，供新角色首帧生图参考）
+  ffsets: () => request('GET', '/api/ffsets'),
+  ffsetImportDir: (dir, name, group) =>
+    request('POST', '/api/ffsets/import-dir', { json: { dir, name, group } }),
+  ffsetArchiveSprite: (spriteId, name, group) =>
+    request('POST', '/api/ffsets/archive-sprite', { json: { sprite_id: spriteId, name, group } }),
+  ffsetFrameUrl: (setId, key) => `${BASE}/api/ffsets/${setId}/frames/${encodeURIComponent(key)}/image`,
+  deleteFfset: (setId) => request('DELETE', `/api/ffsets/${setId}`),
+  genFirstFrame: (sid, aid, payload) =>
+    request('POST', `/api/sprites/${sid}/actions/${aid}/gen-first-frame`, { json: payload }),
+  batchGenFirstFrames: (sid, payload) =>
+    request('POST', `/api/sprites/${sid}/batch-gen-first-frames`, { json: payload }),
+  applySpriteRef: (sid, rid, actionIds) =>
+    request('POST', `/api/sprites/${sid}/refs/${rid}/apply`, { json: { action_ids: actionIds } }),
   legacySessions: () => request('GET', '/api/sprites/legacy-sessions'),
-  batchScan: (framesDir, templatesDir) =>
-    request('POST', '/api/sprites/batch-scan', { json: { frames_dir: framesDir, templates_dir: templatesDir } }),
+  batchScan: (payload) => request('POST', '/api/sprites/batch-scan', { json: payload }),
   batchImport: (payload) => request('POST', '/api/sprites/batch-import', { json: payload }),
   batchGenerate: (sid, payload) =>
     request('POST', `/api/sprites/${sid}/batch-generate`, { json: payload }),
+  batchExtract: (sid, actionIds) =>
+    request('POST', `/api/sprites/${sid}/batch-extract`, { json: { action_ids: actionIds } }),
   templates: () => request('GET', '/api/templates'),
   templateVideoUrl: (tid) => `${BASE}/api/templates/${tid}/video`,
+  uploadTemplate: (file, group = '') => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('group', group)
+    return request('POST', '/api/templates/upload', { form })
+  },
+  patchTemplate: (tid, patch) => request('PATCH', `/api/templates/${tid}`, { json: patch }),
+  templateOssUpload: (tid) => request('POST', `/api/templates/${tid}/oss`),
+  scanTemplates: (dir, group = '') => request('POST', '/api/templates/scan', { json: { dir, group } }),
+  deleteTemplate: (tid) => request('DELETE', `/api/templates/${tid}`),
   claimSession: (sid, sessionId, name) =>
     request('POST', `/api/sprites/${sid}/claim`, { json: { session_id: sessionId, name } }),
+
+  // 项目包 导出/导入
+  exportProject: (payload) => request('POST', '/api/project/export', { json: payload, blob: true }),
+  importProject: (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    return request('POST', '/api/project/import', { form })
+  },
 
   // 能力 / 设置
   capabilities: () => request('GET', '/api/capabilities'),
@@ -114,6 +160,16 @@ const api = {
   reorder: (sid, newOrder) => request('POST', `/api/sessions/${sid}/frames/reorder`, { json: { new_order: newOrder } }),
   frameImage: (sid, index, { type = 'preview', checker = 1, fit = 0, v = 0 } = {}) =>
     `${BASE}/api/sessions/${sid}/frames/${index}/image?type=${type}&checker=${checker}&fit=${fit}&v=${v}`,
+  exportFramesZip: (sid, type) =>
+    request('GET', `/api/sessions/${sid}/frames/export-zip?type=${type}`, { blob: true }),
+  importFramesZip: (sid, file, mode) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('mode', mode)
+    return request('POST', `/api/sessions/${sid}/frames/import-zip`, { form })
+  },
+  saveExtractRule: (sid, templateId) =>
+    request('POST', `/api/sessions/${sid}/frames/extract-rule`, { json: { template_id: templateId } }),
   loopTransition: (sid, params) => request('POST', `/api/sessions/${sid}/frames/loop-transition`, { json: params }),
   supplement: (sid, params) => request('POST', `/api/sessions/${sid}/frames/supplement`, { json: params }),
 

@@ -3,12 +3,14 @@ import { ref, computed, watch } from 'vue'
 import { useStore, refreshFrames, toast, askConfirm } from '../stores'
 import api from '../api'
 import FrameGallery from './FrameGallery.vue'
+import FramePackModal from './FramePackModal.vue'
 
 const store = useStore()
 
 // 面板状态
 const collapsed = ref(false)      // 折叠为细条
 const popped = ref(false)         // 弹出为大视图
+const packOpen = ref(false)       // 帧包导出/导入弹窗
 const height = ref(240)           // 展开高度
 const minHeight = 80
 const maxHeight = 600
@@ -100,6 +102,9 @@ watch(collapsed, (c) => { if (popped.value && c) popped.value = false })</script
                 title="以选中的那一帧为首帧新建动作（血统可追溯）"
                 @click="newActionFromFrame">以此帧建动作</button>
         <button class="small danger" @click="delSelected">删除选中</button>
+        <span class="hint">|</span>
+        <button class="small" title="帧打包下载给外部工具加工，或把加工结果导回替换"
+                @click="packOpen = true">帧包</button>
       </template>
 
       <button class="small" :title="collapsed ? '展开' : '折叠'" @click="collapsed = !collapsed">
@@ -115,6 +120,8 @@ watch(collapsed, (c) => { if (popped.value && c) popped.value = false })</script
       <FrameGallery />
     </div>
   </div>
+
+  <FramePackModal v-if="packOpen" @close="packOpen = false" />
 
   <!-- 弹出的大视图 -->
   <div v-if="popped" class="browser-overlay" @click.self="popped = false">

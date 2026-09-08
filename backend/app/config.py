@@ -68,10 +68,12 @@ class Settings(BaseSettings):
     ark_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     # 可选模型（id:标签，分号分隔）。ID 均经模型列表接口/历史请求核实：
     # 2.0 完整版没有 -pro- 后缀，就叫 doubao-seedance-2-0-260128
-    ark_models: str = ("doubao-seedance-2-0-fast-260128:2.0 Fast（默认）;"
-                       "doubao-seedance-2-0-mini-260615:2.0 Mini（成本最低）;"
+    ark_models: str = ("doubao-seedance-2-0-mini-260615:2.0 Mini（默认，成本最低）;"
+                       "doubao-seedance-2-0-fast-260128:2.0 Fast;"
                        "doubao-seedance-2-0-260128:2.0 Pro（完整版）")
-    ark_model: str = "doubao-seedance-2-0-fast-260128"   # 默认模型
+    ark_model: str = "doubao-seedance-2-0-mini-260615"   # 默认模型
+    # 生图模型（首帧生成用；需在方舟控制台开通）。SPRITE_ARK_IMAGE_MODEL 可覆盖
+    ark_image_model: str = "doubao-seedream-5-0-pro-260628"
     ark_timeout_seconds: int = 900   # 单次生成总超时
     generate_max_concurrent: int = 5  # 同时进行中的生成任务数上限（1~10）
 

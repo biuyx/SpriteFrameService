@@ -14,6 +14,7 @@ action_id 全局唯一（uuid hex12），SessionManager 用它直接定位工作
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -295,6 +296,80 @@ class SpriteStore:
             self._action_index.pop(action_id, None)
             return True
 
+    # ------------------------------------------------------------ 首帧参考图库
+    # 精灵级共享：一张首帧图可用于该精灵多个动作的生成。
+    # 存放在 reference/ 目录，refs.json 为索引；按内容 md5 去重。
+    def _refs_json(self, sprite_id: str) -> Path:
+        return self.reference_dir(sprite_id) / "refs.json"
+
+    def list_refs(self, sprite_id: str) -> List[dict]:
+        with self._lock:
+            p = self._refs_json(sprite_id)
+            if p.is_file():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        return data
+                except (json.JSONDecodeError, OSError):
+                    pass
+            return []
+
+    def get_ref(self, sprite_id: str, ref_id: str) -> Optional[dict]:
+        return next((r for r in self.list_refs(sprite_id) if r["id"] == ref_id), None)
+
+    def ref_path(self, sprite_id: str, ref: dict) -> Path:
+        return self.reference_dir(sprite_id) / ref["file"]
+
+    def add_ref(self, sprite_id: str, name: str, png_bytes: bytes) -> dict:
+        """参考图入库（PNG 字节）；内容重复时返回已有记录（不重复存储）。"""
+        with self._lock:
+            self._read_json(self.sprite_json(sprite_id))   # 校验精灵存在
+            items = self.list_refs(sprite_id)
+            digest = hashlib.md5(png_bytes).hexdigest()
+            dup = next((r for r in items if r.get("hash") == digest), None)
+            if dup is not None:
+                return dup
+            rid = f"rf_{uuid.uuid4().hex[:8]}"
+            d = self.reference_dir(sprite_id)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{rid}.png").write_bytes(png_bytes)
+            rec = {"id": rid, "name": _clean_name(name, "参考图"),
+                   "file": f"{rid}.png", "hash": digest,
+                   "bytes": len(png_bytes), "created_at": _now()}
+            items.append(rec)
+            self._write_json(self._refs_json(sprite_id), items)
+            return rec
+
+    def update_ref(self, sprite_id: str, ref_id: str, patch: dict) -> Optional[dict]:
+        """编辑参考图记录（name / role）。role: front 正面立绘 | back 背面立绘 | ''"""
+        allowed = {"name", "role"}
+        with self._lock:
+            items = self.list_refs(sprite_id)
+            ref = next((r for r in items if r["id"] == ref_id), None)
+            if ref is None:
+                return None
+            for k, v in patch.items():
+                if k in allowed:
+                    ref[k] = _clean_name(str(v or ""), "") if k == "name" else (v or "")
+            if not ref.get("name"):
+                ref["name"] = "参考图"
+            self._write_json(self._refs_json(sprite_id), items)
+            return ref
+
+    def delete_ref(self, sprite_id: str, ref_id: str) -> bool:
+        with self._lock:
+            items = self.list_refs(sprite_id)
+            ref = next((r for r in items if r["id"] == ref_id), None)
+            if ref is None:
+                return False
+            try:
+                self.ref_path(sprite_id, ref).unlink(missing_ok=True)
+            except OSError:
+                pass
+            self._write_json(self._refs_json(sprite_id),
+                             [r for r in items if r["id"] != ref_id])
+            return True
+
     # ------------------------------------------------------------ 看板摘要
     def _action_summary(self, sprite_id: str, action_id: str) -> dict:
         """轻量统计（不加载工作态）：看板卡片用。"""
@@ -305,8 +380,10 @@ class SpriteStore:
             return sum(1 for _ in p.glob(pattern)) if p.is_dir() else 0
 
         video_dir = d / "video"
+        # 只认视频本体：takes.json 只是索引，失败的生成也会留下它，不算有素材
         has_video = video_dir.is_dir() and any(
-            f.is_file() and ".part" not in f.name for f in video_dir.iterdir()
+            f.is_file() and ".part" not in f.name and f.suffix.lower() != ".json"
+            for f in video_dir.iterdir()
         )
 
         # 生成成功的版本数与进行中数（批量生成的勾选依据）

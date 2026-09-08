@@ -114,8 +114,91 @@ class TemplateStore:
             self._save([x for x in items if x["id"] != template_id])
             return True
 
+    def groups(self) -> List[str]:
+        """全部分组名（不含未分组），按名称排序。"""
+        return sorted({(t.get("group") or "").strip()
+                       for t in self.list()} - {""})
+
+    def by_group(self, group: str) -> List[dict]:
+        g = (group or "").strip()
+        return [t for t in self.list() if (t.get("group") or "").strip() == g]
+
+    def update(self, template_id: str, patch: dict) -> dict:
+        """编辑 key/variant/duration_hint/group/extract_rule；(key, variant) 保持唯一。"""
+        allowed = {"key", "variant", "duration_hint", "group", "extract_rule"}
+        with self._lock:
+            items = self._load()
+            t = next((x for x in items if x["id"] == template_id), None)
+            if t is None:
+                raise FileNotFoundError(f"模板不存在: {template_id}")
+            new = {**t, **{k: v for k, v in patch.items() if k in allowed}}
+            new["key"] = str(new.get("key") or "").strip()
+            new["variant"] = str(new.get("variant") or "").strip()
+            new["group"] = str(new.get("group") or "").strip()
+            if not new["key"]:
+                raise ValueError("动作 key 不能为空")
+            dup = next((x for x in items if x["id"] != template_id
+                        and x["key"] == new["key"] and x["variant"] == new["variant"]), None)
+            if dup is not None:
+                raise ValueError(f"已存在同 key+变体 的模板: {dup['filename']}")
+            t.update(new)
+            self._save(items)
+            return t
+
+    def add_video(self, filename: str, data: bytes, group: str = "") -> dict:
+        """单文件入库（上传用）：从文件名解析 key/变体/时长，按 (key, variant) 去重。"""
+        suffix = Path(filename).suffix.lower()
+        if suffix not in VIDEO_EXTS:
+            raise ValueError(f"不支持的视频格式: {suffix or '(无扩展名)'}")
+        key, variant, duration = parse_template_name(Path(filename).stem)
+        if not key:
+            raise ValueError("无法从文件名解析动作 key")
+        with self._lock:
+            items = self._load()
+            dup = next((x for x in items
+                        if x["key"] == key and x["variant"] == variant), None)
+            if dup is not None:
+                raise ValueError(
+                    f"已存在同 key+变体 的模板（{dup['filename']}），如需替换请先删除")
+            tid = f"tp_{uuid.uuid4().hex[:8]}"
+            dest = self.root / f"{tid}.mp4"
+            self.root.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            rec = {
+                "id": tid, "key": key, "variant": variant,
+                "duration_hint": duration, "group": (group or "").strip(),
+                "filename": filename, "file": dest.name,
+                "bytes": len(data), "created_at": time.time(),
+                "oss_url": None, "oss_hash": None,
+            }
+            items.append(rec)
+            self._save(items)
+            return rec
+
+    def resolve_or_add(self, rec: dict, data: bytes) -> tuple[str, str, bool]:
+        """项目包导入用：同 (key, variant) 已存在则复用其 id，否则加入新记录
+        （尽量保留原 id，撞车时换新）。返回 (原id, 落库后id, 是否新增)。"""
+        with self._lock:
+            items = self._load()
+            old_id = rec["id"]
+            dup = next((x for x in items if x["key"] == rec.get("key")
+                        and x["variant"] == rec.get("variant")), None)
+            if dup is not None:
+                return old_id, dup["id"], False
+            tid = old_id
+            if any(x["id"] == tid for x in items):
+                tid = f"tp_{uuid.uuid4().hex[:8]}"
+            dest = self.root / f"{tid}.mp4"
+            self.root.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            new = {**rec, "id": tid, "file": dest.name, "bytes": len(data),
+                   "created_at": time.time()}
+            items.append(new)
+            self._save(items)
+            return old_id, tid, True
+
     # ------------------------------------------------------------ 导入
-    def scan_import(self, dir_path: Path) -> dict:
+    def scan_import(self, dir_path: Path, group: str = "") -> dict:
         """扫描目录导入模板视频；按 (key, variant) 去重，幂等。"""
         if not dir_path.is_dir():
             raise FileNotFoundError(f"目录不存在: {dir_path}")
@@ -136,7 +219,7 @@ class TemplateStore:
                 shutil.copyfile(f, dest)
                 rec = {
                     "id": tid, "key": key, "variant": variant,
-                    "duration_hint": duration,
+                    "duration_hint": duration, "group": (group or "").strip(),
                     "filename": f.name, "file": dest.name,
                     "bytes": dest.stat().st_size, "created_at": time.time(),
                     "oss_url": None, "oss_hash": None,

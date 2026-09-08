@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
@@ -156,8 +157,8 @@ class BatchGenerateRequest(BaseModel):
 def _default_generate_payload(session, action: dict, template: dict,
                               model: str, resolution: str, ratio: str) -> dict:
     """按动作的默认配置构造生成请求（与前端单动作面板的默认逻辑一致）。"""
-    variant = template.get("variant") or action.get("name", "")
-    prompt = f"{variant}：图片参考视频进行动作，固定镜头，无运镜，背景不变。"
+    # 统一固定短提示词，不带动作名前缀（动作由参考视频定义）
+    prompt = "图片参考视频进行动作，固定镜头，无运镜，背景不变，角色位置朝向需要和参考视频完全一致。"
     duration = template.get("duration_hint") or 4
     return {
         "prompt": prompt,
@@ -259,6 +260,13 @@ async def upload_first_frame(session_id: str, file: UploadFile = File(...)):
             "first_frame": {"kind": "upload", "file": "first_frame.png",
                             "filename": file.filename},
         })
+        # 同步登记进精灵首帧图库（内容去重）——同一张图可复用于其他动作
+        try:
+            from pathlib import Path as _P
+            sprite_store.add_ref(sprite_id, _P(file.filename or "参考图").stem,
+                                 buf.tobytes())
+        except Exception:
+            pass   # 图库登记失败不影响首帧设置
     return {"ok": True, "file": "first_frame.png"}
 
 
@@ -331,6 +339,7 @@ def delete_reference_video(session_id: str):
 # ------------------------------------------------------------ 动作模板库
 class TemplateScanRequest(BaseModel):
     dir: str = Field(..., description="包含动作模板视频的本机目录")
+    group: Optional[str] = Field(default="", description="导入到的分组名（可空=未分组）")
 
 
 @router.get("/templates")
@@ -345,9 +354,74 @@ def scan_templates(req: TemplateScanRequest):
     from pathlib import Path as _P
     from app.services.template_store import template_store
     try:
-        return template_store.scan_import(_P(req.dir.strip()))
+        return template_store.scan_import(_P(req.dir.strip()), group=req.group or "")
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/templates/upload")
+async def upload_template(file: UploadFile = File(...), group: str = Form("")):
+    """上传单个模板视频入库；key/变体/推荐时长 从文件名解析。"""
+    from app.services.template_store import template_store
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="文件为空")
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="文件超过 200MB")
+    try:
+        return template_store.add_video(file.filename or "unnamed.mp4", data,
+                                        group=group)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class ExtractRule(BaseModel):
+    """参考抽帧规则：同模板生成的视频节奏一致，抽帧参数只需校准一次。"""
+    start: float = Field(..., ge=0)
+    end: float = Field(..., gt=0)
+    fps: float = Field(..., ge=0.1, le=60)
+    total: Optional[int] = Field(default=None, ge=1, description="校准时抽出的总帧数")
+    keep: Optional[list[int]] = Field(default=None, max_length=5000,
+                                      description="校准时保留的原始帧序号（选帧结果）")
+    calibrated_on: Optional[str] = Field(default=None, description="校准所在的动作 id")
+
+
+class TemplatePatch(BaseModel):
+    key: Optional[str] = None
+    variant: Optional[str] = None
+    duration_hint: Optional[int] = Field(default=None, ge=1, le=60)
+    group: Optional[str] = None
+    extract_rule: Optional[ExtractRule] = None    # 显式传 null 表示清除规则
+
+
+@router.patch("/templates/{template_id}")
+def patch_template(template_id: str, req: TemplatePatch):
+    from app.services.template_store import template_store
+    patch = req.model_dump(exclude_unset=True)
+    if patch.get("extract_rule") is not None:
+        rule = patch["extract_rule"]
+        if rule["end"] <= rule["start"]:
+            raise HTTPException(status_code=400, detail="抽帧规则的结束时间必须大于开始时间")
+        rule["updated_at"] = time.time()
+    try:
+        return template_store.update(template_id, patch)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/templates/{template_id}/oss")
+def upload_template_oss(template_id: str):
+    """手动把模板传到 OSS（生成时也会按需触发；这里供批量预上传）。"""
+    from app.services.template_store import template_store
+    try:
+        url = template_store.ensure_oss_url(template_id)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"OSS 上传失败: {e}")
+    return {"oss_url": url}
 
 
 @router.get("/templates/{template_id}/video")

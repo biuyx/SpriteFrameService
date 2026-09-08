@@ -1,8 +1,9 @@
 <script setup>
 import { ref, computed } from 'vue'
-import { useStore, refreshFrames, toast } from '../stores'
+import { useStore, refreshFrames, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
+import SaveRuleButton from '../components/SaveRuleButton.vue'
 
 const store = useStore()
 const mode = ref('pose')
@@ -15,6 +16,40 @@ const detectResult = ref(null)
 // 找循环帧：先出结果，确认后再应用范围
 const loopResult = ref(null)
 const loopPending = ref(false)
+
+// 间隔选帧：从起始帧起每 N 帧选中 1 帧（抽稀用）
+const stepStart = ref(0)
+const stepN = ref(2)
+
+function stepIndices() {
+  const n = Math.max(1, Math.round(stepN.value))
+  const start = Math.min(Math.max(0, stepStart.value), Math.max(0, store.frameCount - 1))
+  const indices = []
+  for (let i = start; i < store.frameCount; i += n) indices.push(i)
+  return indices
+}
+
+async function selectByStep() {
+  if (!store.frameCount) return toast('当前没有帧')
+  const indices = stepIndices()
+  await api.selection(store.sessionId, { mode: 'set', indices })
+  await refreshFrames()
+  toast(`已选中 ${indices.length} 帧（从 #${Math.max(0, stepStart.value)} 起，每 ${Math.max(1, Math.round(stepN.value))} 帧取 1）`)
+}
+
+// 抽稀：只保留间隔选中的帧，其余删除（一步完成 选取→反选→删除）
+async function keepByStep() {
+  if (!store.frameCount) return toast('当前没有帧')
+  const keep = new Set(stepIndices())
+  const drop = store.frames.map((f) => f.index).filter((i) => !keep.has(i))
+  if (!drop.length) return toast('按当前间隔没有可删除的帧')
+  if (!(await askConfirm(
+    `抽稀：保留 ${keep.size} 帧（每 ${Math.max(1, Math.round(stepN.value))} 帧取 1），删除其余 ${drop.length} 帧？`,
+    { danger: true }))) return
+  await api.deleteFrames(store.sessionId, drop)
+  await refreshFrames()
+  toast(`已抽稀：保留 ${store.frameCount} 帧`)
+}
 
 const modes = [
   { key: 'pose', name: '姿势 (MediaPipe)' },
@@ -130,7 +165,20 @@ function overlayUrl(idx, m) {
           </div>
           <button @click="removeSimilar">去相似帧</button>
           <button :disabled="loopPending" @click="findLoop">{{ loopPending ? '查找中...' : '找循环帧' }}</button>
+          <span class="spacer" style="flex:1"></span>
+          <SaveRuleButton />
         </div>
+        <div class="row" style="align-items:center">
+          <div class="field inline"><label>起始帧</label>
+            <input type="number" v-model.number="stepStart" :min="0" style="width:70px" /></div>
+          <div class="field inline"><label>间隔</label>
+            <input type="number" v-model.number="stepN" :min="1" style="width:70px" /></div>
+          <button class="small" @click="selectByStep">间隔选帧</button>
+          <button class="small danger" @click="keepByStep">按间隔抽稀</button>
+          <span class="hint">每 N 帧取 1（如间隔 2 → #0、#2、#4…）；「抽稀」直接只保留这些帧</span>
+        </div>
+        <p class="hint" style="margin:4px 0 0">
+          删帧完成后可「保存为模板规则」——同模板生成的其他角色批量抽帧时自动沿用同样的保留结果。</p>
 
         <!-- 查找结果 + 确认 -->
         <div v-if="loopResult" class="mono" style="margin-top:8px; padding:10px; background:var(--bg-input); border-radius:4px">
