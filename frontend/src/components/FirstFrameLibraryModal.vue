@@ -80,6 +80,7 @@ async function onFiles(files) {
   }
   uploading.value = false
   if (fileInput.value) fileInput.value.value = ''
+  changed.value = true
   await load()
   toast(dup ? `入库 ${ok} 张，${dup} 张已存在（内容相同）` : `已入库 ${ok} 张`)
 }
@@ -89,6 +90,7 @@ async function cycleRole(r) {
   const next = { '': 'front', front: 'back', back: '' }[r.role || '']
   await api.patchSpriteRef(props.spriteId, r.id, { role: next })
   r.role = next
+  changed.value = true          // 看板摘要条的立绘状态要随之刷新
   toast(next ? `已标记为${ROLE_TXT[next]}` : '已取消标记')
 }
 
@@ -96,6 +98,7 @@ async function removeRef(r) {
   if (!(await askConfirm(`删除参考图「${r.name}」？已应用到动作的首帧不受影响。`, { danger: true }))) return
   await api.deleteSpriteRef(props.spriteId, r.id)
   if (selected.value === r.id) selected.value = ''
+  changed.value = true
   await load()
 }
 
@@ -422,11 +425,11 @@ onMounted(async () => {
 }
 .ref-role {
   position: absolute; bottom: 24px; left: 4px; font-size: 10px; padding: 1px 7px;
-  border-radius: 8px; background: rgba(0,0,0,.55); color: var(--text-dim);
-  cursor: pointer; opacity: 0; transition: opacity .12s;
+  border-radius: 8px; background: rgba(0,0,0,.6); color: var(--text-dim);
+  cursor: pointer; opacity: .75; transition: opacity .12s; border: 1px dashed transparent;
 }
-.ref-item:hover .ref-role { opacity: 1; }
-.ref-role.marked { opacity: 1; background: #1e88e5cc; color: #fff; }
+.ref-item:hover .ref-role { opacity: 1; border-color: var(--text-dim); }
+.ref-role.marked { opacity: 1; background: #1e88e5cc; color: #fff; border-color: transparent; }
 .act-list {
   border: 1px solid var(--border); border-radius: 5px; max-height: 220px; overflow-y: auto;
   margin-bottom: 10px;
