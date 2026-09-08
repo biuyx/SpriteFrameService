@@ -10,7 +10,9 @@ import LoginView from './components/LoginView.vue'
 import SettingsModal from './components/SettingsModal.vue'
 import SpriteLibraryView from './views/SpriteLibraryView.vue'
 import SpriteDetailView from './views/SpriteDetailView.vue'
-import VideoView from './views/VideoView.vue'
+import FirstFrameView from './views/FirstFrameView.vue'
+import GenerateView from './views/GenerateView.vue'
+import ExtractView from './views/ExtractView.vue'
 import AnalysisView from './views/AnalysisView.vue'
 import BackgroundView from './views/BackgroundView.vue'
 import ImageOpsView from './views/ImageOpsView.vue'
@@ -52,7 +54,9 @@ const runningCount = () => jobs.items.filter((j) => j.status === 'running').leng
 // 工作台左栏：按工序顺序排列的流水线（历史回退移到顶栏工具位）
 //   group: main 主线 | refine 精修（可选）
 const steps = [
-  { key: 'video', label: '素材与抽帧', group: 'main' },
+  { key: 'firstframe', label: '首帧', group: 'main' },
+  { key: 'generate', label: '视频生成', group: 'main' },
+  { key: 'extract', label: '抽帧', group: 'main' },
   { key: 'analysis', label: '动作分析', group: 'main', optional: true },
   { key: 'background', label: '背景抠图', group: 'main' },
   { key: 'image', label: '图像处理', group: 'refine' },
@@ -60,6 +64,8 @@ const steps = [
   { key: 'export', label: '导出', group: 'main' },
 ]
 const mainOrder = steps.filter((s) => s.group === 'main').map((s) => s.key)
+// 素材类工序自带视频预览，右侧常驻预览面板不重复显示
+const SOURCE_STEPS = new Set(['firstframe', 'generate', 'extract'])
 
 // 当前动作在看板列表中的摘要（导出次数等不在工作态里）
 const curSummary = computed(() =>
@@ -68,7 +74,12 @@ const curSummary = computed(() =>
 // 每步状态：done ✓ / doing ● / todo ○ / optional
 function stepState(key) {
   const frames = store.frames
-  if (key === 'video') {
+  if (key === 'firstframe') return store.firstFrame.available ? 'done' : 'todo'
+  if (key === 'generate') {
+    if (store.videoInfo) return 'done'
+    return (store.takes.takes || []).some((t) => t.status === 'running' || t.status === 'pending') ? 'doing' : 'todo'
+  }
+  if (key === 'extract') {
     if (store.frameCount > 0) return 'done'
     return store.videoInfo ? 'doing' : 'todo'
   }
@@ -130,13 +141,15 @@ function onKey(e) {
   if (e.ctrlKey || e.metaKey || e.altKey) return
   if (e.key === '[') { e.preventDefault(); switchAction(-1) }
   else if (e.key === ']') { e.preventDefault(); switchAction(1) }
-  else if (/^[1-6]$/.test(e.key)) { tab.value = steps[+e.key - 1].key }
+  else if (/^[1-8]$/.test(e.key)) { tab.value = steps[+e.key - 1].key }
 }
 onMounted(() => window.addEventListener('keydown', onKey))
 onUnmounted(() => window.removeEventListener('keydown', onKey))
 
 const views = {
-  video: VideoView,
+  firstframe: FirstFrameView,
+  generate: GenerateView,
+  extract: ExtractView,
   analysis: AnalysisView,
   background: BackgroundView,
   image: ImageOpsView,
@@ -211,7 +224,7 @@ function fmtDuration(sec) {
 
 function backToBoard() {
   gotoSprite(store.currentSprite)
-  tab.value = 'video'
+  tab.value = 'firstframe'
 }
 
 // 任务面板：跳到任务所属的动作工作台
@@ -313,8 +326,8 @@ async function jumpToJob(j) {
           </div>
         </div>
 
-        <!-- 右侧视频预览（除视频抽帧外常驻） -->
-        <div v-if="tab !== 'video'" class="video-panel-wrap">
+        <!-- 右侧视频预览（素材类工序自带预览，其余工序常驻） -->
+        <div v-if="!SOURCE_STEPS.has(tab)" class="video-panel-wrap">
           <VideoPanel />
         </div>
       </div>

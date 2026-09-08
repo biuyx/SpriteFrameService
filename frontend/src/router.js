@@ -8,19 +8,23 @@ import api from './api'
 import { useStore, gotoLibrary, gotoSprite, openAction, toast } from './stores'
 import { currentTab } from './nav'
 
-const TABS = new Set(['video', 'analysis', 'background', 'image', 'editor', 'export', 'history'])
+const TABS = new Set(['firstframe', 'generate', 'extract', 'analysis', 'background',
+                      'image', 'editor', 'export', 'history'])
+const LEGACY_TAB = { video: 'generate' }     // 旧链接映射
+const DEFAULT_TAB = 'firstframe'
 
 export function parseHash(hash = location.hash) {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
   if (parts[0] !== 'sprites' || !parts[1]) return { view: 'library' }
   if (parts[2] !== 'actions' || !parts[3]) return { view: 'sprite', spriteId: parts[1] }
+  const t = LEGACY_TAB[parts[4]] || parts[4]
   return { view: 'workbench', spriteId: parts[1], actionId: parts[3],
-           tab: TABS.has(parts[4]) ? parts[4] : 'video' }
+           tab: TABS.has(t) ? t : DEFAULT_TAB }
 }
 
 export function hashFor(state) {
   if (state.view === 'workbench' && state.spriteId && state.actionId)
-    return `#/sprites/${state.spriteId}/actions/${state.actionId}/${state.tab || 'video'}`
+    return `#/sprites/${state.spriteId}/actions/${state.actionId}/${state.tab || DEFAULT_TAB}`
   if (state.view === 'sprite' && state.spriteId) return `#/sprites/${state.spriteId}`
   return '#/sprites'
 }

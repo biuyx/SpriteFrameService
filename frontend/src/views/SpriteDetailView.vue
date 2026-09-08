@@ -62,10 +62,10 @@ function toggleAll(e) {
 const preselect = computed(() => selectedIds.value.length ? selectedIds.value : null)
 
 // 工序 chip 直达工作台对应页签
-const STAGE_TAB = { ff: 'video', gen: 'video', frm: 'video', mat: 'background', exp: 'export' }
+const STAGE_TAB = { ff: 'firstframe', gen: 'generate', frm: 'extract', mat: 'background', exp: 'export' }
 async function openAt(a, stageKey) {
   await openAction(store.currentSprite.id, a.id)
-  currentTab.value = STAGE_TAB[stageKey] || 'video'
+  currentTab.value = STAGE_TAB[stageKey] || 'firstframe'
 }
 
 async function load() {

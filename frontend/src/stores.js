@@ -12,6 +12,9 @@ const state = reactive({
 
   sessionId: null,        // = 打开中的 action_id
   videoInfo: null,
+  videoVersion: 0,        // 视频预览缓存戳：切版本/生成/上传后递增让 <video> 重新加载
+  firstFrame: { available: false, version: 0 },   // 首帧参考图就绪状态（首帧/视频生成两步共用）
+  takes: { current: null, takes: [] },            // 素材版本（视频生成列表 / 抽帧规则归属共用）
   frames: [],
   frameCount: 0,
   selectedCount: 0,
@@ -76,7 +79,28 @@ export async function openAction(spriteId, actionId) {
   state.view = 'workbench'
   await refreshFrames()
   loadSpriteActions(spriteId)   // 切换器与流水线状态用，不阻塞打开
+  probeFirstFrame()             // 流水线「首帧」状态
+  loadTakes()
   return r
+}
+
+// 首帧参考图是否就绪（探测一次 first-frame 端点）
+export async function probeFirstFrame() {
+  if (!state.sessionId) return
+  try {
+    const r = await fetch(api.firstFrameUrl(state.sessionId, Date.now()), { credentials: 'same-origin' })
+    state.firstFrame.available = r.ok
+  } catch { state.firstFrame.available = false }
+}
+
+export function markFirstFrame() {
+  state.firstFrame.available = true
+  state.firstFrame.version = Date.now()
+}
+
+export async function loadTakes() {
+  if (!state.sessionId) return
+  try { state.takes = await api.takes(state.sessionId) } catch { /* ignore */ }
 }
 
 // 当前精灵的动作列表（含 summary）；同精灵重复调用只刷新数据
@@ -137,4 +161,6 @@ export function resetProject() {
   state.frames = []
   state.frameCount = 0
   state.selectedCount = 0
+  state.firstFrame = { available: false, version: 0 }
+  state.takes = { current: null, takes: [] }
 }
