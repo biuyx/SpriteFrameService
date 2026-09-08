@@ -191,6 +191,22 @@ function pickUpload(a) {
   ffUpload.value?.click()
 }
 
+// 把动作现有首帧设为精灵的正面/背面立绘（入参考图库并标记，同朝向排他）
+async function setAsArt(a, role) {
+  try {
+    await api.actionFirstFrameAsRef(props.spriteId, a.id, role)
+    changed.value = true
+    await load()
+    toast(`已把「${a.name}」的首帧设为${role === 'front' ? '正面' : '背面'}立绘`)
+  } catch (e) {
+    toast(`设置失败: ${e.message}`)
+  }
+}
+const artOf = computed(() => ({
+  front: refs.value.find(r => r.role === 'front')?.name,
+  back: refs.value.find(r => r.role === 'back')?.name,
+}))
+
 async function onFfUpload(file) {
   const a = ffUploadTarget.value
   if (!file || !a) return
@@ -254,8 +270,10 @@ onMounted(async () => {
       <!-- ============ 动作首帧总览 ============ -->
       <template v-if="tab === 'overview'">
         <p class="hint" style="margin:0 0 10px">
-          每个动作当前的首帧图。悬停卡片可单张「AI 生成/重生成」「上传替换」或「用参考图」；
-          批量生成请用看板的「生成首帧」。</p>
+          每个动作当前的首帧图。可单张「AI 生成/重生成」「上传替换」「用参考图」，
+          或把某个动作的首帧「设为正面/背面立绘」（AI 生成首帧的输入）；批量生成请用看板的「生成首帧」。
+          <span v-if="artOf.front || artOf.back" class="ok-text">
+            当前立绘：正面 {{ artOf.front || '—' }} · 背面 {{ artOf.back || '—' }}</span></p>
         <div class="ff-grid">
           <div v-for="a in props.actions" :key="a.id" class="ff-item" :class="{ missing: !hasFf(a) }">
             <div class="ff-img" @click="hasFf(a) && (preview = a)">
@@ -273,6 +291,10 @@ onMounted(async () => {
               <button class="small" :disabled="!!gen[a.id]" @click="pickUpload(a)">上传</button>
               <button class="small" :disabled="!!gen[a.id]" title="从参考图库选一张应用到此动作"
                       @click="useRefFor(a)">用参考图</button>
+              <button v-if="hasFf(a)" class="small" title="把此动作首帧设为精灵的正面立绘"
+                      @click="setAsArt(a, 'front')">设为正面</button>
+              <button v-if="hasFf(a)" class="small" title="把此动作首帧设为精灵的背面立绘"
+                      @click="setAsArt(a, 'back')">设为背面</button>
             </div>
           </div>
         </div>
@@ -400,6 +422,7 @@ onMounted(async () => {
 }
 .ff-ops { display: flex; gap: 4px; padding: 2px 6px 7px; flex-wrap: wrap; }
 .ff-ops button { padding: 2px 7px; font-size: 11px; }
+.ok-text { color: var(--ok); }
 
 /* 参考图库 */
 .ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }

@@ -195,6 +195,24 @@ def action_cover(sprite_id: str, action_id: str):
     return Response(content=data, media_type="image/png")
 
 
+class AsRefRequest(BaseModel):
+    role: str = Field(..., pattern="^(front|back)$")
+
+
+@router.post("/{sprite_id}/actions/{action_id}/first-frame/as-ref")
+def action_first_frame_as_ref(sprite_id: str, action_id: str, req: AsRefRequest):
+    """把动作现有首帧登记为精灵的正面/背面立绘（入首帧图库并标记朝向，同朝向排他）。"""
+    action = _wrap(lambda: sprite_store.get_action(sprite_id, action_id))
+    p = sprite_store.action_dir(sprite_id, action_id) / "first_frame.png"
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="该动作尚无首帧")
+    label = "正面立绘" if req.role == "front" else "背面立绘"
+    rec = _wrap(lambda: sprite_store.add_ref(
+        sprite_id, f"{action.get('name', '')}·{label}", p.read_bytes()))
+    rec = sprite_store.update_ref(sprite_id, rec["id"], {"role": req.role})
+    return rec
+
+
 @router.get("/{sprite_id}/actions/{action_id}/first-frame")
 def action_first_frame(sprite_id: str, action_id: str):
     """动作当前首帧图（不加载会话，总览网格用）。"""

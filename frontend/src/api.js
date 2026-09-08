@@ -57,6 +57,8 @@ const api = {
   openAction: (sid, aid) => request('POST', `/api/sprites/${sid}/actions/${aid}/open`),
   actionCover: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/cover?v=${v}`,
   actionFirstFrameUrl: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/first-frame?v=${v}`,
+  actionFirstFrameAsRef: (sid, aid, role) =>
+    request('POST', `/api/sprites/${sid}/actions/${aid}/first-frame/as-ref`, { json: { role } }),
   // 精灵首帧参考图库（一张图可用于多个动作）
   spriteRefs: (sid) => request('GET', `/api/sprites/${sid}/refs`),
   uploadSpriteRef: (sid, file) => {

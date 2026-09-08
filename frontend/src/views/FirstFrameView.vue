@@ -35,6 +35,16 @@ function onFfApplied() {
   toast('已从图库设置首帧参考图')
 }
 
+// 把本动作首帧设为精灵的正面/背面立绘（AI 生成其它动作首帧的输入）
+async function setAsArt(role) {
+  try {
+    await api.actionFirstFrameAsRef(store.currentSprite.id, store.sessionId, role)
+    toast(`已设为精灵的${role === 'front' ? '正面' : '背面'}立绘`)
+  } catch (e) {
+    toast(`设置失败: ${e.message}`)
+  }
+}
+
 // ---- AI 生成首帧（立绘 + 参考首帧集 → Seedream）----
 const SOURCE_TXT = { action: '动作记忆', template: '模板绑定', key: 'key 绑定',
                      group: '分组绑定', global: '全局默认', builtin: '内置', manual: '手动选用' }
@@ -141,8 +151,14 @@ onMounted(probeFirstFrame)
                   title="立绘 + 参考首帧集 → AI 生成本动作首帧（按张计费）" @click="openFfGen">
             {{ genBusy ? '生成中…' : (store.firstFrame.available ? 'AI 重新生成' : 'AI 生成首帧') }}</button>
         </div>
+        <div v-if="store.firstFrame.available" class="row" style="gap:8px;margin-top:8px;align-items:center">
+          <span class="hint">这张首帧作为本精灵的立绘：</span>
+          <button class="small" title="设为正面立绘（AI 生成其它正面动作首帧时使用）" @click="setAsArt('front')">设为正面立绘</button>
+          <button class="small" title="设为背面立绘（key 含 back 的动作使用）" @click="setAsArt('back')">设为背面立绘</button>
+        </div>
         <p class="hint" style="margin:8px 0 0;line-height:1.7">
-          AI 生成：用精灵首帧图库里标记的「正面/背面立绘」+ 参考首帧集中同动作的姿势图生成；
+          AI 生成：用精灵的「正面/背面立绘」+ 参考首帧集中同动作的姿势图生成；
+          立绘可在此把某个动作的首帧直接设为，或在首帧图库里上传并标记。
           提示词按提示词库自动匹配，可在弹窗里改。不满意直接重新生成即可（抽卡）。</p>
         <div v-if="store.firstFrame.available" style="margin-top:14px">
           <button class="primary" @click="currentTab = 'generate'">下一步：视频生成 →</button>

@@ -351,7 +351,10 @@ class SpriteStore:
             return rec
 
     def update_ref(self, sprite_id: str, ref_id: str, patch: dict) -> Optional[dict]:
-        """编辑参考图记录（name / role）。role: front 正面立绘 | back 背面立绘 | ''"""
+        """编辑参考图记录（name / role）。role: front 正面立绘 | back 背面立绘 | ''
+
+        同一朝向在精灵内排他：标记新的正面/背面时，其它图的同朝向标记自动清除。
+        """
         allowed = {"name", "role"}
         with self._lock:
             items = self.list_refs(sprite_id)
@@ -363,6 +366,10 @@ class SpriteStore:
                     ref[k] = _clean_name(str(v or ""), "") if k == "name" else (v or "")
             if not ref.get("name"):
                 ref["name"] = "参考图"
+            if ref.get("role") in ("front", "back"):
+                for other in items:
+                    if other["id"] != ref_id and other.get("role") == ref["role"]:
+                        other["role"] = ""
             self._write_json(self._refs_json(sprite_id), items)
             return ref
 
