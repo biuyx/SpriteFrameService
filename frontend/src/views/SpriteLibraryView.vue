@@ -6,6 +6,7 @@ import BatchImportModal from '../components/BatchImportModal.vue'
 import TemplateLibraryModal from '../components/TemplateLibraryModal.vue'
 import ProjectTransferModal from '../components/ProjectTransferModal.vue'
 import FfSetLibraryModal from '../components/FfSetLibraryModal.vue'
+import PromptLibraryModal from '../components/PromptLibraryModal.vue'
 
 const sprites = ref([])
 const legacyCount = ref(0)
@@ -14,6 +15,7 @@ const batchOpen = ref(false)
 const tplLibOpen = ref(false)
 const transferOpen = ref(false)
 const ffsetOpen = ref(false)
+const promptOpen = ref(false)
 
 // 工具栏状态
 const keyword = ref('')
@@ -141,6 +143,7 @@ onMounted(load)
       <span class="hint" v-if="legacyCount">{{ legacyCount }} 个旧会话待认领</span>
       <button class="small" @click="tplLibOpen = true">参考视频库</button>
       <button class="small" @click="ffsetOpen = true">参考首帧库</button>
+      <button class="small" @click="promptOpen = true">提示词库</button>
       <button class="small" @click="transferOpen = true">导出/导入</button>
       <button class="small" @click="batchOpen = true">批量导入</button>
       <button class="primary" @click="creating = true">+ 新建精灵</button>
@@ -231,6 +234,7 @@ onMounted(load)
                     @done="load()" />
   <TemplateLibraryModal v-if="tplLibOpen" @close="tplLibOpen = false" />
   <FfSetLibraryModal v-if="ffsetOpen" @close="ffsetOpen = false" />
+  <PromptLibraryModal v-if="promptOpen" @close="promptOpen = false" />
   <ProjectTransferModal v-if="transferOpen" @close="transferOpen = false"
                         @imported="load()" />
 </template>

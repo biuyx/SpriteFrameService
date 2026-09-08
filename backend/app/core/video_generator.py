@@ -232,6 +232,10 @@ def run_generate(session, req: dict, ctx) -> dict:
         used_reference_video=bool(req.get("use_reference_video")),
         # 记录所用模板：结果版本可与参考视频做对比回看
         template_id=req.get("template_id") or None,
+        # 提示词来源（库条目 + 版本）：素材版本可追溯用的是哪版文案
+        prompt_id=req.get("prompt_id") or None,
+        prompt_version=req.get("prompt_version"),
+        prompt_name=req.get("prompt_name") or None,
     )
     take_id = take["id"]
 

@@ -195,6 +195,16 @@ def action_cover(sprite_id: str, action_id: str):
     return Response(content=data, media_type="image/png")
 
 
+@router.get("/{sprite_id}/actions/{action_id}/first-frame")
+def action_first_frame(sprite_id: str, action_id: str):
+    """动作当前首帧图（不加载会话，总览网格用）。"""
+    _wrap(lambda: sprite_store.get_action(sprite_id, action_id))
+    p = sprite_store.action_dir(sprite_id, action_id) / "first_frame.png"
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="尚无首帧")
+    return Response(content=p.read_bytes(), media_type="image/png")
+
+
 # ---------- 首帧参考图库（精灵级共享：一张图可用于多个动作的生成） ----------
 class RefApplyRequest(BaseModel):
     action_ids: List[str] = Field(..., min_length=1, max_length=200)
@@ -512,7 +522,16 @@ def batch_import(req: BatchImportRequest):
 # ---------- 首帧生成（立绘 + 参考首帧集 → Seedream 生图） ----------
 class FfGenRequest(BaseModel):
     set_id: str = Field(..., description="参考首帧集 id")
-    prompt: Optional[str] = None
+    prompt: Optional[str] = Field(default=None, description="留空按提示词库解析")
+    prompt_id: Optional[str] = None       # 提示词来自库时的追溯信息
+    prompt_version: Optional[int] = None
+    prompt_name: Optional[str] = None
+    remember: bool = Field(default=True, description="记为该动作的首帧生成设定")
+
+
+def _prompt_meta(req) -> dict:
+    return {"prompt_id": req.prompt_id, "prompt_version": req.prompt_version,
+            "prompt_name": req.prompt_name}
 
 
 @router.post("/{sprite_id}/actions/{action_id}/gen-first-frame")
@@ -530,7 +549,9 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
     job = job_manager.submit(
         "gen_first_frame",
         lambda ctx: run_gen_first_frame(sprite_id, action_id, req.set_id,
-                                        req.prompt, ctx),
+                                        req.prompt, ctx,
+                                        prompt_meta=_prompt_meta(req),
+                                        remember=req.remember),
         pool="io")
     return {"job_id": job.id}
 
@@ -538,7 +559,11 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
 class BatchFfGenRequest(BaseModel):
     action_ids: List[str] = Field(..., min_length=1, max_length=200)
     set_id: str
-    prompt: Optional[str] = None
+    prompt: Optional[str] = Field(default=None, description="留空按各动作解析提示词库")
+    prompt_id: Optional[str] = None
+    prompt_version: Optional[int] = None
+    prompt_name: Optional[str] = None
+    remember: bool = True
 
 
 @router.post("/{sprite_id}/batch-gen-first-frames")
@@ -564,7 +589,8 @@ def batch_gen_first_frames(sprite_id: str, req: BatchFfGenRequest):
         job = job_manager.submit(
             "gen_first_frame",
             (lambda _a: lambda ctx: run_gen_first_frame(
-                sprite_id, _a, req.set_id, req.prompt, ctx))(aid),
+                sprite_id, _a, req.set_id, req.prompt, ctx,
+                prompt_meta=_prompt_meta(req), remember=req.remember))(aid),
             pool="io")
         submitted.append({"action_id": aid, "name": name, "job_id": job.id})
     return {"submitted": submitted, "skipped": skipped}

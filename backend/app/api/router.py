@@ -16,6 +16,7 @@ from . import (
     image_ops,
     jobs,
     project_io,
+    prompts,
     sessions,
     settings_api,
     sprites,
@@ -38,4 +39,5 @@ api_router.include_router(generate.router)
 api_router.include_router(settings_api.router)
 api_router.include_router(project_io.router)
 api_router.include_router(ffsets.router)
+api_router.include_router(prompts.router)
 api_router.include_router(jobs.router)

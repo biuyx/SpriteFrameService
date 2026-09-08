@@ -38,6 +38,7 @@ async function load() {
     legacy.value = l.sessions
     templatesById.value = {}
     for (const x of t.templates) templatesById.value[x.id] = x
+    coverV.value = Date.now() % 100000   // 首帧/帧有更新时封面绕过缓存
   } finally {
     loading.value = false
   }

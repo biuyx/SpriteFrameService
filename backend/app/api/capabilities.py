@@ -34,6 +34,7 @@ def capabilities():
             "frontend_dir": str(settings.resolved_frontend_dir),
         },
         "background_models": BackgroundRemover.get_available_models(),
+        "default_background_model": BackgroundRemover.default_model(),
         "color_presets": BackgroundRemover.get_color_presets(),
         "realesrgan": realesrgan.get_available_models(),
         "realesrgan_info": realesrgan.get_executable_info(),

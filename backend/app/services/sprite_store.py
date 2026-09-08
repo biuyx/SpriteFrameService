@@ -44,6 +44,15 @@ def _now() -> float:
     return time.time()
 
 
+def _default_matting_model() -> str:
+    """新精灵的默认抠图模型（BRIA 已安装优先）。延迟导入避免实体层拖入推理依赖。"""
+    try:
+        from app.core.background_remover import BackgroundRemover
+        return BackgroundRemover.default_model()
+    except Exception:
+        return "isnet-anime"
+
+
 class SpriteStoreError(Exception):
     """实体层错误（API 层转 4xx）。"""
 
@@ -158,7 +167,7 @@ class SpriteStore:
             "created_at": _now(),
             # 工艺预设：全精灵统一的默认参数（动作可覆盖）
             "preset": {
-                "matting": {"model": "isnet-anime", "alpha_threshold": 128,
+                "matting": {"model": _default_matting_model(), "alpha_threshold": 128,
                             "erode": 1, "feather": 0},
                 "output": {},
             },
@@ -260,7 +269,8 @@ class SpriteStore:
         return payload
 
     def update_action(self, sprite_id: str, action_id: str, patch: dict) -> dict:
-        allowed = {"name", "status", "first_frame", "preset_override", "template_id"}
+        allowed = {"name", "status", "first_frame", "preset_override", "template_id",
+                   "gen_prefs"}
         with self._lock:
             data = self._read_json(self.action_json(sprite_id, action_id))
             for k in allowed & set(patch.keys()):
@@ -472,8 +482,9 @@ class SpriteStore:
                     p = f.get(key)
                     if p and Path(p).is_file():
                         return Path(p)
-        # 无帧时退回 take 封面（视频生成落地后会有）
-        return None
+        # 无帧时退回首帧参考图（导入/AI 生成的首帧，看板可直接过目）
+        ff = d / "first_frame.png"
+        return ff if ff.is_file() else None
 
 
 sprite_store = SpriteStore()

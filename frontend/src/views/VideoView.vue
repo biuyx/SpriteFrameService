@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useStore, refreshFrames, refreshSession, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
@@ -96,24 +96,55 @@ function onFfApplied() {
 const ffGenOpen = ref(false)
 const ffGenSets = ref([])
 const ffGenSetId = ref('')
+const ffPrompt = ref('')              // 首帧生图提示词（按库解析预填，可改）
+const ffPromptMatch = ref(null)       // {prompt_id, version, name, source}
+const ffPromptLib = ref([])
+const ffPromptSel = ref('')
+const ffPromptDirty = ref(false)
+const ffRemember = ref(true)
 
 async function openFfGen() {
   try {
-    const s = await api.ffsets()
+    const [s, r, lib] = await Promise.all([
+      api.ffsets(),
+      api.resolvePrompt('first_frame', store.currentSprite.id, store.sessionId),
+      api.prompts('first_frame'),
+    ])
     ffGenSets.value = s.sets
     if (!s.sets.length) return toast('还没有参考首帧集——先到精灵库「参考首帧库」导入或归档')
-    if (!ffGenSetId.value) ffGenSetId.value = s.sets[0].id
+    // 记忆的参考集优先
+    const mem = store.currentAction?.gen_prefs?.first_frame
+    if (mem?.set_id && s.sets.some((x) => x.id === mem.set_id)) ffGenSetId.value = mem.set_id
+    if (!ffGenSetId.value || !s.sets.some((x) => x.id === ffGenSetId.value)) ffGenSetId.value = s.sets[0].id
+    ffPrompt.value = r.text
+    ffPromptMatch.value = r
+    ffPromptSel.value = r.prompt_id || ''
+    ffPromptDirty.value = false
+    ffPromptLib.value = lib.prompts
     ffGenOpen.value = true
-  } catch (e) { toast(`加载参考首帧库失败: ${e.message}`) }
+  } catch (e) { toast(`加载失败: ${e.message}`) }
+}
+
+function pickFfPrompt() {
+  const rec = ffPromptLib.value.find((x) => x.id === ffPromptSel.value)
+  if (!rec) return
+  ffPrompt.value = libText(rec)
+  ffPromptMatch.value = { prompt_id: rec.id, version: rec.current, name: rec.name, source: 'manual' }
+  ffPromptDirty.value = false
 }
 
 async function runFfGen() {
   if (!ffGenSetId.value) return toast('请选择参考首帧集')
+  if (!ffPrompt.value.trim()) return toast('请填写提示词')
   const warn = ffAvailable.value ? '当前首帧将被覆盖。' : ''
   if (!(await askConfirm(`AI 生成本动作首帧？（生图按张计费）${warn}`))) return
   ffGenOpen.value = false
-  await startJob(() => api.genFirstFrame(store.currentSprite.id, store.sessionId,
-                                         { set_id: ffGenSetId.value }), {
+  const m = ffPromptDirty.value ? {} : (ffPromptMatch.value || {})
+  await startJob(() => api.genFirstFrame(store.currentSprite.id, store.sessionId, {
+    set_id: ffGenSetId.value, prompt: ffPrompt.value.trim(),
+    prompt_id: m.prompt_id || null, prompt_version: m.version || null,
+    prompt_name: m.name || null, remember: ffRemember.value,
+  }), {
     title: 'AI 生成首帧',
     onDone: async () => {
       ffAvailable.value = true
@@ -121,6 +152,79 @@ async function runFfGen() {
       genFirstFrame.value = 'action'
     },
   })
+}
+
+// ---- 提示词库：视频生成作用域解析 / 切换 / 沉淀 ----
+const SOURCE_TXT = { action: '动作记忆', template: '模板绑定', key: 'key 绑定',
+                     group: '分组绑定', global: '全局默认', builtin: '内置', manual: '手动选用' }
+const promptMatch = ref(null)         // 当前匹配 {prompt_id, version, name, source}
+const promptLib = ref([])             // 当前作用域的库条目
+const promptSel = ref('')             // 手动选用的库条目 id
+const promptDirty = ref(false)        // 文本被手改（未保存）
+const remember = ref(true)            // 记住为此动作设定
+const videoScope = computed(() =>
+  rvUse.value && (tplSelected.value || rvAvailable.value) ? 'video_ref' : 'video_i2v')
+
+function libText(rec) {
+  const v = rec.versions.find((x) => x.v === rec.current) || rec.versions[rec.versions.length - 1]
+  return (v?.text || '').replace('{action}', store.currentAction?.name || '')
+}
+
+async function resolvePromptFor() {
+  try {
+    const [r, lib] = await Promise.all([
+      api.resolvePrompt(videoScope.value, store.currentSprite.id, store.sessionId),
+      api.prompts(videoScope.value),
+    ])
+    genPrompt.value = r.text
+    promptMatch.value = r
+    promptSel.value = r.prompt_id || ''
+    promptLib.value = lib.prompts
+    promptDirty.value = false
+  } catch { /* 库不可用时保留现有文本 */ }
+}
+
+function pickLibraryPrompt() {
+  const rec = promptLib.value.find((x) => x.id === promptSel.value)
+  if (!rec) return
+  genPrompt.value = libText(rec)
+  promptMatch.value = { prompt_id: rec.id, version: rec.current, name: rec.name, source: 'manual' }
+  promptDirty.value = false
+}
+
+async function saveAsVersion() {
+  const id = promptMatch.value?.prompt_id
+  if (!id) return
+  const note = await askConfirm(`把当前文本保存为「${promptMatch.value.name}」的新版本？`,
+                                { input: { placeholder: '版本说明（可空）', initial: '' } })
+  if (note === null) return
+  try {
+    const rec = await api.addPromptVersion(id, genPrompt.value.trim(), note)
+    promptMatch.value = { ...promptMatch.value, version: rec.current, source: 'manual' }
+    promptDirty.value = false
+    const lib = await api.prompts(videoScope.value)
+    promptLib.value = lib.prompts
+    toast(`已保存为 v${rec.current}`)
+  } catch (e) { toast(`保存失败: ${e.message}`) }
+}
+
+async function saveAsNew() {
+  const name = await askConfirm('另存为新的库提示词，名称：', { input: { placeholder: '如：走路·参考视频', initial: '' } })
+  if (!name) return
+  const tpl = tplAll.value.find((x) => x.id === tplSelected.value)
+  const bindings = []
+  if (tpl && rvUse.value && await askConfirm(`绑定到当前模板「${tpl.variant || tpl.key}」？（同模板的动作自动匹配）`)) {
+    bindings.push({ level: 'template', value: tpl.id })
+  }
+  try {
+    const rec = await api.createPrompt({ scope: videoScope.value, name, text: genPrompt.value.trim(), bindings })
+    promptMatch.value = { prompt_id: rec.id, version: rec.current, name: rec.name, source: 'manual' }
+    promptSel.value = rec.id
+    promptDirty.value = false
+    const lib = await api.prompts(videoScope.value)
+    promptLib.value = lib.prompts
+    toast(`已入库「${rec.name}」`)
+  } catch (e) { toast(`保存失败: ${e.message}`) }
 }
 const rvAvailable = ref(false)        // 是否已上传参考视频
 const rvUse = ref(false)              // 本次生成是否使用参考视频
@@ -201,6 +305,10 @@ async function clearRefVideo() {
   toast('已清除')
 }
 
+// 作用域或模板选择变化时，只要用户没手改过就重新解析提示词
+// （放在所有相关 ref 定义之后，避免 setup 阶段的暂时性死区引用）
+watch([videoScope, tplSelected], () => { if (!promptDirty.value) resolvePromptFor() })
+
 async function loadGen() {
   try {
     gen.value = await api.genCapabilities()
@@ -209,8 +317,20 @@ async function loadGen() {
     genRes.value = genRes.value || d.resolution || '480p'
   } catch { gen.value = null }
   await loadTemplates()
-  // 提示词预填必须在模板加载之后——带参考视频与否决定用短提示词还是绿幕长模板
-  if (gen.value && !genPrompt.value.trim()) genPrompt.value = templateForAction()
+  // 动作记忆：上次生成的参数与模板优先于默认值
+  const mem = store.currentAction?.gen_prefs?.video
+  if (mem) {
+    if (mem.model && (gen.value?.models || []).some((m) => m.id === mem.model)) genModel.value = mem.model
+    if (mem.resolution) genRes.value = mem.resolution
+    if (mem.ratio) genRatio.value = mem.ratio
+    if (mem.duration && gen.value?.params?.duration?.includes(mem.duration)) genDuration.value = mem.duration
+    if (mem.template_id && tplAll.value.some((t) => t.id === mem.template_id)) {
+      tplSelected.value = mem.template_id
+      rvUse.value = true
+    }
+  }
+  // 提示词预填必须在模板加载之后——作用域（参考视频/图生视频）决定解析哪一类
+  if (gen.value && !genPrompt.value.trim()) await resolvePromptFor()
   // 探测首帧参考图/参考视频是否已设置
   try {
     const r = await fetch(api.firstFrameUrl(store.sessionId, Date.now()), { credentials: 'same-origin' })
@@ -244,35 +364,11 @@ async function onFirstFrameFile(file) {
 const canGenerate = computed(() =>
   genFirstFrame.value === 'action' ? ffAvailable.value : store.frameCount > 0)
 
-// ---- 按动作名解析提示词模板 ----
-function templateForAction() {
-  const pt = gen.value?.prompt_templates
-  const name = (store.currentAction?.name || '').trim()
-  if (!pt || !name) return ''
-  // 带参考视频(reference-driven)时动作由视频定义,提示词只约束镜头与背景
-  // (实战验证的短提示词;绿幕长模板是纯 i2v 用的,叠加反而互相干扰)
-  if (rvUse.value && (tplSelected.value || rvAvailable.value)) {
-    // 统一固定短提示词，不带动作名前缀（动作由参考视频定义）
-    return '图片参考视频进行动作，固定镜头，无运镜，背景不变，角色位置朝向需要和参考视频完全一致。'
-  }
-  const lower = name.toLowerCase()
-  // 1) 精确命中(含别名)
-  const key = pt.templates[lower] ? lower : pt.aliases[name] || pt.aliases[lower]
-  if (key && pt.templates[key]) return pt.templates[key]
-  // 2) 部分包含(walk_luggage → walk 模板;不改写模板文字,锚定句必须原样保留)
-  for (const k of Object.keys(pt.templates)) {
-    if (lower.includes(k)) return pt.templates[k]
-  }
-  for (const [alias, k] of Object.entries(pt.aliases)) {
-    if (name.includes(alias) && pt.templates[k]) return pt.templates[k]
-  }
-  // 3) 通用模板
-  return pt.generic.replace('{action}', name)
-}
-
-function applyTemplate() {
-  const t = templateForAction()
-  if (t) { genPrompt.value = t; toast('已按动作名填入模板提示词') }
+// 重新按提示词库解析（丢弃手改内容）
+async function applyTemplate() {
+  promptDirty.value = false
+  await resolvePromptFor()
+  toast(`已按提示词库重新匹配：${promptMatch.value?.name || ''}`)
 }
 
 async function loadTakes() {
@@ -291,10 +387,13 @@ async function runGenerate() {
     const first_frame = genFirstFrame.value === 'action' ? { kind: 'action' }
       : { kind: 'frame', frame_index: genFrameIndex.value }
     startTakesPolling()
+    const pm = promptDirty.value ? {} : (promptMatch.value || {})
     await startJob(() => api.generate(store.sessionId,
       { prompt, model: genModel.value, params, first_frame,
         template_id: rvUse.value && tplSelected.value ? tplSelected.value : null,
-        use_reference_video: rvUse.value && !tplSelected.value && rvAvailable.value }), {
+        use_reference_video: rvUse.value && !tplSelected.value && rvAvailable.value,
+        prompt_id: pm.prompt_id || null, prompt_version: pm.version || null,
+        prompt_name: pm.name || null, remember: remember.value }), {
       title: 'AI 生成视频',
       onDone: async () => {
         stopTakesPolling()
@@ -522,11 +621,26 @@ onMounted(async () => {
               <button class="small" @click="ffInput.click()">{{ ffAvailable ? '更换参考图' : '上传参考图' }}</button>
               <button class="small" title="从精灵首帧图库选择（一张图可用于多个动作）" @click="ffLibOpen = true">从图库选</button>
               <button class="small" title="立绘 + 参考首帧集 → AI 生成本动作首帧（按张计费）" @click="openFfGen">AI 生成首帧</button>
-              <button class="small" title="按动作名重新填入模板提示词" @click="applyTemplate">模板提示词</button>
               <span v-if="!canGenerate" class="warn-text">生成必须提供角色首帧参考图</span>
             </div>
+            <div class="row prompt-bar">
+              <span class="hint">提示词：</span>
+              <span v-if="promptMatch" class="rule-chip" :title="'匹配来源：' + (SOURCE_TXT[promptMatch.source] || promptMatch.source)">
+                {{ promptMatch.name }}<template v-if="promptMatch.version"> v{{ promptMatch.version }}</template>
+                · {{ SOURCE_TXT[promptMatch.source] || promptMatch.source }}</span>
+              <span v-if="promptDirty" class="warn-text">已手改（未保存）</span>
+              <select v-model="promptSel" style="max-width:200px" title="从提示词库选用" @change="pickLibraryPrompt">
+                <option value="">— 从库选用 —</option>
+                <option v-for="p in promptLib" :key="p.id" :value="p.id">{{ p.name }} v{{ p.current }}</option>
+              </select>
+              <button class="small" title="按提示词库重新匹配（丢弃手改）" @click="applyTemplate">重新匹配</button>
+              <button v-if="promptMatch?.prompt_id" class="small" :disabled="!promptDirty"
+                      title="把当前文本存为该库条目的新版本" @click="saveAsVersion">保存为新版本</button>
+              <button class="small" title="另存为新的库提示词（可绑定当前模板）" @click="saveAsNew">另存入库</button>
+            </div>
             <textarea v-model="genPrompt" rows="2" style="width:100%;resize:vertical"
-                      placeholder="提示词，如：角色向前走路，动作循环，白色背景，镜头固定"></textarea>
+                      placeholder="提示词，如：角色向前走路，动作循环，白色背景，镜头固定"
+                      @input="promptDirty = true"></textarea>
           </div>
           <input ref="ffInput" type="file" accept="image/*" style="display:none"
                  @change="e => onFirstFrameFile(e.target.files[0])" />
@@ -550,6 +664,9 @@ onMounted(async () => {
             <input v-model="genSeed" placeholder="留空随机" style="width:90px" /></div>
           <button class="primary" :disabled="genBusy || !canGenerate" @click="runGenerate">
             {{ genBusy ? '生成中...' : '生成' }}</button>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer"
+                 title="把本次提示词与参数记为此动作的设定：下次打开与批量生成优先沿用">
+            <input type="checkbox" v-model="remember" /> 记住为此动作设定</label>
         </div>
         <div class="row" style="align-items:center">
           <span class="hint">参考视频（可选，动作/镜头节奏参考）：</span>
@@ -557,7 +674,7 @@ onMounted(async () => {
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
               <input type="checkbox" v-model="rvUse" /> 使用模板</label>
             <select v-model="tplSelected" style="max-width:210px"
-                    @change="applyTplDuration(); genPrompt = templateForAction()">
+                    @change="applyTplDuration()">
               <optgroup v-if="tplVariants.length" label="推荐（匹配动作名）">
                 <option v-for="t in tplVariants" :key="t.id" :value="t.id">
                   {{ t.variant || t.key }}{{ t.duration_hint ? `（${t.duration_hint}s）` : '' }}</option>
@@ -600,7 +717,9 @@ onMounted(async () => {
              : t.status === 'running' ? '生成中' : t.status === 'failed' ? '失败' : t.status }}</span>
         <span class="take-name">{{ takeLabel(t) }}</span>
         <span class="hint">{{ fmtTime(t.created_at) }}</span>
-        <span v-if="t.prompt" class="hint take-prompt" :title="t.prompt">{{ t.prompt.slice(0, 40) }}…</span>
+        <span v-if="t.prompt_id" class="take-badge" :title="t.prompt">
+          {{ t.prompt_name || '提示词' }}<template v-if="t.prompt_version"> v{{ t.prompt_version }}</template></span>
+        <span v-else-if="t.prompt" class="hint take-prompt" :title="t.prompt">{{ t.prompt.slice(0, 40) }}…</span>
         <span v-if="t.error" class="warn-text" :title="t.error">{{ t.error.slice(0, 50) }}</span>
         <span class="spacer" style="flex:1"></span>
         <span v-if="takes.current === t.id" class="ok-text" style="font-size:12px">✓ 当前使用</span>
@@ -620,15 +739,30 @@ onMounted(async () => {
     <div v-if="ffGenOpen" class="tk-mask" @click.self="ffGenOpen = false">
       <div class="ffgen-box">
         <h3 style="margin:0 0 12px;font-size:15px">AI 生成首帧</h3>
-        <div class="field" style="margin-bottom:12px"><label>参考首帧集（姿势模板）</label>
+        <div class="field" style="margin-bottom:10px"><label>参考首帧集（姿势模板）</label>
           <select v-model="ffGenSetId" style="width:100%">
             <option v-for="s in ffGenSets" :key="s.id" :value="s.id">
               {{ s.name }}（{{ s.frames.length }} 张{{ s.group ? ` · ${s.group}` : '' }}）</option>
           </select></div>
-        <p class="hint" style="margin:0 0 12px">
-          用本精灵已标记的立绘（正/背面）+ 参考集中同动作的首帧生成；
-          立绘在「首帧图库」里上传并点图片左下角标记。</p>
-        <div class="row" style="justify-content:flex-end;gap:10px">
+        <div class="row prompt-bar" style="margin-bottom:4px">
+          <span class="hint">提示词：</span>
+          <span v-if="ffPromptMatch" class="rule-chip">
+            {{ ffPromptMatch.name }}<template v-if="ffPromptMatch.version"> v{{ ffPromptMatch.version }}</template>
+            · {{ SOURCE_TXT[ffPromptMatch.source] || ffPromptMatch.source }}</span>
+          <span v-if="ffPromptDirty" class="warn-text">已手改</span>
+          <select v-model="ffPromptSel" style="max-width:170px" @change="pickFfPrompt">
+            <option value="">— 从库选用 —</option>
+            <option v-for="p in ffPromptLib" :key="p.id" :value="p.id">{{ p.name }} v{{ p.current }}</option>
+          </select>
+        </div>
+        <textarea v-model="ffPrompt" rows="4" style="width:100%;resize:vertical;margin-bottom:8px"
+                  @input="ffPromptDirty = true"></textarea>
+        <p class="hint" style="margin:0 0 10px">
+          用本精灵已标记的立绘（正/背面）+ 参考集中同动作的首帧生成；图1=姿势参考，图2=立绘。</p>
+        <div class="row" style="align-items:center;gap:10px">
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
+            <input type="checkbox" v-model="ffRemember" /> 记住为此动作设定</label>
+          <span class="spacer" style="flex:1"></span>
           <button class="primary" @click="runFfGen">生成</button>
           <button @click="ffGenOpen = false">取消</button>
         </div>
@@ -829,9 +963,10 @@ onMounted(async () => {
 }
 .tk-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
 .ffgen-box {
-  width: 380px; max-width: 92vw; background: var(--bg-panel);
+  width: 520px; max-width: 92vw; background: var(--bg-panel);
   border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px;
 }
+.prompt-bar { align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
 .cmp-box {
   width: 980px; max-width: 96vw; background: var(--bg-panel);
   border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;

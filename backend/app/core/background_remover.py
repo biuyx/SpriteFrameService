@@ -198,6 +198,16 @@ class BackgroundRemover:
         return None
 
     @staticmethod
+    def default_model() -> str:
+        """默认抠图模型：BRIA RMBG 2.0 已安装则用它（边缘质量最好），否则 ISNet Anime。
+
+        BRIA 因许可不随包分发，未安装的机器自动回退，保证默认值永远可用。
+        """
+        if BackgroundRemover.get_model_path("bria-rmbg-2.0") is not None:
+            return "bria-rmbg-2.0"
+        return "isnet-anime"
+
+    @staticmethod
     def get_available_models() -> list:
         """获取可用的模型列表"""
         available = []

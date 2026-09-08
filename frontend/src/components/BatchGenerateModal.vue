@@ -12,6 +12,8 @@ const model = ref('')
 const resolution = ref('480p')
 const checked = ref({})            // action_id -> bool
 const templatesById = ref({})
+const promptOf = ref({})           // action_id -> {name, version, source}（提示词库解析结果）
+const SOURCE_TXT = { action: '记忆', template: '模板', key: 'key', group: '分组', global: '全局', builtin: '内置' }
 const phase = ref('pick')          // pick | running
 const rows = ref([])               // 进度行 [{action_id,name,job_id,status,progress,message,error,variant,duration}]
 const skippedRows = ref([])
@@ -28,7 +30,16 @@ onMounted(async () => {
   for (const a of props.actions) {
     checked.value[a.id] = eligible(a) && !a.summary?.generated_count && !a.summary?.generating_count
   }
+  try {
+    const r = await api.resolvePrompts('video_ref', store.currentSprite.id, props.actions.map(a => a.id))
+    promptOf.value = r.resolved
+  } catch { /* 提示词库不可用时不显示 */ }
 })
+
+function promptLabel(a) {
+  const p = promptOf.value[a.id]
+  return p ? `${p.name}${p.version ? ` v${p.version}` : ''}（${SOURCE_TXT[p.source] || p.source}）` : ''
+}
 
 function tplLabel(a) {
   const t = templatesById.value[a.template_id]
@@ -139,7 +150,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <select v-model="resolution">
               <option v-for="r in gen?.params?.resolution || []" :key="r">{{ r }}</option>
             </select></div>
-          <span class="hint">时长按各动作模板的推荐值</span>
+          <span class="hint">时长按动作记忆/模板推荐值；提示词按提示词库逐动作匹配</span>
         </div>
         <div class="row" style="gap:8px;margin-bottom:6px">
           <button class="small" @click="selectUngen">选未生成的</button>
@@ -152,6 +163,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <input type="checkbox" v-model="checked[a.id]" :disabled="!eligible(a)" />
             <b>{{ a.name }}</b>
             <span class="hint">{{ tplLabel(a) }}</span>
+            <span v-if="promptLabel(a)" class="hint prompt-tag" :title="'提示词：' + promptLabel(a)">✎ {{ promptLabel(a) }}</span>
             <span class="spacer" style="flex:1"></span>
             <span v-if="!a.summary?.has_first_frame" class="warn-text">缺首帧</span>
             <span v-else-if="!a.template_id" class="warn-text">无模板</span>
@@ -224,6 +236,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
 .act-row:not(.disabled):hover { background: var(--bg-hover); }
 .warn-text { color: var(--warn); font-size: 12px; }
 .ok-text { color: var(--ok); font-size: 12px; }
+.prompt-tag { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; }
 .prog-summary { font-size: 13px; margin-bottom: 10px; }
 .prog-bar {

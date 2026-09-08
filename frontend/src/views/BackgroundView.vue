@@ -7,10 +7,15 @@ import api from '../api'
 const store = useStore()
 const mode = ref('ai')
 
-// AI 参数：默认取精灵的工艺预设（全角色统一），可在此覆盖
-const spritePreset = ref({ model: 'isnet-anime', alpha_threshold: 128, erode: 1, feather: 0,
+// AI 参数：默认取精灵的工艺预设（全角色统一），可在此覆盖；
+// 预设指定的模型本机未安装时（如 BRIA 未分发）回退到本机默认模型
+const defaultBgModel = store.capabilities?.default_background_model || 'isnet-anime'
+const spritePreset = ref({ model: defaultBgModel, alpha_threshold: 128, erode: 1, feather: 0,
                            ...(store.currentSprite?.preset?.matting || {}) })
-const aiModel = ref(spritePreset.value.model)
+const installedModels = new Set((store.capabilities?.background_models || [])
+  .filter((m) => m.installed).map((m) => m.name))
+const aiModel = ref(installedModels.has(spritePreset.value.model)
+  ? spritePreset.value.model : defaultBgModel)
 const alphaThreshold = ref(spritePreset.value.alpha_threshold)
 const erode = ref(spritePreset.value.erode)
 const feather = ref(spritePreset.value.feather)

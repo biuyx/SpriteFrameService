@@ -91,6 +91,34 @@ class GenerateRequest(BaseModel):
     template_id: Optional[str] = Field(
         default=None,
         description="使用模板库中的动作模板作为参考视频（优先于本地参考视频）")
+    # 提示词来源（库条目时）与动作记忆
+    prompt_id: Optional[str] = None
+    prompt_version: Optional[int] = None
+    prompt_name: Optional[str] = None
+    remember: bool = Field(default=True, description="把本次提示词与参数记为该动作设定")
+
+
+def _remember_video_prefs(session_id: str, req: "GenerateRequest", model: str) -> None:
+    """动作级记忆：下次打开工作台/批量生成时优先沿用。失败不影响生成。"""
+    try:
+        from app.services.sprite_store import sprite_store
+        sprite_id = sprite_store.sprite_of_action(session_id)
+        if not sprite_id:
+            return
+        action = sprite_store.get_action(sprite_id, session_id)
+        prefs = dict(action.get("gen_prefs") or {})
+        p = req.params or {}
+        prefs["video"] = {
+            "scope": "video_ref" if (req.template_id or req.use_reference_video) else "video_i2v",
+            "prompt_text": req.prompt, "prompt_id": req.prompt_id,
+            "prompt_version": req.prompt_version, "prompt_name": req.prompt_name,
+            "model": model, "resolution": p.get("resolution"),
+            "ratio": p.get("ratio"), "duration": p.get("duration"),
+            "template_id": req.template_id,
+        }
+        sprite_store.update_action(sprite_id, session_id, {"gen_prefs": prefs})
+    except Exception:
+        pass
 
 
 @router.post("/sessions/{session_id}/generate")
@@ -132,6 +160,8 @@ def generate_video(session_id: str, req: GenerateRequest):
 
     payload = req.model_dump()
     payload["model"] = model
+    if req.remember:
+        _remember_video_prefs(session_id, req, model)
 
     def _job(ctx):
         from app.core.video_generator import run_generate
@@ -156,12 +186,19 @@ class BatchGenerateRequest(BaseModel):
 
 def _default_generate_payload(session, action: dict, template: dict,
                               model: str, resolution: str, ratio: str) -> dict:
-    """按动作的默认配置构造生成请求（与前端单动作面板的默认逻辑一致）。"""
-    # 统一固定短提示词，不带动作名前缀（动作由参考视频定义）
-    prompt = "图片参考视频进行动作，固定镜头，无运镜，背景不变，角色位置朝向需要和参考视频完全一致。"
-    duration = template.get("duration_hint") or 4
+    """按动作的默认配置构造生成请求（与前端单动作面板的默认逻辑一致）。
+
+    提示词按提示词库解析（动作记忆 > 模板 > key > 分组 > 全局 > 内置）；
+    时长优先取动作记忆，其次模板推荐值。
+    """
+    from app.services.prompt_store import resolve_for_action
+    r = resolve_for_action("video_ref", action)
+    mem = (action.get("gen_prefs") or {}).get("video") or {}
+    duration = mem.get("duration") or template.get("duration_hint") or 4
     return {
-        "prompt": prompt,
+        "prompt": r["text"],
+        "prompt_id": r["prompt_id"], "prompt_version": r["version"],
+        "prompt_name": r["name"],
         "model": model,
         "params": {"resolution": resolution, "ratio": ratio, "duration": duration},
         "first_frame": {"kind": "action"},

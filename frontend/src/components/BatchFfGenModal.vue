@@ -16,6 +16,12 @@ const checked = ref({})
 const phase = ref('pick')
 const rows = ref([])
 const skippedRows = ref([])
+const promptOf = ref({})           // action_id -> 提示词库解析结果
+const SOURCE_TXT = { action: '记忆', template: '模板', key: 'key', group: '分组', global: '全局', builtin: '内置' }
+function promptLabel(a) {
+  const p = promptOf.value[a.id]
+  return p ? `${p.name}${p.version ? ` v${p.version}` : ''}（${SOURCE_TXT[p.source] || p.source}）` : ''
+}
 
 const hasFront = computed(() => refs.value.some(r => r.role === 'front'))
 const hasBack = computed(() => refs.value.some(r => r.role === 'back'))
@@ -38,6 +44,10 @@ onMounted(async () => {
     if (sets.value.length) setId.value = sets.value[0].id
     resetChecks()
   } catch (e) { toast(`加载失败: ${e.message}`) }
+  try {
+    const r = await api.resolvePrompts('first_frame', store.currentSprite.id, props.actions.map(a => a.id))
+    promptOf.value = r.resolved
+  } catch { /* ignore */ }
 })
 
 function resetChecks() {
@@ -154,6 +164,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <input type="checkbox" v-model="checked[a.id]" :disabled="!eligible(a)" />
             <b>{{ a.name }}</b>
             <span class="hint">{{ actionKey(a) }}</span>
+            <span v-if="promptLabel(a)" class="hint prompt-tag" :title="'提示词：' + promptLabel(a)">✎ {{ promptLabel(a) }}</span>
             <span class="spacer" style="flex:1"></span>
             <span v-if="!setKeys.has(actionKey(a))" class="warn-text">参考集缺此动作</span>
             <span v-else-if="a.summary?.has_first_frame" class="hint">已有首帧（将覆盖）</span>
@@ -222,6 +233,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
 .act-row:not(.disabled):hover { background: var(--bg-hover); }
 .warn-text { color: var(--warn); font-size: 12px; }
 .ok-text { color: var(--ok); font-size: 12px; }
+.prompt-tag { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .modal-foot { display: flex; gap: 10px; justify-content: flex-end; }
 .prog-summary { font-size: 13px; margin-bottom: 10px; }
 .prog-bar { height: 6px; background: var(--bg-input); border-radius: 3px; margin-top: 6px; overflow: hidden; }

@@ -92,6 +92,7 @@ def export_project(req: ExportRequest):
                 tpl_ids.add(a["template_id"])
     templates = [t for t in template_store.list() if t["id"] in tpl_ids]
 
+    from app.services.prompt_store import prompt_store
     manifest = {
         "format": FORMAT, "version": VERSION,
         "exported_at": time.time(),
@@ -99,6 +100,7 @@ def export_project(req: ExportRequest):
         "include_workdata": req.include_workdata,
         "sprites": sprite_metas,
         "templates": templates,
+        "prompts": prompt_store.list(),     # 提示词库整体随包（按 id 合并）
     }
 
     tmp_dir = get_settings().resolved_data_dir / "tmp"
@@ -169,7 +171,13 @@ async def import_project(file: UploadFile = File(...)):
 
             stats = {"templates_imported": 0, "templates_reused": 0,
                      "sprites_imported": 0, "sprites_skipped": 0,
-                     "actions_imported": 0, "errors": []}
+                     "actions_imported": 0, "prompts_imported": 0, "errors": []}
+
+            # 0) 提示词库：同 id 跳过
+            from app.services.prompt_store import prompt_store
+            for rec in manifest.get("prompts", []) or []:
+                if prompt_store.import_record(rec):
+                    stats["prompts_imported"] += 1
 
             # 1) 模板：按 (key,variant) 合并，记录 id 改写映射
             tid_map = {}

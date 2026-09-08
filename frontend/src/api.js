@@ -56,6 +56,7 @@ const api = {
   deleteAction: (sid, aid) => request('DELETE', `/api/sprites/${sid}/actions/${aid}`),
   openAction: (sid, aid) => request('POST', `/api/sprites/${sid}/actions/${aid}/open`),
   actionCover: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/cover?v=${v}`,
+  actionFirstFrameUrl: (sid, aid, v = 0) => `${BASE}/api/sprites/${sid}/actions/${aid}/first-frame?v=${v}`,
   // 精灵首帧参考图库（一张图可用于多个动作）
   spriteRefs: (sid) => request('GET', `/api/sprites/${sid}/refs`),
   uploadSpriteRef: (sid, file) => {
@@ -102,6 +103,21 @@ const api = {
   deleteTemplate: (tid) => request('DELETE', `/api/templates/${tid}`),
   claimSession: (sid, sessionId, name) =>
     request('POST', `/api/sprites/${sid}/claim`, { json: { session_id: sessionId, name } }),
+
+  // 提示词库（多版本 / 绑定匹配动作 / 解析）
+  prompts: (scope) => request('GET', `/api/prompts${scope ? `?scope=${scope}` : ''}`),
+  createPrompt: (payload) => request('POST', '/api/prompts', { json: payload }),
+  patchPrompt: (pid, patch) => request('PATCH', `/api/prompts/${pid}`, { json: patch }),
+  addPromptVersion: (pid, text, note) =>
+    request('POST', `/api/prompts/${pid}/versions`, { json: { text, note } }),
+  setPromptCurrent: (pid, v) => request('POST', `/api/prompts/${pid}/current`, { json: { v } }),
+  setPromptBindings: (pid, bindings) =>
+    request('PUT', `/api/prompts/${pid}/bindings`, { json: { bindings } }),
+  deletePrompt: (pid) => request('DELETE', `/api/prompts/${pid}`),
+  resolvePrompt: (scope, sid, aid) =>
+    request('GET', `/api/prompts/resolve?scope=${scope}&sprite_id=${sid}&action_id=${aid}`),
+  resolvePrompts: (scope, sid, actionIds) =>
+    request('POST', '/api/prompts/resolve-many', { json: { scope, sprite_id: sid, action_ids: actionIds } }),
 
   // 项目包 导出/导入
   exportProject: (payload) => request('POST', '/api/project/export', { json: payload, blob: true }),

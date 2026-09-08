@@ -9,14 +9,11 @@ import threading
 from typing import Optional, Tuple
 
 from app.services.ffset_store import ffset_store
+from app.services.prompt_store import BUILTIN, resolve_for_action
 from app.services.sprite_store import sprite_store
 from app.services.template_store import template_store
 
-DEFAULT_PROMPT = (
-    "角色样貌完全跟随第二张参考图。身体姿势完全照搬第一张参考图的动作，"
-    "纯色灰色背景，完整全身出镜，禁止修改角色外貌服饰，只迁移动作姿态。"
-    "身体姿势完全照搬第一张参考图的动作。完整复刻图一动作姿势。"
-)
+DEFAULT_PROMPT = BUILTIN["first_frame"]
 
 # 生图并发闸门（秒级请求，小并发即可跑满）
 _gate = threading.Semaphore(3)
@@ -55,8 +52,14 @@ def resolve_refs(sprite_id: str, action: dict,
 
 
 def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
-                        prompt: Optional[str], ctx) -> dict:
-    """生成单个动作的首帧（跑在 io 池；按张计费）。"""
+                        prompt: Optional[str], ctx,
+                        prompt_meta: Optional[dict] = None,
+                        remember: bool = False) -> dict:
+    """生成单个动作的首帧（跑在 io 池；按张计费）。
+
+    prompt 为空时按提示词库解析（记忆 > 模板 > key > 分组 > 全局 > 内置）；
+    remember=True 时把本次提示词与参考集记为该动作的首帧生成记忆。
+    """
     import cv2
     import numpy as np
 
@@ -66,13 +69,22 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
     ctx.report(5, "准备参考图...")
     art, ref, key, role = resolve_refs(sprite_id, action, set_id)
 
+    meta = dict(prompt_meta or {})
+    if prompt and prompt.strip():
+        text = prompt.strip()
+    else:
+        r = resolve_for_action("first_frame", action)
+        text = r["text"] or DEFAULT_PROMPT
+        meta = {"prompt_id": r["prompt_id"], "prompt_version": r["version"],
+                "prompt_name": r["name"], "source": r["source"]}
+
     ctx.report(15, "生图中（Seedream）...")
     with _gate:
         if ctx.cancelled():
             raise RuntimeError("已取消")
         try:
             # 图序与提示词对应：图1=姿势参考，图2=角色立绘
-            data = generate_image(prompt or DEFAULT_PROMPT, [ref, art])
+            data = generate_image(text, [ref, art])
         except ArkImageError as e:
             raise RuntimeError(str(e))
 
@@ -86,9 +98,22 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
         raise RuntimeError("图片编码失败")
     dest.write_bytes(buf.tobytes())
 
-    sprite_store.update_action(sprite_id, action_id, {
+    patch = {
         "first_frame": {"kind": "ai_generated", "file": "first_frame.png",
-                        "ref_set": set_id, "ref_key": key, "role": role},
-    })
+                        "ref_set": set_id, "ref_key": key, "role": role,
+                        "prompt_id": meta.get("prompt_id"),
+                        "prompt_version": meta.get("prompt_version"),
+                        "prompt_text": text},
+    }
+    if remember:
+        prefs = dict(action.get("gen_prefs") or {})
+        prefs["first_frame"] = {
+            "scope": "first_frame", "prompt_text": text,
+            "prompt_id": meta.get("prompt_id"),
+            "prompt_version": meta.get("prompt_version"),
+            "prompt_name": meta.get("prompt_name"), "set_id": set_id,
+        }
+        patch["gen_prefs"] = prefs
+    sprite_store.update_action(sprite_id, action_id, patch)
     ctx.report(100, f"首帧已生成（参考 {key}）")
     return {"action_id": action_id, "key": key, "bytes": len(data)}
