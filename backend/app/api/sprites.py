@@ -614,6 +614,114 @@ def batch_gen_first_frames(sprite_id: str, req: BatchFfGenRequest):
     return {"submitted": submitted, "skipped": skipped}
 
 
+# ---------- 自动流水线（首帧 → 视频生成 → 抽帧 → 抠图 → 导出） ----------
+class PipelinePlanRequest(BaseModel):
+    action_ids: List[str] = Field(..., min_length=1, max_length=200)
+    steps: Optional[List[str]] = None          # 缺省全部
+    force: Optional[List[str]] = None          # 强制重做的步骤
+    set_id: Optional[str] = None               # 首帧参考集（缺省自动匹配）
+
+
+class PipelineStartRequest(PipelinePlanRequest):
+    pause_after_firstframe: bool = True
+    model: Optional[str] = None
+    resolution: Optional[str] = None
+
+
+class PipelineResumeRequest(BaseModel):
+    action_ids: List[str] = Field(..., min_length=1, max_length=200)
+
+
+def _pipeline_submit(sprite_id: str, action_id: str, name: str):
+    from app.core.pipeline import run_pipeline
+    from app.services.job_manager import job_manager
+    job = job_manager.submit(
+        "pipeline",
+        (lambda _a: lambda ctx: run_pipeline(sprite_id, _a, ctx))(action_id),
+        pool="io")
+    return {"action_id": action_id, "name": name, "job_id": job.id}
+
+
+@router.post("/{sprite_id}/pipeline/plan")
+def pipeline_plan(sprite_id: str, req: PipelinePlanRequest):
+    """执行前预览：每个动作每步 run / skip / blocked（原因）。"""
+    from app.core.pipeline import STEPS, plan_action
+    _wrap(lambda: sprite_store.get_sprite(sprite_id))
+    opts = {"steps": req.steps or STEPS, "force": req.force or [], "set_id": req.set_id}
+    out = []
+    for aid in req.action_ids:
+        try:
+            action = sprite_store.get_action(sprite_id, aid)
+        except SpriteStoreError:
+            continue
+        p = plan_action(sprite_id, action, opts)
+        out.append({"action_id": aid, "name": action.get("name", aid),
+                    "pipeline": action.get("pipeline"), **p})
+    return {"plans": out, "steps": req.steps or STEPS}
+
+
+@router.post("/{sprite_id}/pipeline/start")
+def pipeline_start(sprite_id: str, req: PipelineStartRequest):
+    """为多个动作启动流水线；每个动作一个任务，步骤产物已存在的自动跳过。"""
+    from app.core.pipeline import STEPS, plan_action
+    _wrap(lambda: sprite_store.get_sprite(sprite_id))
+    steps = [s for s in STEPS if s in (req.steps or STEPS)]
+    opts = {"steps": steps, "force": req.force or [], "set_id": req.set_id}
+    submitted, skipped = [], []
+    for aid in req.action_ids:
+        try:
+            action = sprite_store.get_action(sprite_id, aid)
+        except SpriteStoreError:
+            skipped.append({"action_id": aid, "name": aid, "reason": "不属于该精灵"})
+            continue
+        name = action.get("name", aid)
+        cur = action.get("pipeline") or {}
+        if cur.get("status") == "running":
+            skipped.append({"action_id": aid, "name": name, "reason": "流水线进行中"})
+            continue
+        p = plan_action(sprite_id, action, opts)
+        if not p["runnable"]:
+            first_block = next((f"{k}: {v['reason']}" for k, v in p["steps"].items()
+                                if v["status"] == "blocked"), "没有可执行的步骤")
+            skipped.append({"action_id": aid, "name": name, "reason": first_block})
+            continue
+        sprite_store.update_action(sprite_id, aid, {"pipeline": {
+            "steps": steps, "force": req.force or [], "set_id": req.set_id,
+            "pause_after_firstframe": req.pause_after_firstframe,
+            "model": req.model, "resolution": req.resolution,
+            "done": [], "status": "queued", "current": None, "error": None,
+            "started_at": __import__("time").time(),
+        }})
+        submitted.append(_pipeline_submit(sprite_id, aid, name))
+    return {"submitted": submitted, "skipped": skipped}
+
+
+@router.post("/{sprite_id}/pipeline/resume")
+def pipeline_resume(sprite_id: str, req: PipelineResumeRequest):
+    """确认后续跑（暂停/失败的动作从未完成步骤继续；已过首帧闸门不再暂停）。"""
+    _wrap(lambda: sprite_store.get_sprite(sprite_id))
+    submitted, skipped = [], []
+    for aid in req.action_ids:
+        try:
+            action = sprite_store.get_action(sprite_id, aid)
+        except SpriteStoreError:
+            continue
+        name = action.get("name", aid)
+        st = dict(action.get("pipeline") or {})
+        if not st:
+            skipped.append({"action_id": aid, "name": name, "reason": "没有流水线记录"})
+            continue
+        if st.get("status") == "running":
+            skipped.append({"action_id": aid, "name": name, "reason": "进行中"})
+            continue
+        st["pause_after_firstframe"] = False
+        st["status"] = "queued"
+        st["error"] = None
+        sprite_store.update_action(sprite_id, aid, {"pipeline": st})
+        submitted.append(_pipeline_submit(sprite_id, aid, name))
+    return {"submitted": submitted, "skipped": skipped}
+
+
 # ---------- 批量抽帧（按模板的参考抽帧规则） ----------
 class BatchExtractRequest(BaseModel):
     action_ids: List[str] = Field(..., min_length=1, max_length=200)

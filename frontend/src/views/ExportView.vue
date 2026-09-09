@@ -119,6 +119,36 @@ async function refreshExports() {
   } catch { /* ignore */ }
 }
 
+// ---- 精灵导出预设（自动流水线的导出参数；默认序列帧 PNG）----
+const namePattern = ref('{sprite}_{action}')
+function applyPreset(p) {
+  if (!p || !p.format) return
+  format.value = p.format
+  if (p.name_pattern) namePattern.value = p.name_pattern
+  if (p.pngquant_config) Object.assign(pngquant, p.pngquant_config)
+  if (p.sprite_config) {
+    const s = p.sprite_config
+    Object.assign(sprite, { layout: s.layout ?? sprite.layout, columns: s.columns ?? null, padding: s.padding ?? 0,
+      frame_width: s.frame_width ?? null, frame_height: s.frame_height ?? null,
+      generate_json: s.generate_json ?? true, resample_filter: s.resample_filter ?? 'lanczos' })
+  }
+  if (p.gif_config) Object.assign(gif, p.gif_config)
+  if (p.webp_config) Object.assign(webp, p.webp_config)
+  if (p.godot_config) Object.assign(godot, p.godot_config)
+  if (p.loop_transition) Object.assign(store.loopTransition, p.loop_transition)
+}
+async function savePreset() {
+  if (!store.currentSprite) return
+  const cfg = buildConfig()
+  delete cfg.output_name
+  const output = { ...cfg, name_pattern: namePattern.value.trim() || '{sprite}_{action}' }
+  const sp = await api.patchSprite(store.currentSprite.id, {
+    preset: { ...(store.currentSprite.preset || {}), output } })
+  store.currentSprite.preset = sp.preset
+  toast(`已保存为「${store.currentSprite.name}」的导出预设，自动流水线导出时使用`)
+}
+onMounted(() => applyPreset(store.currentSprite?.preset?.output))
+
 function fmtSize(b) {
   if (b < 1024) return b + ' B'
   if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB'
@@ -145,6 +175,15 @@ onMounted(refreshExports)
           </div>
           <div class="field inline"><label>文件名</label><input v-model="outputName" /></div>
           <span class="hint">将导出 {{ selected.length || store.frameCount }} 帧（选中帧）</span>
+        </div>
+        <div class="row" style="align-items:center;gap:8px">
+          <div class="field inline"><label>预设命名</label>
+            <input v-model="namePattern" style="width:170px" title="自动流水线导出的文件名，支持 {sprite} {action}" /></div>
+          <button class="small" title="把当前格式与参数保存为本精灵的导出预设（自动流水线导出时使用）"
+                  @click="savePreset">保存为精灵导出预设</button>
+          <span v-if="store.currentSprite?.preset?.output?.format" class="hint">
+            当前预设：{{ store.currentSprite.preset.output.format }}</span>
+          <span v-else class="hint">未设预设时流水线默认导出序列帧 PNG</span>
         </div>
 
         <!-- 精灵图配置 -->

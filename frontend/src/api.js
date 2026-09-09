@@ -89,6 +89,10 @@ const api = {
   batchImport: (payload) => request('POST', '/api/sprites/batch-import', { json: payload }),
   batchGenerate: (sid, payload) =>
     request('POST', `/api/sprites/${sid}/batch-generate`, { json: payload }),
+  pipelinePlan: (sid, payload) => request('POST', `/api/sprites/${sid}/pipeline/plan`, { json: payload }),
+  pipelineStart: (sid, payload) => request('POST', `/api/sprites/${sid}/pipeline/start`, { json: payload }),
+  pipelineResume: (sid, actionIds) =>
+    request('POST', `/api/sprites/${sid}/pipeline/resume`, { json: { action_ids: actionIds } }),
   batchExtract: (sid, actionIds) =>
     request('POST', `/api/sprites/${sid}/batch-extract`, { json: { action_ids: actionIds } }),
   templates: () => request('GET', '/api/templates'),

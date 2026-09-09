@@ -72,49 +72,53 @@ def test_background(session_id: str, req: BackgroundTestRequest):
     return Response(content=bytes_data, media_type="image/png")
 
 
+def run_bg_remove(session, indices: list, mode_name: str, params: dict, ctx) -> dict:
+    """抠图任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    mode = BackgroundMode.AI if mode_name == "ai" else BackgroundMode.COLOR
+    remover = BackgroundRemover()
+    ctx.register_cancel(remover.cancel)
+    ctx.report(0, "开始抠图...")
+
+    arrays = session.load_display_arrays(indices)
+
+    # 历史快照（供回退）
+    session.history.push_snapshot(
+        "背景去除",
+        f"{'AI' if mode_name == 'ai' else '颜色'}抠图 | {len(indices)}帧",
+        indices, session.frame_manager,
+    )
+
+    processed = 0
+    for i, (idx, img) in enumerate(zip(indices, arrays)):
+        if ctx.cancelled():
+            break
+        if img is None:
+            continue
+        result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
+        session.save_processed(idx, result)
+        processed += 1
+        ctx.report((i + 1) / len(indices) * 100, f"抠图 {i+1}/{len(indices)}")
+
+    session.clear_frame_arrays()
+    session.persist_metadata()
+    ctx.report(100, f"抠图完成: {processed}/{len(indices)} 帧")
+    from app.services import recipe
+    recipe.record_step(session, "background",
+                       {"mode": mode_name, **{k: v for k, v in params.items()
+                                              if not callable(v)}},
+                       {"processed": processed})
+    return {"mode": mode_name, "processed": processed, "total": len(indices)}
+
+
 @router.post("/remove")
 def remove_background(session_id: str, req: BackgroundRemoveRequest):
     session = get_session(session_id)
     indices = require_indices(session, req.indices)
-    mode = BackgroundMode.AI if req.mode == "ai" else BackgroundMode.COLOR
     params = _ai_params(req.params) if req.mode == "ai" else _color_params(req.params)
 
-    def _job(ctx):
-        remover = BackgroundRemover()
-        ctx.register_cancel(remover.cancel)
-        ctx.report(0, "开始抠图...")
-
-        arrays = session.load_display_arrays(indices)
-
-        # 历史快照（供回退）
-        session.history.push_snapshot(
-            "背景去除",
-            f"{'AI' if req.mode == 'ai' else '颜色'}抠图 | {len(indices)}帧",
-            indices, session.frame_manager,
-        )
-
-        processed = 0
-        for i, (idx, img) in enumerate(zip(indices, arrays)):
-            if ctx.cancelled():
-                break
-            if img is None:
-                continue
-            result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
-            session.save_processed(idx, result)
-            processed += 1
-            ctx.report((i + 1) / len(indices) * 100, f"抠图 {i+1}/{len(indices)}")
-
-        session.clear_frame_arrays()
-        session.persist_metadata()
-        ctx.report(100, f"抠图完成: {processed}/{len(indices)} 帧")
-        from app.services import recipe
-        recipe.record_step(session, "background",
-                           {"mode": req.mode, **{k: v for k, v in params.items()
-                                                 if not callable(v)}},
-                           {"processed": processed})
-        return {"mode": req.mode, "processed": processed, "total": len(indices)}
-
-    job = job_manager.submit("background", _job, lock=session.lock)
+    job = job_manager.submit(
+        "background", lambda ctx: run_bg_remove(session, indices, req.mode, params, ctx),
+        lock=session.lock)
     return {"job_id": job.id}
 
 

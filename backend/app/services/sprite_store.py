@@ -270,7 +270,7 @@ class SpriteStore:
 
     def update_action(self, sprite_id: str, action_id: str, patch: dict) -> dict:
         allowed = {"name", "status", "first_frame", "preset_override", "template_id",
-                   "gen_prefs"}
+                   "gen_prefs", "pipeline"}
         with self._lock:
             data = self._read_json(self.action_json(sprite_id, action_id))
             for k in allowed & set(patch.keys()):

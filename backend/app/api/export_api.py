@@ -40,58 +40,62 @@ def _safe_child(base: Path, *parts: str) -> Path:
     return target_r
 
 
+def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
+    """导出任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    export_dir = session.storage.export_dir(export_name)
+
+    frames = []
+    session.load_display_arrays(indices)
+    for idx in indices:
+        f = session.frame_manager.get_frame(idx)
+        if f is not None:
+            frames.append(f)
+
+    if not frames:
+        return {"error": "没有可导出的帧"}
+
+    cfg = config.model_copy()
+    cfg.output_path = export_dir
+
+    # 循环过渡：非破坏性应用到导出帧（使首尾无缝衔接）
+    lt = cfg.loop_transition
+    if lt.enabled and len(frames) > 1:
+        frames = apply_transition_to_frame_data(frames, lt.count, lt.mode)
+
+    ctx.report(30, "开始导出...")
+    exporter = Exporter()
+    main_path, info = exporter.export(frames, cfg)
+
+    session.clear_frame_arrays()
+
+    files = [f.name for f in sorted(Path(main_path).parent.iterdir()) if f.is_file()]
+    ctx.report(100, "导出完成")
+    from app.services import recipe
+    recipe.record_step(session, "export",
+                       {"format": config.format.value
+                        if hasattr(config.format, "value") else str(config.format),
+                        "name": export_name,
+                        "loop_transition": lt.enabled,
+                        "frame_indices": indices[:50]},
+                       {"files": files})
+    return {
+        "name": export_name,
+        "main": Path(main_path).name,
+        "info": info,
+        "files": files,
+        "dir": str(export_dir),
+    }
+
+
 @router.post("")
 def create_export(session_id: str, req: ExportRequest):
     session = get_session(session_id)
     indices = require_indices(session, req.indices)
     export_name = _sanitize_name(req.config.output_name)
 
-    def _job(ctx):
-        export_dir = session.storage.export_dir(export_name)
-
-        frames = []
-        arrays = session.load_display_arrays(indices)
-        for idx in indices:
-            f = session.frame_manager.get_frame(idx)
-            if f is not None:
-                frames.append(f)
-
-        if not frames:
-            return {"error": "没有可导出的帧"}
-
-        cfg = req.config.model_copy()
-        cfg.output_path = export_dir
-
-        # 循环过渡：非破坏性应用到导出帧（使首尾无缝衔接）
-        lt = cfg.loop_transition
-        if lt.enabled and len(frames) > 1:
-            frames = apply_transition_to_frame_data(frames, lt.count, lt.mode)
-
-        ctx.report(30, "开始导出...")
-        exporter = Exporter()
-        main_path, info = exporter.export(frames, cfg)
-
-        session.clear_frame_arrays()
-
-        files = [f.name for f in sorted(Path(main_path).parent.iterdir()) if f.is_file()]
-        ctx.report(100, "导出完成")
-        from app.services import recipe
-        recipe.record_step(session, "export",
-                           {"format": req.config.format.value
-                            if hasattr(req.config.format, "value") else str(req.config.format),
-                            "name": export_name,
-                            "loop_transition": lt.enabled,
-                            "frame_indices": indices[:50]},
-                           {"files": files})
-        return {
-            "name": export_name,
-            "main": Path(main_path).name,
-            "info": info,
-            "files": files,
-            "dir": str(export_dir),
-        }
-
-    job = job_manager.submit("export", _job, lock=session.lock)
+    job = job_manager.submit(
+        "export", lambda ctx: run_export(session, req.config, indices, export_name, ctx),
+        lock=session.lock)
     return {"job_id": job.id, "export_name": export_name}
 
 

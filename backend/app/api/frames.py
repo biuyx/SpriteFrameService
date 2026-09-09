@@ -49,56 +49,62 @@ def submit_extract_job(session, start_time: float, end_time: float, fps: float,
             detail=f"本次将抽取约 {planned} 帧，超过上限 {limit}。请缩短时间范围或降低帧率。",
         )
 
-    def _job(ctx):
-        extractor = FrameExtractor()
-        ctx.register_cancel(extractor.cancel)
-        ctx.report(0, "开始抽帧...")
+    return job_manager.submit(
+        "extract",
+        lambda ctx: run_extract(session, start_time, end_time, fps, keep, keep_total, ctx),
+        lock=session.lock)
 
-        video_path = session.storage.video_path
-        frames = extractor.extract_frames(
-            str(video_path),
-            start_time, end_time, fps,
-            session.video_info,
-            progress_callback=lambda cur, total, pct: ctx.report(pct, f"抽帧 {cur}/{total}")
-        )
 
-        if ctx.cancelled():
-            return None
+def run_extract(session, start_time: float, end_time: float, fps: float,
+                keep: Optional[List[int]], keep_total: Optional[int], ctx) -> Optional[dict]:
+    """抽帧任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    extractor = FrameExtractor()
+    ctx.register_cancel(extractor.cancel)
+    ctx.report(0, "开始抽帧...")
 
-        session.frame_manager.clear()
-        session.frame_store.save_raw_frames(frames)
-        session.frame_manager.add_frames(frames)
-        session.persist_metadata()
+    video_path = session.storage.video_path
+    frames = extractor.extract_frames(
+        str(video_path),
+        start_time, end_time, fps,
+        session.video_info,
+        progress_callback=lambda cur, total, pct: ctx.report(pct, f"抽帧 {cur}/{total}")
+    )
 
-        # 按模板规则的保留集删除多余帧（校准帧数不符则安全跳过）
-        msg = f"抽帧完成: {len(frames)} 帧"
-        kept = None
-        if keep is not None and keep_total:
-            if len(frames) == keep_total:
-                fm = session.frame_manager
-                keep_set = set(keep)
-                for idx in range(len(frames) - 1, -1, -1):
-                    if idx not in keep_set:
-                        fr = fm.get_frame(idx)
-                        if fr:
-                            session.frame_store.remove_frame_files(fr.id)
-                        fm.remove_frame(idx)
-                session.persist_metadata()
-                kept = fm.frame_count
-                msg = f"抽帧完成: {len(frames)} 帧，按规则保留 {kept} 帧"
-            else:
-                msg = (f"抽帧完成: {len(frames)} 帧"
-                       f"（与校准时 {keep_total} 帧不符，未应用选帧结果）")
-        ctx.report(100, msg)
-        from app.services import recipe
-        recipe.record_step(session, "extract",
-                           {"start_time": start_time, "end_time": end_time,
-                            "fps": fps},
-                           {"extracted": len(frames), "kept": kept})
-        return {"extracted": len(frames), "kept": kept,
-                "start_time": start_time, "end_time": end_time}
+    if ctx.cancelled():
+        return None
 
-    return job_manager.submit("extract", _job, lock=session.lock)
+    session.frame_manager.clear()
+    session.frame_store.save_raw_frames(frames)
+    session.frame_manager.add_frames(frames)
+    session.persist_metadata()
+
+    # 按模板规则的保留集删除多余帧（校准帧数不符则安全跳过）
+    msg = f"抽帧完成: {len(frames)} 帧"
+    kept = None
+    if keep is not None and keep_total:
+        if len(frames) == keep_total:
+            fm = session.frame_manager
+            keep_set = set(keep)
+            for idx in range(len(frames) - 1, -1, -1):
+                if idx not in keep_set:
+                    fr = fm.get_frame(idx)
+                    if fr:
+                        session.frame_store.remove_frame_files(fr.id)
+                    fm.remove_frame(idx)
+            session.persist_metadata()
+            kept = fm.frame_count
+            msg = f"抽帧完成: {len(frames)} 帧，按规则保留 {kept} 帧"
+        else:
+            msg = (f"抽帧完成: {len(frames)} 帧"
+                   f"（与校准时 {keep_total} 帧不符，未应用选帧结果）")
+    ctx.report(100, msg)
+    from app.services import recipe
+    recipe.record_step(session, "extract",
+                       {"start_time": start_time, "end_time": end_time,
+                        "fps": fps},
+                       {"extracted": len(frames), "kept": kept})
+    return {"extracted": len(frames), "kept": kept,
+            "start_time": start_time, "end_time": end_time}
 
 
 @router.post("/extract")

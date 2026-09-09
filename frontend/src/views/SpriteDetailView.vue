@@ -7,6 +7,7 @@ import BatchGenerateModal from '../components/BatchGenerateModal.vue'
 import FirstFrameLibraryModal from '../components/FirstFrameLibraryModal.vue'
 import BatchExtractModal from '../components/BatchExtractModal.vue'
 import BatchFfGenModal from '../components/BatchFfGenModal.vue'
+import PipelineModal from '../components/PipelineModal.vue'
 
 const store = useStore()
 const actions = ref([])
@@ -22,8 +23,18 @@ const batchGenOpen = ref(false)
 const ffLibOpen = ref(false)
 const batchExtOpen = ref(false)
 const ffGenOpen = ref(false)
+const pipelineOpen = ref(false)
 
 const STATUS_LABEL = { new: '未开始', active: '进行中', final: '已定稿' }
+const PIPE_TXT = { queued: '流水线排队', running: '流水线进行中', paused: '待确认', done: '流水线完成', error: '流水线失败' }
+const pausedIds = computed(() => actions.value.filter(a => a.pipeline?.status === 'paused').map(a => a.id))
+async function resumePaused() {
+  if (!pausedIds.value.length) return
+  if (!(await askConfirm(`确认 ${pausedIds.value.length} 个动作的首帧，继续后续工序？`))) return
+  const r = await api.pipelineResume(store.currentSprite.id, pausedIds.value)
+  toast(`已继续 ${r.submitted.length} 个`)
+  await load()
+}
 
 // 精灵摘要条：分类/五阶段进度/立绘就绪
 const spriteInfo = ref(null)         // 来自精灵库列表（含 progress/tags）
@@ -207,6 +218,10 @@ onMounted(async () => {
               @click="batchGenOpen = true">批量生成{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
       <button v-if="actions.length" class="small" :title="preselect ? `对已选 ${selectedIds.length} 个` : ''"
               @click="batchExtOpen = true">批量抽帧{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
+      <button v-if="actions.length" class="small primary" title="首帧 → 视频生成 → 抽帧 → 抠图 → 导出 自动执行（执行前有计划预览）"
+              @click="pipelineOpen = true">⚡ 一键流水线{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
+      <button v-if="pausedIds.length" class="small" title="首帧已生成等待确认的动作，确认后继续后续工序"
+              @click="resumePaused">确认继续（{{ pausedIds.length }}）</button>
       <button class="primary" @click="creating = !creating">+ 新建动作</button>
     </div>
 
@@ -258,6 +273,8 @@ onMounted(async () => {
               <div class="act-name">
                 <b>{{ a.name }}</b>
                 <span class="badge" :class="a.status">{{ STATUS_LABEL[a.status] || a.status }}</span>
+                <span v-if="a.pipeline?.status && a.pipeline.status !== 'done'" class="badge pipe" :class="a.pipeline.status"
+                      :title="a.pipeline.error || ''">{{ PIPE_TXT[a.pipeline.status] || a.pipeline.status }}</span>
               </div>
             </td>
             <td>
@@ -295,6 +312,9 @@ onMounted(async () => {
   <BatchFfGenModal v-if="ffGenOpen" :actions="actions" :preselected="preselect"
                    @close="ffGenOpen = false; load()"
                    @done="load()" />
+  <PipelineModal v-if="pipelineOpen" :actions="actions" :preselected="preselect"
+                 @close="pipelineOpen = false; load()"
+                 @done="load()" />
 
   <!-- 精灵重命名 / 改分类 -->
   <div v-if="editing" class="edit-mask" @click.self="editing = null">
@@ -386,6 +406,9 @@ onMounted(async () => {
 .badge { font-size: 10px; padding: 1px 8px; border-radius: 8px; background: var(--bg-input); color: var(--text-dim); flex: none; }
 .badge.active { background: #1e88e533; color: var(--accent-hover); }
 .badge.final { background: #4caf5033; color: var(--ok); }
+.badge.pipe.running, .badge.pipe.queued { background: #ff980026; color: var(--warn); }
+.badge.pipe.paused { background: #1e88e533; color: var(--accent-hover); }
+.badge.pipe.error { background: #ef535033; color: var(--err); }
 .tpl { font-size: 12px; color: var(--text-dim); }
 
 .stages { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }

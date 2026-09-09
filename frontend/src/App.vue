@@ -27,6 +27,7 @@ import TemplateLibraryModal from './components/TemplateLibraryModal.vue'
 import FfSetLibraryModal from './components/FfSetLibraryModal.vue'
 import PromptLibraryModal from './components/PromptLibraryModal.vue'
 import ProjectTransferModal from './components/ProjectTransferModal.vue'
+import PipelineModal from './components/PipelineModal.vue'
 
 const store = useStore()
 const jobs = useJobs()
@@ -43,6 +44,17 @@ const settingsOpen = ref(false)
 // 全局资源弹窗（顶栏「资源库」菜单打开，任一层都可用）：tpl | ffset | prompt | transfer
 const resModal = ref(null)
 function onImported() { store.libraryVersion++ }
+// 工作台「一键执行」：对当前动作跑流水线
+const pipelineOpen = ref(false)
+const pipelineActions = computed(() => {
+  const a = store.spriteActions.find((x) => x.id === store.currentAction?.id)
+  return a ? [a] : (store.currentAction ? [store.currentAction] : [])
+})
+async function afterPipeline() {
+  const { loadSpriteActions, probeFirstFrame, loadTakes, refreshSession, refreshFrames } = await import('./stores')
+  if (store.currentSprite) loadSpriteActions(store.currentSprite.id)
+  probeFirstFrame(); loadTakes(); await refreshSession(); await refreshFrames()
+}
 
 // 有新任务启动时自动展开任务栏
 watch(() => jobs.items.length, (n, old) => {
@@ -313,6 +325,8 @@ async function jumpToJob(j) {
           {{ store.capabilities.platform.os }}
           <span v-if="store.capabilities.platform.gpu_available" style="color: var(--ok)">· GPU</span>
         </span>
+        <button class="small primary" style="margin-left:8px" title="对当前动作自动执行 首帧→视频生成→抽帧→抠图→导出（已完成的步骤跳过）"
+                @click="pipelineOpen = true">⚡ 一键执行</button>
         <ResourceMenu style="margin-left:8px" @open="resModal = $event" />
         <button class="small" style="margin-left:8px" @click="settingsOpen = true">⚙</button>
         <button v-if="authRequired" class="small" style="margin-left:8px" @click="doLogout">退出登录</button>
@@ -362,6 +376,9 @@ async function jumpToJob(j) {
   <FfSetLibraryModal v-if="resModal === 'ffset'" @close="resModal = null" />
   <PromptLibraryModal v-if="resModal === 'prompt'" @close="resModal = null" />
   <ProjectTransferModal v-if="resModal === 'transfer'" @close="resModal = null" @imported="onImported" />
+  <PipelineModal v-if="pipelineOpen && pipelineActions.length" :actions="pipelineActions"
+                 :preselected="pipelineActions.map((a) => a.id)"
+                 @close="pipelineOpen = false; afterPipeline()" @done="afterPipeline" />
 
   <!-- 全局确认对话框（应用内实现，不依赖可能被浏览器抑制的原生 confirm） -->
   <div v-if="confirmDialog.visible" class="cfm-mask" @click.self="resolveConfirm(confirmDialog.input ? null : false)">
