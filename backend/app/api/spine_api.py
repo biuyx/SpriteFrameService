@@ -141,7 +141,10 @@ def export_spine(sprite_id: str, req: SpineExportRequest):
                 continue
             names, size = [], None
             for fr in frames:
-                img = session.load_display_array(fr.index)
+                if req.use_processed:
+                    img = session.load_display_array(fr.index)
+                else:
+                    img = session.frame_store.load_raw(fr.id)
                 if img is None:
                     continue
                 if img.ndim == 2:
