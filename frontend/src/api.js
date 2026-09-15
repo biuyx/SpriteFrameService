@@ -210,12 +210,15 @@ const api = {
   bgModels: (sid) => request('GET', `/api/sessions/${sid}/background/models`),
   bgRemove: (sid, params) => request('POST', `/api/sessions/${sid}/background/remove`, { json: params }),
   bgTest: (sid, params) => request('POST', `/api/sessions/${sid}/background/test`, { json: params, blob: true }),
-  outline: (sid, params) => request('POST', `/api/sessions/${sid}/background/outline`, { json: params }),
+
 
   // 图像处理
   scale: (sid, params) => request('POST', `/api/sessions/${sid}/image/scale`, { json: params }),
   crop: (sid, params) => request('POST', `/api/sessions/${sid}/image/crop-whitespace`, { json: params }),
   optimizeEdges: (sid, params) => request('POST', `/api/sessions/${sid}/image/optimize-edges`, { json: params }),
+  // 描边（纯色，抠图之后执行）
+  imageOutline: (sid, params) => request('POST', `/api/sessions/${sid}/image/outline`, { json: params }),
+  imageOutlineTest: (sid, params) => request('POST', `/api/sessions/${sid}/image/outline/test`, { json: params, blob: true }),
   enhance: (sid, params) => request('POST', `/api/sessions/${sid}/image/enhance`, { json: params }),
   wandSelect: (sid, params) => request('POST', `/api/sessions/${sid}/image/wand/select`, { json: params }),
   wandMask: (sid, frameIndex) => `${BASE}/api/sessions/${sid}/image/wand/mask?frame_index=${frameIndex}`,

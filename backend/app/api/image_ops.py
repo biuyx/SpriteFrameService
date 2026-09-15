@@ -10,8 +10,8 @@ from PIL import Image
 
 from app.api.deps import get_session, require_indices
 from app.api.schemas import (
-    CropRequest, EnhanceRequest, OptimizeEdgesRequest,
-    ScaleRequest, WandApplyRequest, WandSelectRequest,
+    CropRequest, EnhanceRequest, ImageOutlineRequest, OptimizeEdgesRequest,
+    OutlineTestRequest, ScaleRequest, WandApplyRequest, WandSelectRequest,
 )
 from app.core.magic_wand import MagicWand
 from app.core.realesrgan_processor import RealESRGANProcessor
@@ -32,6 +32,89 @@ _ALGO_MAP = {
 
 def _push_history(session, indices, name: str, desc: str):
     session.history.push_snapshot(name, desc, indices, session.frame_manager)
+
+
+# ---------- 描边 ----------
+@router.post("/outline/test")
+def test_outline(session_id: str, req: OutlineTestRequest):
+    """单帧预览（不落盘）：返回描边后的 PNG。"""
+    from app.core.outline import add_outline, pad_rgba
+
+    session = get_session(session_id)
+    img = session.load_display_array(req.frame_index)
+    session.clear_frame_arrays()
+    if img is None:
+        raise HTTPException(status_code=404, detail="帧图像不存在")
+    if img.ndim != 3 or img.shape[2] != 4:
+        raise HTTPException(status_code=400, detail="该帧不是 RGBA——请先完成抠图")
+
+    p = req.params
+    src = img
+    if p.position in ("outer", "center"):
+        src = pad_rgba(src, int(p.width) + 1)     # 预览统一留白，避免贴边被裁
+    out = add_outline(src, p.width, p.color, p.opacity, p.position,
+                      p.corner, p.antialias, p.alpha_threshold)
+    return Response(content=encode_preview(out, transparent_checker=True),
+                    media_type="image/png")
+
+
+@router.post("/outline")
+def outline_frames(session_id: str, req: ImageOutlineRequest):
+    """给已抠图的帧加纯色描边。抠图之后、导出之前执行。"""
+    from app.core.outline import add_outline, pad_rgba, required_pad
+
+    session = get_session(session_id)
+    indices = require_indices(session, req.indices)
+    p = req.params
+
+    def _job(ctx):
+        ctx.report(0, "开始描边...")
+        arrays = session.load_display_arrays(indices)
+        rgba_idx = [(i, a) for i, a in zip(indices, arrays)
+                    if a is not None and a.ndim == 3 and a.shape[2] == 4]
+        if not rgba_idx:
+            session.clear_frame_arrays()
+            return {"processed": 0, "total": len(indices),
+                    "error": "没有可描边的帧——描边要求 RGBA，请先完成抠图"}
+
+        # 外描边可能超出画布：所有帧扩同一个量，保持帧间尺寸与基线一致
+        pad = 0
+        if req.auto_pad and p.position in ("outer", "center"):
+            pad = required_pad([a[:, :, 3] for _, a in rgba_idx], p.width,
+                               p.alpha_threshold)
+
+        _push_history(session, indices, "描边",
+                      f"{p.position} {p.width}px RGB{tuple(p.color)}"
+                      + (f" | 扩边 {pad}px" if pad else "")
+                      + f" | {len(rgba_idx)}帧")
+
+        processed = 0
+        for i, (idx, img) in enumerate(rgba_idx):
+            if ctx.cancelled():
+                break
+            src = pad_rgba(img, pad) if pad else img
+            out = add_outline(src, p.width, p.color, p.opacity, p.position,
+                              p.corner, p.antialias, p.alpha_threshold)
+            session.save_processed(idx, out)
+            processed += 1
+            ctx.report((i + 1) / len(rgba_idx) * 100, f"描边 {i+1}/{len(rgba_idx)}")
+
+        session.clear_frame_arrays()
+        session.persist_metadata()
+        from app.services import recipe
+        recipe.record_step(session, "outline",
+                           {"width": p.width, "color": list(p.color),
+                            "opacity": p.opacity, "position": p.position,
+                            "corner": p.corner, "antialias": p.antialias,
+                            "pad": pad},
+                           {"processed": processed})
+        ctx.report(100, f"描边完成: {processed}/{len(rgba_idx)} 帧"
+                        + (f"（已扩边 {pad}px）" if pad else ""))
+        return {"processed": processed, "total": len(indices), "pad": pad,
+                "skipped": len(indices) - len(rgba_idx)}
+
+    job = job_manager.submit("outline", _job, lock=session.lock)
+    return {"job_id": job.id}
 
 
 # ---------- 缩放 ----------

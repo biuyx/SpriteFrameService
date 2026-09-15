@@ -88,10 +88,26 @@ class BackgroundRemoveRequest(BaseModel):
     params: Optional[BackgroundParams] = Field(default_factory=BackgroundParams)
 
 
-class OutlineRequest(BaseModel):
-    indices: Optional[List[int]] = Field(default=None, description="目标帧")
-    thickness: int = Field(3, ge=0, description="描边厚度")
+class OutlineParams(BaseModel):
+    """纯色描边（语义对齐 PS 图层样式 Stroke）。"""
+    width: float = Field(2, ge=0, le=32, description="描边宽度(px)")
     color: Tuple[int, int, int] = Field((0, 0, 0), description="描边颜色 RGB")
+    opacity: float = Field(1.0, ge=0, le=1, description="不透明度")
+    position: str = Field("outer", pattern="^(outer|inner|center)$")
+    corner: str = Field("round", pattern="^(round|miter)$", description="round 圆角 / miter 尖角")
+    antialias: bool = Field(True, description="抗锯齿；像素风应关闭")
+    alpha_threshold: int = Field(128, ge=1, le=255, description="视为实心的 alpha 阈值")
+
+
+class ImageOutlineRequest(BaseModel):
+    indices: Optional[List[int]] = Field(default=None, description="目标帧")
+    params: OutlineParams = Field(default_factory=OutlineParams)
+    auto_pad: bool = Field(True, description="角色贴边时自动扩透明边，避免描边被裁")
+
+
+class OutlineTestRequest(BaseModel):
+    frame_index: int = Field(0, ge=0)
+    params: OutlineParams = Field(default_factory=OutlineParams)
 
 
 # ---------- Image ops ----------

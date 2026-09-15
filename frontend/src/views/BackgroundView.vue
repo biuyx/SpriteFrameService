@@ -51,10 +51,6 @@ const colorInvert = ref(false)
 const colorDenoise = ref(1)
 const colorFeather = ref(0)
 
-// 描边
-const outlineThickness = ref(3)
-const outlineColor = ref('#000000')
-
 // 测试
 const testIndex = ref(0)
 const testImg = ref(null)
@@ -129,20 +125,6 @@ async function batchRemove() {
     onDone: async (r) => {
       await refreshFrames()
       toast(`抠图完成：${r.processed}/${r.total} 帧`)
-    },
-  })
-}
-
-async function runOutline() {
-  const params = { thickness: outlineThickness.value }
-  if (selected.value.length) params.indices = selected.value
-  const c = outlineColor.value.replace('#', '')
-  params.color = [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)]
-  await startJob(() => api.outline(store.sessionId, params), {
-    title: '添加描边',
-    onDone: async (r) => {
-      await refreshFrames()
-      toast(`描边完成：${r.processed}/${r.total} 帧`)
     },
   })
 }
@@ -222,15 +204,7 @@ onMounted(() => {
         <p class="hint">抠图结果写入「处理后」图层，可在帧管理查看绿色徽标。</p>
       </div>
 
-      <div class="panel">
-        <h3>描边</h3>
-        <p class="desc">为已抠图（RGBA）帧添加描边。</p>
-        <div class="row">
-          <div class="field inline"><label>厚度</label><input type="number" v-model.number="outlineThickness" :min="1" :max="20" /></div>
-          <div class="field inline"><label>颜色</label><input type="color" v-model="outlineColor" /></div>
-          <button @click="runOutline">描边选中帧</button>
-        </div>
-      </div>
+      <p class="hint">需要描边？抠图完成后到「图像处理 → 描边」执行（可预览、支持像素风硬边）。</p>
     </div>
 
     <div>

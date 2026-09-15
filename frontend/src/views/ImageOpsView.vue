@@ -18,6 +18,66 @@ const edgeErode = ref(1)
 const esrganModel = ref('realesrgan-x4plus')
 const esrganTile = ref(0)
 
+// ---- 描边（纯色，抠图之后执行；与 PS 图层样式 Stroke 语义一致）----
+const OUTLINE_STYLES = {
+  smooth: { corner: 'round', antialias: true, label: '平滑（圆角，抗锯齿）' },
+  hard: { corner: 'round', antialias: false, label: '硬边（圆角，像素风）' },
+  square: { corner: 'miter', antialias: false, label: '方角硬边（像素风）' },
+}
+const outline = ref({ width: 2, color: '#000000', opacity: 1, position: 'outer',
+                      style: 'smooth', auto_pad: true })
+const outlineImg = ref(null)
+const outlineBusy = ref(false)
+const outlineInfo = ref('')
+const outlineFrame = ref(0)
+// 已抠图的帧才有 alpha，描边才有意义
+const processedCount = computed(() => store.frames.filter((f) => f.has_processed).length)
+
+function outlineParams() {
+  const st = OUTLINE_STYLES[outline.value.style] || OUTLINE_STYLES.smooth
+  const c = outline.value.color.replace('#', '')
+  return {
+    width: outline.value.width,
+    color: [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)],
+    opacity: outline.value.opacity,
+    position: outline.value.position,
+    corner: st.corner,
+    antialias: st.antialias,
+  }
+}
+
+async function previewOutline() {
+  outlineBusy.value = true
+  outlineInfo.value = ''
+  try {
+    const blob = await api.imageOutlineTest(store.sessionId, {
+      frame_index: outlineFrame.value, params: outlineParams(),
+    })
+    outlineImg.value = URL.createObjectURL(blob)
+    outlineInfo.value = `帧 #${outlineFrame.value} 描边预览（未落盘）`
+  } catch (e) {
+    toast(`预览失败: ${e.message}`)
+  } finally {
+    outlineBusy.value = false
+  }
+}
+
+async function runOutline() {
+  if (!processedCount.value) return toast('描边要求 RGBA——请先在「背景抠图」完成抠图')
+  const params = { params: outlineParams(), auto_pad: outline.value.auto_pad }
+  if (selected.value.length) params.indices = selected.value
+  await startJob(() => api.imageOutline(store.sessionId, params), {
+    title: `描边 ${outline.value.width}px`,
+    onDone: async (r) => {
+      await refreshFrames()
+      if (r?.error) return toast(r.error)
+      toast(`描边完成：${r.processed}/${r.total} 帧`
+            + (r.pad ? `（已扩边 ${r.pad}px 避免裁切）` : '')
+            + (r.skipped ? `，跳过未抠图 ${r.skipped} 帧` : ''))
+    },
+  })
+}
+
 const selected = computed(() =>
   store.frames.filter((f) => f.is_selected).map((f) => f.index)
 )
@@ -81,6 +141,45 @@ async function runEnhance() {
 <template>
   <div class="grid2">
     <div>
+      <div class="panel">
+        <h3>描边</h3>
+        <p class="desc">给已抠图的帧加纯色描边（抠图之后、导出之前执行；缩放后再描边宽度才准确）。<br>重复执行会在已有描边外再描一圈——要改参数请先在「历史回退」撤销上一次描边。</p>
+        <div class="row">
+          <div class="field inline"><label>宽度(px)</label>
+            <input type="number" v-model.number="outline.width" :min="0.5" :max="16" step="0.5" style="width:70px" /></div>
+          <div class="field inline"><label>颜色</label><input type="color" v-model="outline.color" /></div>
+          <div class="field inline"><label>风格</label>
+            <select v-model="outline.style">
+              <option v-for="(v, k) in OUTLINE_STYLES" :key="k" :value="k">{{ v.label }}</option>
+            </select></div>
+        </div>
+        <div class="row">
+          <div class="field inline"><label>位置</label>
+            <select v-model="outline.position">
+              <option value="outer">外描边</option>
+              <option value="inner">内描边</option>
+              <option value="center">居中</option>
+            </select></div>
+          <div class="field inline"><label>不透明度</label>
+            <input type="number" v-model.number="outline.opacity" :min="0.1" :max="1" step="0.1" style="width:70px" /></div>
+          <div class="field inline"><label title="角色贴边时自动扩透明边，所有帧扩同一量以保持对齐">自动扩边</label>
+            <input type="checkbox" v-model="outline.auto_pad" /></div>
+        </div>
+        <div class="row">
+          <div class="field inline"><label>预览帧</label>
+            <input type="number" v-model.number="outlineFrame" :min="0" :max="Math.max(0, store.frameCount - 1)" style="width:70px" /></div>
+          <button class="small" :disabled="outlineBusy" @click="previewOutline">
+            {{ outlineBusy ? '预览中…' : '预览当前帧' }}</button>
+          <button class="primary" :disabled="!processedCount" @click="runOutline">
+            描边（{{ selected.length || '全部' }} 帧）</button>
+          <span v-if="!processedCount" class="hint warn">尚无已抠图的帧</span>
+        </div>
+        <div v-if="outlineImg" class="preview-box" style="margin-top:8px;max-height:260px">
+          <img :src="outlineImg" style="max-height:240px" />
+        </div>
+        <p v-if="outlineInfo" class="hint" style="margin-top:4px">{{ outlineInfo }}</p>
+      </div>
+
       <div class="panel">
         <h3>批量缩放</h3>
         <div class="row">
