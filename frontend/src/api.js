@@ -229,6 +229,12 @@ const api = {
   exports: (sid) => request('GET', `/api/sessions/${sid}/export/list`),
   exportDownload: (sid, name) => `${BASE}/api/sessions/${sid}/export/${name}/download`,
 
+  // Spine 资源导出（精灵级：全动作 → 骨架 JSON + 图集）
+  spinePreview: (sid) => request('GET', `/api/sprites/${sid}/spine/preview`),
+  spineExport: (sid, payload) => request('POST', `/api/sprites/${sid}/spine/export`, { json: payload }),
+  spineDownload: (sid, name) =>
+    `${BASE}/api/sprites/${sid}/spine/download?name=${encodeURIComponent(name)}`,
+
   // 历史 / 工序
   history: (sid) => request('GET', `/api/sessions/${sid}/history`),
   revert: (sid, stepId) => request('POST', `/api/sessions/${sid}/history/revert`, { json: { step_id: stepId } }),

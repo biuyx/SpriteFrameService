@@ -8,6 +8,7 @@ import FirstFrameLibraryModal from '../components/FirstFrameLibraryModal.vue'
 import BatchExtractModal from '../components/BatchExtractModal.vue'
 import BatchFfGenModal from '../components/BatchFfGenModal.vue'
 import PipelineModal from '../components/PipelineModal.vue'
+import SpineExportModal from '../components/SpineExportModal.vue'
 
 const store = useStore()
 const actions = ref([])
@@ -24,6 +25,7 @@ const ffLibOpen = ref(false)
 const batchExtOpen = ref(false)
 const ffGenOpen = ref(false)
 const pipelineOpen = ref(false)
+const spineOpen = ref(false)
 
 const STATUS_LABEL = { new: '未开始', active: '进行中', final: '已定稿' }
 const PIPE_TXT = { queued: '流水线排队', running: '流水线进行中', paused: '待确认', done: '流水线完成', error: '流水线失败' }
@@ -220,6 +222,8 @@ onMounted(async () => {
               @click="batchExtOpen = true">批量抽帧{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
       <button v-if="actions.length" class="small primary" title="首帧 → 视频生成 → 抽帧 → 抠图 → 导出 自动执行（执行前有计划预览）"
               @click="pipelineOpen = true">⚡ 一键流水线{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
+      <button v-if="actions.length" class="small" title="全角色序列帧 → Spine 骨架 JSON + 图集"
+              @click="spineOpen = true">导出 Spine</button>
       <button v-if="pausedIds.length" class="small" title="首帧已生成等待确认的动作，确认后继续后续工序"
               @click="resumePaused">确认继续（{{ pausedIds.length }}）</button>
       <button class="primary" @click="creating = !creating">+ 新建动作</button>
@@ -303,6 +307,7 @@ onMounted(async () => {
     </div>
   </div>
 
+  <SpineExportModal v-if="spineOpen" @close="spineOpen = false" />
   <BatchGenerateModal v-if="batchGenOpen" :actions="actions" :preselected="preselect"
                       @close="batchGenOpen = false; load()"
                       @done="load()" />

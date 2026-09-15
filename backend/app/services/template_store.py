@@ -125,7 +125,7 @@ class TemplateStore:
 
     def update(self, template_id: str, patch: dict) -> dict:
         """编辑 key/variant/duration_hint/group/extract_rule；(key, variant) 保持唯一。"""
-        allowed = {"key", "variant", "duration_hint", "group", "extract_rule"}
+        allowed = {"key", "variant", "duration_hint", "group", "extract_rule", "spine_anim"}
         with self._lock:
             items = self._load()
             t = next((x for x in items if x["id"] == template_id), None)
@@ -135,6 +135,7 @@ class TemplateStore:
             new["key"] = str(new.get("key") or "").strip()
             new["variant"] = str(new.get("variant") or "").strip()
             new["group"] = str(new.get("group") or "").strip()
+            new["spine_anim"] = str(new.get("spine_anim") or "").strip()
             if not new["key"]:
                 raise ValueError("动作 key 不能为空")
             dup = next((x for x in items if x["id"] != template_id

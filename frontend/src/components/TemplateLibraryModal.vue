@@ -45,6 +45,27 @@ const sorted = computed(() => {
   return [...list].sort((a, b) => (a.key + a.variant).localeCompare(b.key + b.variant, 'zh'))
 })
 const ossPending = computed(() => templates.value.filter(t => !t.oss_url))
+// 有建议动画名但还没落库的模板：可一键套用
+const spinePending = computed(() => templates.value.filter(
+  t => !(t.spine_anim || '').trim() && (t.spine_anim_suggest || '').trim()))
+const spineBusy = ref(false)
+
+async function applySpineSuggest() {
+  const pending = spinePending.value
+  if (!pending.length) return toast('没有可套用的建议动画名')
+  if (!(await askConfirm(
+    `按变体名给 ${pending.length} 个模板写入 Spine 动画名（如 走路 → walk1）？\n已手工填过的不会被覆盖。`))) return
+  spineBusy.value = true
+  let fail = 0
+  for (const t of pending) {
+    try { await api.patchTemplate(t.id, { spine_anim: t.spine_anim_suggest }) } catch { fail++ }
+  }
+  spineBusy.value = false
+  changed.value = true
+  await load()
+  toast(fail ? `套用完成：${pending.length - fail} 成功 / ${fail} 失败`
+             : `已套用 ${pending.length} 个动画名`)
+}
 
 async function clearRule(t) {
   if (!(await askConfirm(`清除模板「${t.variant || t.key}」的抽帧规则？`))) return
@@ -122,7 +143,9 @@ async function uploadAllOss() {
 
 function startEdit(t) {
   editing.value = { id: t.id, key: t.key, variant: t.variant,
-                    duration_hint: t.duration_hint, group: t.group || '' }
+                    duration_hint: t.duration_hint, group: t.group || '',
+                    spine_anim: t.spine_anim || '',
+                    spine_anim_suggest: t.spine_anim_suggest || '' }
 }
 
 async function saveEdit() {
@@ -133,6 +156,7 @@ async function saveEdit() {
       key: e.key, variant: e.variant,
       duration_hint: e.duration_hint || null,
       group: e.group || '',
+      spine_anim: (e.spine_anim || '').trim(),
     })
     editing.value = null
     changed.value = true
@@ -187,6 +211,10 @@ onMounted(load)
         <button class="small" :disabled="!ossConfigured || !!batchOss || !ossPending.length"
                 :title="ossConfigured ? '' : '先在 ⚙ 设置 里配置 OSS'" @click="uploadAllOss">
           {{ batchOss ? `OSS 上传中 ${batchOss.done}/${batchOss.total}` : `全部传OSS（${ossPending.length}）` }}</button>
+        <button class="small" :disabled="spineBusy || !spinePending.length"
+                title="按变体名批量写入 Spine 动画名（walk1 / sit_work1 …），已填的不覆盖"
+                @click="applySpineSuggest">
+          {{ spineBusy ? '套用中…' : `套用Spine名（${spinePending.length}）` }}</button>
       </div>
       <p class="hint" style="margin:0 0 8px">
         文件名即元数据：<code>01_idle_front (待机)（4秒）.mp4</code> → key / 变体 / 推荐时长。
@@ -205,6 +233,7 @@ onMounted(load)
               <th>动作 key</th><th>变体</th><th style="width:90px">分组</th>
               <th style="width:50px">时长</th>
               <th style="width:110px">抽帧规则</th>
+              <th style="width:96px">Spine 动画</th>
               <th style="width:70px">OSS</th>
               <th style="width:200px">操作</th>
             </tr>
@@ -221,6 +250,14 @@ onMounted(load)
                       title="在工作台/动作分析里点「保存为模板规则」可更新">
                   {{ t.extract_rule.start }}–{{ t.extract_rule.end }}s @{{ t.extract_rule.fps
                   }}{{ t.extract_rule.keep ? ` 留${t.extract_rule.keep.length}` : '' }}</span>
+                <span v-else class="dim">—</span>
+              </td>
+              <td class="mono-cell">
+                <span v-if="(t.spine_anim || '').trim()" class="ok-text"
+                      title="导出 Spine 时该动作的动画名">{{ t.spine_anim }}</span>
+                <span v-else-if="t.spine_anim_suggest" class="dim"
+                      title="按变体名推断的建议值，未保存——点「套用Spine名」或在编辑里确认">
+                  {{ t.spine_anim_suggest }}?</span>
                 <span v-else class="dim">—</span>
               </td>
               <td>
@@ -267,6 +304,13 @@ onMounted(load)
         <input v-model="editing.group" list="tpl-groups" @keyup.enter="saveEdit" /></div>
       <div class="field"><label>推荐时长（秒，可空）</label>
         <input v-model.number="editing.duration_hint" type="number" min="1" max="60" /></div>
+      <div class="field"><label>Spine 动画名（导出用，可空）</label>
+        <input v-model="editing.spine_anim" :placeholder="editing.spine_anim_suggest || '如 walk1 / sit_work1'"
+               @keyup.enter="saveEdit" />
+        <p v-if="editing.spine_anim_suggest && !editing.spine_anim.trim()" class="hint" style="margin:4px 0 0">
+          留空则导出时按建议值 <code>{{ editing.spine_anim_suggest }}</code> 处理。
+        </p>
+      </div>
       <div class="edit-ops">
         <button class="primary" @click="saveEdit">保存</button>
         <button @click="editing = null">取消</button>

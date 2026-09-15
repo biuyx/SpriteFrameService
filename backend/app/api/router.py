@@ -19,6 +19,7 @@ from . import (
     prompts,
     sessions,
     settings_api,
+    spine_api,
     sprites,
     videos,
 )
@@ -40,4 +41,5 @@ api_router.include_router(settings_api.router)
 api_router.include_router(project_io.router)
 api_router.include_router(ffsets.router)
 api_router.include_router(prompts.router)
+api_router.include_router(spine_api.router)
 api_router.include_router(jobs.router)

@@ -381,8 +381,13 @@ class TemplateScanRequest(BaseModel):
 
 @router.get("/templates")
 def list_templates():
+    from app.core.spine_export import DEFAULT_ANIM_MAP
     from app.services.template_store import template_store
-    return {"templates": template_store.list()}
+    items = template_store.list()
+    for t in items:
+        # 未设置时给出按变体名推断的建议（仅提示，保存后才落盘）
+        t["spine_anim_suggest"] = DEFAULT_ANIM_MAP.get((t.get("variant") or "").strip(), "")
+    return {"templates": items}
 
 
 @router.post("/templates/scan")
@@ -428,6 +433,7 @@ class TemplatePatch(BaseModel):
     variant: Optional[str] = None
     duration_hint: Optional[int] = Field(default=None, ge=1, le=60)
     group: Optional[str] = None
+    spine_anim: Optional[str] = Field(default=None, description="导出 Spine 时的动画名")
     extract_rule: Optional[ExtractRule] = None    # 显式传 null 表示清除规则
 
 
