@@ -20,6 +20,7 @@ from . import (
     sessions,
     settings_api,
     spine_api,
+    spine_templates,
     sprites,
     videos,
 )
@@ -42,4 +43,5 @@ api_router.include_router(project_io.router)
 api_router.include_router(ffsets.router)
 api_router.include_router(prompts.router)
 api_router.include_router(spine_api.router)
+api_router.include_router(spine_templates.router)
 api_router.include_router(jobs.router)

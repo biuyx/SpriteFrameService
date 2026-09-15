@@ -37,8 +37,18 @@ def frame_name(anim: str, index: int, pattern: str = "{anim}_{i:04d}") -> str:
     return pattern.format(anim=anim, i=index)
 
 
-def build_skeleton(anims: List[dict], images_path: str = "./images/") -> dict:
-    """anims: [{name, frames:[帧名...], fps, loop, width, height}]"""
+def build_skeleton(anims: List[dict], images_path: str = "./images/",
+                   version: str = SPINE_VERSION) -> dict:
+    """anims: [{name, frames:[帧名...], fps, loop, width, height}]
+
+    每条 anim 还可带参考工程反解出来的字段（都可缺省）：
+        slot            插槽名（缺省用首帧名）
+        bone_offset     骨骼静态偏移 {x, y}——美术逐动画的对齐微调
+        bone_scale      骨骼缩放 {x, y}
+        att_offset      附件偏移 {x, y}
+        render          附件渲染尺寸 (宽, 高)；与图集里的贴图尺寸无关，
+                        贴图压缩过也照样按这个尺寸画
+    """
     bones = [{"name": "root"}]
     slots, skin_atts, animations = [], {}, {}
 
@@ -46,13 +56,29 @@ def build_skeleton(anims: List[dict], images_path: str = "./images/") -> dict:
         if not a["frames"]:
             continue
         name = a["name"]
-        slot = a["frames"][0]                 # 沿用既有工程：slot 名 = 首帧名
-        bones.append({"name": name, "parent": "root"})
+        slot = a.get("slot") or a["frames"][0]   # 缺省沿用：slot 名 = 首帧名
+        bone = {"name": name, "parent": "root"}
+        off = a.get("bone_offset") or {}
+        if off.get("x"):
+            bone["x"] = round(float(off["x"]), 4)
+        if off.get("y"):
+            bone["y"] = round(float(off["y"]), 4)
+        bsc = a.get("bone_scale") or {}
+        if bsc.get("x") not in (None, 1):
+            bone["scaleX"] = round(float(bsc["x"]), 4)
+        if bsc.get("y") not in (None, 1):
+            bone["scaleY"] = round(float(bsc["y"]), 4)
+        bones.append(bone)
         slots.append({"name": slot, "bone": name})
-        skin_atts[slot] = {
-            f: {"width": int(a["width"]), "height": int(a["height"])}
-            for f in a["frames"]
-        }
+
+        rw, rh = a.get("render") or (int(a["width"]), int(a["height"]))
+        aoff = a.get("att_offset") or {}
+        att = {"width": int(rw), "height": int(rh)}
+        if aoff.get("x"):
+            att["x"] = round(float(aoff["x"]), 4)
+        if aoff.get("y"):
+            att["y"] = round(float(aoff["y"]), 4)
+        skin_atts[slot] = {f: dict(att) for f in a["frames"]}
         fps = max(0.1, float(a.get("fps") or 12))
         keys = [{"time": round(i / fps, 6), "name": f}
                 for i, f in enumerate(a["frames"])]
@@ -62,12 +88,16 @@ def build_skeleton(anims: List[dict], images_path: str = "./images/") -> dict:
         keys.append({"time": round(len(a["frames"]) / fps, 6), "name": tail})
         animations[name] = {"slots": {slot: {"attachment": keys}}}
 
-    # 附件不带 x/y 偏移，全部以骨骼原点为中心 → 包围盒即最大帧尺寸，原点居中
-    box_w = max([int(a["width"]) for a in anims if a["frames"]] or [0])
-    box_h = max([int(a["height"]) for a in anims if a["frames"]] or [0])
+    # 包围盒按附件的渲染尺寸算（贴图可能压缩过，渲染尺寸才是画面上的大小）
+    def _render_wh(a):
+        return a.get("render") or (int(a["width"]), int(a["height"]))
+
+    sized = [_render_wh(a) for a in anims if a["frames"]]
+    box_w = max([s[0] for s in sized] or [0])
+    box_h = max([s[1] for s in sized] or [0])
     payload = {
         "skeleton": {
-            "hash": "", "spine": SPINE_VERSION,
+            "hash": "", "spine": version or SPINE_VERSION,
             "x": -box_w / 2, "y": -box_h / 2, "width": box_w, "height": box_h,
             "images": images_path, "audio": "",
         },

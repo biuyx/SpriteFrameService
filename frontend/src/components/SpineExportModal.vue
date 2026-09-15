@@ -41,9 +41,55 @@ function applyPreset(k) {
 const outlinePreset = computed(() => store.currentSprite?.preset?.outline || null)
 const outlineOn = ref(true)
 
+// 导出模板：从既有 Spine 工程反解出的约定（版本/帧名/画布/逐动画对齐偏移）
+const templates = ref([])
+const templateId = ref('')
+const importPath = ref('')
+const importing = ref(false)
+const activeTemplate = computed(() =>
+  templates.value.find(t => t.id === templateId.value) || null)
+
+async function loadTemplates() {
+  try { templates.value = (await api.spineTemplates()).templates } catch { /* ignore */ }
+}
+
+async function runImport() {
+  const p = importPath.value.trim()
+  if (!p) return toast('填一下参考工程的目录，或 .json / .skel 文件路径')
+  importing.value = true
+  try {
+    const r = await api.importSpineTemplate({ path: p })
+    await loadTemplates()
+    templateId.value = r.template.id
+    importPath.value = ''
+    const t = r.template
+    toast(`已导入模板「${t.name}」：${t.animations.length} 个动画 · `
+          + `Spine ${t.spine_version} · 画布 ${t.canvas || '未知'}`
+          + (r.warnings.length ? `（${r.warnings[0]}）` : ''))
+  } catch (e) {
+    toast(`导入失败: ${e.message}`)
+  } finally {
+    importing.value = false
+  }
+}
+
+// 模板里有、但这次导不出来的动画——换模板时最该看的就是这个
+const coverage = computed(() => {
+  const t = activeTemplate.value
+  if (!t) return null
+  const mine = new Set(selected.value.map(i => i.anim))
+  const theirs = t.animation_names || []
+  return {
+    missing: theirs.filter(n => !mine.has(n)),
+    extra: [...mine].filter(n => !theirs.includes(n)),
+    total: theirs.length,
+  }
+})
+
 onMounted(async () => {
   name.value = store.currentSprite?.name || ''
   outlineOn.value = !!outlinePreset.value?.enabled
+  await loadTemplates()
   try {
     const r = await api.spinePreview(store.currentSprite.id)
     items.value = r.items
@@ -90,6 +136,13 @@ async function run() {
       ? { ...outlinePreset.value, enabled: true }
       : { enabled: false },
   }
+  // 用模板时，版本/帧名/画布/对齐偏移都交给模板，这里不再覆盖
+  if (templateId.value) {
+    payload.template_id = templateId.value
+    delete payload.canvas
+    delete payload.frame_pattern
+    delete payload.start_index
+  }
   try {
     await startJob(() => api.spineExport(store.currentSprite.id, payload), {
       title: 'Spine 导出',
@@ -123,7 +176,44 @@ function download() {
       <div v-if="loading" class="hint" style="padding:26px;text-align:center">加载动作中...</div>
 
       <template v-else>
-        <div class="ops-row">
+        <div class="ops-row tpl-row">
+          <div class="field inline"><label>导出模板</label>
+            <select v-model="templateId" style="min-width:170px"
+                    title="从既有 Spine 工程反解出的导出约定：版本、帧名格式、画布、逐动画对齐偏移">
+              <option value="">不用模板（按下面的参数导）</option>
+              <option v-for="t in templates" :key="t.id" :value="t.id">
+                {{ t.name }}（{{ t.animation_count }} 个动画 · Spine {{ t.spine_version }}）
+              </option>
+            </select>
+          </div>
+          <input v-model="importPath" style="flex:1;min-width:160px"
+                 placeholder="导入参考工程：目录 或 .json / .skel 路径"
+                 @keyup.enter="runImport" />
+          <button class="small" :disabled="importing" @click="runImport">
+            {{ importing ? '解析中…' : '导入' }}</button>
+        </div>
+
+        <div v-if="activeTemplate" class="tpl-info">
+          <b>{{ activeTemplate.name }}</b>
+          · Spine {{ activeTemplate.spine_version }}
+          · 画布 {{ activeTemplate.canvas || '未知' }}
+          · 帧名 <code>{{ activeTemplate.frame_pattern }}</code> 从 {{ activeTemplate.start_index }} 起
+          <template v-if="activeTemplate.atlas?.scale && activeTemplate.atlas.scale !== 1">
+            · 图集压缩 {{ activeTemplate.atlas.scale }}×
+          </template>
+          <div class="dim" style="margin-top:3px">
+            版本、帧名格式、画布、每个动画的对齐偏移与帧率都按模板走，下面的同名参数不再生效。
+          </div>
+          <div v-if="coverage && coverage.missing.length" class="warn-text" style="margin-top:3px">
+            模板里有 {{ coverage.total }} 个动画，这次缺 {{ coverage.missing.length }} 个：
+            {{ coverage.missing.slice(0, 6).join('、') }}{{ coverage.missing.length > 6 ? ' …' : '' }}
+          </div>
+          <div v-if="coverage && coverage.extra.length" class="warn-text" style="margin-top:3px">
+            这些动画模板里没有：{{ coverage.extra.join('、') }}（会按默认约定导出）
+          </div>
+        </div>
+
+        <div class="ops-row" :class="{ dimmed: !!templateId }">
           <div class="field inline"><label>骨架名</label>
             <input v-model="name" style="width:150px" placeholder="默认用精灵名" /></div>
           <div class="field inline"><label>预设</label>
@@ -200,6 +290,8 @@ function download() {
 
         <div v-if="result" class="result-box">
           ✓ 导出完成：{{ result.animations.length }} 个动画 / {{ result.frames }} 帧
+          <template v-if="result.template">· 模板 {{ result.template }}</template>
+          <template v-if="result.spine_version">· Spine {{ result.spine_version }}</template>
           <template v-if="result.canvas">· 画布 {{ result.canvas }}</template>
           <template v-if="result.outline">· 描边 {{ result.outline.width }}px</template>
           <template v-if="result.atlas">· 图集 {{ result.atlas.size }}（{{ result.atlas.regions }} 区域）</template>
@@ -249,6 +341,12 @@ function download() {
 .dim { color: var(--text-dim); font-size: 12px; }
 .ok-text { color: var(--ok); font-size: 12px; }
 .warn-text { color: var(--warn); font-size: 12px; }
+.tpl-row { border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.tpl-info {
+  margin: 0 0 8px; padding: 6px 10px; font-size: 12px;
+  background: var(--bg-input); border-left: 2px solid var(--ok); border-radius: 3px;
+}
+.dimmed { opacity: .45; }
 .warn-box {
   margin: 0 0 8px; padding: 5px 9px; font-size: 12px; color: #ffcc80;
   background: #ff980022; border-left: 2px solid var(--warn); border-radius: 3px;

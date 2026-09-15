@@ -229,6 +229,15 @@ const api = {
   exports: (sid) => request('GET', `/api/sessions/${sid}/export/list`),
   exportDownload: (sid, name) => `${BASE}/api/sessions/${sid}/export/${name}/download`,
 
+  // Spine 导出模板（从既有工程反解出的导出约定）
+  spineTemplates: () => request('GET', '/api/spine-templates'),
+  spineTemplate: (tid) => request('GET', `/api/spine-templates/${tid}`),
+  importSpineTemplate: (payload) =>
+    request('POST', '/api/spine-templates/import', { json: payload }),
+  renameSpineTemplate: (tid, name) =>
+    request('PATCH', `/api/spine-templates/${tid}`, { json: { name } }),
+  deleteSpineTemplate: (tid) => request('DELETE', `/api/spine-templates/${tid}`),
+
   // Spine 资源导出（精灵级：全动作 → 骨架 JSON + 图集）
   spinePreview: (sid) => request('GET', `/api/sprites/${sid}/spine/preview`),
   spineExport: (sid, payload) => request('POST', `/api/sprites/${sid}/spine/export`, { json: payload }),

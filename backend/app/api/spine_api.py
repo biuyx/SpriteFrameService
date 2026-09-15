@@ -19,8 +19,8 @@ from starlette.background import BackgroundTask
 
 from app.api.deps import get_session
 from app.config import get_settings
-from app.core.spine_export import (DEFAULT_ANIM_MAP, build_skeleton, fit_canvas,
-                                   frame_name, pack_atlas)
+from app.core.spine_export import (DEFAULT_ANIM_MAP, SPINE_VERSION, build_skeleton,
+                                   fit_canvas, frame_name, pack_atlas)
 from app.services.job_manager import job_manager
 from app.services.sprite_store import SpriteStoreError, sprite_store
 from app.services.template_store import template_store
@@ -33,6 +33,9 @@ _BAD_CHARS = set('\\/:*?"<>|')
 class SpineExportRequest(BaseModel):
     name: Optional[str] = Field(default=None, description="骨架/图集名，缺省用精灵名")
     action_ids: Optional[List[str]] = Field(default=None, description="导出的动作（缺省全部）")
+    # 参考工程反解出来的导出约定：版本/帧名格式/画布/渲染尺寸/逐动画对齐偏移。
+    # 指定后，下面同名的字段以模板为准（请求里显式给的仍然优先）。
+    template_id: Optional[str] = Field(default=None, description="Spine 导出模板")
     fps: float = Field(12, gt=0, le=60, description="未记录抽帧帧率时的默认值")
     # 尺寸只由画布决定：帧等比压进画布，结果与源帧分辨率无关。
     # 不再提供额外缩放系数——它会和画布的兜底缩放叠乘，角色越缩越小。
@@ -110,6 +113,31 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
         shutil.rmtree(out, ignore_errors=True)
     (out / "images").mkdir(parents=True, exist_ok=True)
 
+    # 导出模板：参考工程反解出来的约定；请求里显式给的字段仍然优先
+    tpl = {}
+    if req.template_id:
+        from app.services.spine_template_store import spine_template_store
+        tpl = spine_template_store.get(req.template_id) or {}
+        if not tpl:
+            raise RuntimeError("导出模板不存在: %s" % req.template_id)
+    given = req.model_fields_set
+
+    def pick(field, tpl_key=None, default=None):
+        if field in given:
+            return getattr(req, field)
+        v = tpl.get(tpl_key or field)
+        return v if v is not None else (getattr(req, field) if default is None
+                                        else default)
+
+    canvas = pick("canvas")
+    frame_pattern = pick("frame_pattern")
+    start_index = pick("start_index")
+    version = tpl.get("spine_version") or SPINE_VERSION
+    images_path = tpl.get("images_path") or "./images/"
+    by_anim = {a["name"]: a for a in (tpl.get("animations") or [])}
+    # 图集压缩比：贴图按此缩小，附件仍按渲染尺寸画（既有工程就是 320 画 / 128 贴）
+    atlas_scale = float((tpl.get("atlas") or {}).get("scale") or 1.0)
+
     # 描边参数：请求里给了就用，否则取精灵预设；两边都没有就不描
     from app.models.export_config import ExportOutlineConfig
     ocfg = req.outline
@@ -150,7 +178,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGBA)
             elif img.shape[2] == 3:
                 img = np.dstack([img, np.full(img.shape[:2], 255, np.uint8)])
-            imgs.append(fit_canvas(img, req.canvas, 1.0))
+            imgs.append(fit_canvas(img, canvas, 1.0))
         session.clear_frame_arrays()
 
         # 描边在压进画布之后：填几 px，成品里就是几 px
@@ -160,7 +188,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
 
         names, size = [], None
         for img in imgs:
-            fname = frame_name(anim, req.start_index + len(names), req.frame_pattern)
+            fname = frame_name(anim, start_index + len(names), frame_pattern)
             ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA))
             if not ok:
                 continue
@@ -168,14 +196,30 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
             names.append(fname)
             size = (img.shape[1], img.shape[0])
             if req.atlas:
-                atlas_items.append((fname, img))
+                atlas_items.append(
+                    (fname, img if atlas_scale == 1.0 else fit_canvas(img, None, atlas_scale)))
         if not names:
             skipped.append({"action_id": aid, "name": action.get("name"),
                             "reason": "帧图像不可读"})
             continue
-        anims.append({"name": anim, "frames": names,
-                      "fps": _action_fps(session, req.fps), "loop": req.loop,
-                      "width": size[0], "height": size[1]})
+        # 模板里有这个动画就照抄它的约定：插槽名、对齐偏移、渲染尺寸、帧率
+        t = by_anim.get(anim) or {}
+        entry = {"name": anim, "frames": names,
+                 "fps": t.get("fps") or _action_fps(session, req.fps),
+                 "loop": t.get("loop", req.loop) if t else req.loop,
+                 "width": size[0], "height": size[1]}
+        if t:
+            if t.get("slot"):
+                entry["slot"] = t["slot"]
+            if t.get("offset"):
+                entry["bone_offset"] = t["offset"]
+            if t.get("scale"):
+                entry["bone_scale"] = t["scale"]
+            if t.get("att_offset"):
+                entry["att_offset"] = t["att_offset"]
+            if t.get("render"):
+                entry["render"] = t["render"]
+        anims.append(entry)
 
     if not anims:
         raise RuntimeError("没有导出任何动画：" +
@@ -183,7 +227,8 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
 
     ctx.report(85, "生成骨架 JSON...")
     (out / (name + ".json")).write_text(
-        json.dumps(build_skeleton(anims), ensure_ascii=False, indent=2),
+        json.dumps(build_skeleton(anims, images_path, version),
+                   ensure_ascii=False, indent=2),
         encoding="utf-8")
 
     atlas_info = None
@@ -194,7 +239,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
         (out / (name + ".png")).write_bytes(png)
         atlas_info = {"regions": len(atlas_items),
                       "size": text.splitlines()[2].split(":")[1].strip(),
-                      "bytes": len(png)}
+                      "bytes": len(png), "scale": atlas_scale}
 
     frames_total = sum(len(a["frames"]) for a in anims)
     ctx.report(100, "导出完成：%d 个动画 / %d 帧" % (len(anims), frames_total))
@@ -204,7 +249,10 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
                         "fps": a["fps"], "size": [a["width"], a["height"]]}
                        for a in anims],
         "atlas": atlas_info, "skipped": skipped,
-        "canvas": req.canvas,
+        "canvas": canvas, "template": tpl.get("name"),
+        "spine_version": version,
+        "missing": sorted(set(by_anim) - {a["name"] for a in anims}) if tpl else [],
+        "extra": sorted({a["name"] for a in anims} - set(by_anim)) if tpl else [],
         "outline": ({"width": outline_cfg.width, "color": list(outline_cfg.color)}
                     if outline_cfg.enabled and outline_cfg.width > 0 else None),
         "files": sorted(p.name for p in out.iterdir() if p.is_file()),
