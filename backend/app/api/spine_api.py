@@ -281,6 +281,57 @@ def export_spine(sprite_id: str, req: SpineExportRequest):
     return {"job_id": job.id, "name": name}
 
 
+def _describe_export(d: Path) -> dict:
+    """读一个导出目录的概况（骨架 JSON 里有什么就报什么）。"""
+    files = [p for p in d.rglob("*") if p.is_file()]
+    rec = {"name": d.name, "files": len(files),
+           "bytes": sum(p.stat().st_size for p in files),
+           "updated_at": max((p.stat().st_mtime for p in files), default=0),
+           "images": sum(1 for p in files if p.parent.name == "images"),
+           "has_atlas": (d / (d.name + ".atlas")).is_file()}
+    skel = d / (d.name + ".json")
+    if skel.is_file():
+        try:
+            data = json.loads(skel.read_text(encoding="utf-8"))
+            anims = data.get("animations") or {}
+            atts = data.get("skins", [{}])[0].get("attachments") or {}
+            rec.update({
+                "animations": len(anims),
+                "animation_names": sorted(anims),
+                "frames": sum(len(v) for v in atts.values()),
+                "spine_version": (data.get("skeleton") or {}).get("spine"),
+                "canvas": (data.get("skeleton") or {}).get("width") or None,
+            })
+        except (json.JSONDecodeError, OSError, IndexError):
+            rec["error"] = "骨架 JSON 读不出来"
+    else:
+        rec["error"] = "缺少骨架 JSON"
+    return rec
+
+
+@router.get("/exports")
+def list_spine_exports(sprite_id: str):
+    """已有的 Spine 导出产物——手动导的和流水线收口导的都在这里。"""
+    root = get_settings().resolved_data_dir / "spine_exports" / sprite_id
+    if not root.is_dir():
+        return {"exports": []}
+    items = [_describe_export(d) for d in root.iterdir() if d.is_dir()]
+    items.sort(key=lambda x: x["updated_at"], reverse=True)
+    return {"exports": items}
+
+
+@router.delete("/exports/{name}")
+def delete_spine_export(sprite_id: str, name: str):
+    """删掉一份导出产物（序列帧很占地方，导完拿走就可以清理）。"""
+    out = _export_dir(sprite_id, name)
+    root = (get_settings().resolved_data_dir / "spine_exports" / sprite_id).resolve()
+    # 名字里带 .. 之类的东西时别让它跳出导出根目录
+    if not out.is_dir() or root not in out.resolve().parents:
+        raise HTTPException(status_code=404, detail="导出结果不存在")
+    shutil.rmtree(out, ignore_errors=True)
+    return {"deleted": name}
+
+
 @router.get("/download")
 def download_spine(sprite_id: str, name: str):
     """把导出目录打包成 zip 下载。"""

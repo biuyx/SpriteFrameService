@@ -243,6 +243,9 @@ const api = {
   spineExport: (sid, payload) => request('POST', `/api/sprites/${sid}/spine/export`, { json: payload }),
   spineDownload: (sid, name) =>
     `${BASE}/api/sprites/${sid}/spine/download?name=${encodeURIComponent(name)}`,
+  spineExports: (sid) => request('GET', `/api/sprites/${sid}/spine/exports`),
+  deleteSpineExport: (sid, name) =>
+    request('DELETE', `/api/sprites/${sid}/spine/exports/${encodeURIComponent(name)}`),
 
   // 历史 / 工序
   history: (sid) => request('GET', `/api/sessions/${sid}/history`),

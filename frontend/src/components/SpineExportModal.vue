@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useStore, toast } from '../stores'
+import { useStore, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
 
@@ -53,6 +53,44 @@ async function loadTemplates() {
   try { templates.value = (await api.spineTemplates()).templates } catch { /* ignore */ }
 }
 
+// 已有产物：手动导的和流水线收口导的都在这里，随时可再下载
+const exports = ref([])
+
+async function loadExports() {
+  try {
+    exports.value = (await api.spineExports(store.currentSprite.id)).exports
+  } catch { /* ignore */ }
+}
+
+function downloadExport(name) {
+  window.open(api.spineDownload(store.currentSprite.id, name), '_blank')
+}
+
+async function removeExport(e) {
+  if (!(await askConfirm(`删除导出产物「${e.name}」？共 ${e.files} 个文件、${fmtSize(e.bytes)}。`,
+                         { danger: true }))) return
+  try {
+    await api.deleteSpineExport(store.currentSprite.id, e.name)
+    await loadExports()
+    toast(`已删除「${e.name}」`)
+  } catch (err) {
+    toast(`删除失败: ${err.message}`)
+  }
+}
+
+function fmtSize(n) {
+  if (!n) return '0'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB'
+  return (n / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+function fmtTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const p = (x) => String(x).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 async function runImport() {
   const p = importPath.value.trim()
   if (!p) return toast('填一下参考工程的目录，或 .json / .skel 文件路径')
@@ -89,7 +127,7 @@ const coverage = computed(() => {
 onMounted(async () => {
   name.value = store.currentSprite?.name || ''
   outlineOn.value = !!outlinePreset.value?.enabled
-  await loadTemplates()
+  await Promise.all([loadTemplates(), loadExports()])
   try {
     const r = await api.spinePreview(store.currentSprite.id)
     items.value = r.items
@@ -146,7 +184,7 @@ async function run() {
   try {
     await startJob(() => api.spineExport(store.currentSprite.id, payload), {
       title: 'Spine 导出',
-      onDone: (r) => { result.value = r; running.value = false },
+      onDone: (r) => { result.value = r; running.value = false; loadExports() },
       onError: () => { running.value = false },
     })
   } catch {
@@ -301,6 +339,34 @@ function download() {
           </div>
         </div>
 
+        <div class="done-box">
+          <div class="done-head">
+            <b>已导出的产物</b>
+            <span class="dim">{{ exports.length }} 份 · 手动导的与流水线收口导的都在这里</span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="small" @click="loadExports">刷新</button>
+          </div>
+          <div v-if="!exports.length" class="dim" style="padding:6px 0">
+            还没有导出过。导完会出现在这里，随时可以再下载。
+          </div>
+          <div v-for="e in exports" :key="e.name" class="done-row">
+            <b class="ename">{{ e.name }}</b>
+            <span class="dim">{{ fmtTime(e.updated_at) }}</span>
+            <span v-if="e.error" class="warn-text">{{ e.error }}</span>
+            <span v-else class="dim">
+              {{ e.animations }} 个动画 · {{ e.frames }} 帧 · {{ e.images }} 张图
+              <template v-if="e.spine_version"> · Spine {{ e.spine_version }}</template>
+              <template v-if="e.canvas"> · 画布 {{ e.canvas }}</template>
+              <template v-if="!e.has_atlas"> · 无图集</template>
+            </span>
+            <span class="spacer" style="flex:1"></span>
+            <span class="dim">{{ fmtSize(e.bytes) }}</span>
+            <button class="small" @click="downloadExport(e.name)">下载 zip</button>
+            <button class="small danger" title="删除产物（不影响帧数据）"
+                    @click="removeExport(e)">删除</button>
+          </div>
+        </div>
+
         <div class="foot">
           <span class="spacer"></span>
           <button v-if="result" class="small" @click="download">下载 zip</button>
@@ -355,5 +421,20 @@ function download() {
   margin-top: 10px; padding: 8px 10px; font-size: 13px; color: var(--ok);
   background: var(--bg-input); border-radius: 4px;
 }
+.done-box {
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border);
+  max-height: 168px; overflow-y: auto;
+}
+.done-head { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+.done-row {
+  display: flex; align-items: center; gap: 8px; font-size: 12px;
+  padding: 4px 0; border-bottom: 1px solid var(--border);
+}
+.done-row:last-child { border-bottom: none; }
+.ename {
+  font-family: Consolas, monospace; max-width: 180px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.danger { border-color: var(--err); color: var(--err); }
 .foot { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
 </style>
