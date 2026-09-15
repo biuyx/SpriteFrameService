@@ -82,6 +82,53 @@ const selected = computed(() =>
   store.frames.filter((f) => f.is_selected).map((f) => f.index)
 )
 
+// ---- 精灵级工艺预设：存一次，自动流水线的「描边」「缩放」两步就按它跑 ----
+const presetBusy = ref('')
+
+function scalePresetBody() {
+  return { enabled: true, mode: scaleMode.value, percent: percent.value,
+           width: width.value, height: height.value, algorithm: algorithm.value }
+}
+
+async function savePreset(kind) {
+  const sprite = store.currentSprite
+  if (!sprite) return toast('没有当前精灵')
+  const body = kind === 'outline'
+    ? { ...outlineParams(), enabled: true, alpha_threshold: 128,
+        auto_pad: outline.value.auto_pad }
+    : scalePresetBody()
+  presetBusy.value = kind
+  try {
+    await api.patchSprite(sprite.id, { preset: { [kind]: body } })
+    sprite.preset = { ...(sprite.preset || {}), [kind]: body }
+    toast(`已保存为「${sprite.name}」的${kind === 'outline' ? '描边' : '缩放'}预设，`
+          + '一键流水线会对全部动作自动执行')
+  } catch (e) {
+    toast(`保存失败: ${e.message}`)
+  } finally {
+    presetBusy.value = ''
+  }
+}
+
+async function clearPreset(kind) {
+  const sprite = store.currentSprite
+  if (!sprite) return
+  const cur = (sprite.preset || {})[kind] || {}
+  presetBusy.value = kind
+  try {
+    await api.patchSprite(sprite.id, { preset: { [kind]: { ...cur, enabled: false } } })
+    sprite.preset = { ...(sprite.preset || {}), [kind]: { ...cur, enabled: false } }
+    toast(`已关闭${kind === 'outline' ? '描边' : '缩放'}预设，流水线将跳过该步`)
+  } catch (e) {
+    toast(`操作失败: ${e.message}`)
+  } finally {
+    presetBusy.value = ''
+  }
+}
+
+const outlinePresetOn = computed(() => !!store.currentSprite?.preset?.outline?.enabled)
+const scalePresetOn = computed(() => !!store.currentSprite?.preset?.scale?.enabled)
+
 const esrganModels = computed(() => store.capabilities?.realesrgan || [])
 const esrganAvailable = computed(() =>
   store.capabilities?.realesrgan_info?.available
@@ -174,6 +221,15 @@ async function runEnhance() {
             描边（{{ selected.length || '全部' }} 帧）</button>
           <span v-if="!processedCount" class="hint warn">尚无已抠图的帧</span>
         </div>
+        <div class="row preset-row">
+          <button class="small" :disabled="presetBusy === 'outline'" @click="savePreset('outline')">
+            保存为精灵预设</button>
+          <button v-if="outlinePresetOn" class="small" :disabled="presetBusy === 'outline'"
+                  @click="clearPreset('outline')">关闭预设</button>
+          <span v-if="outlinePresetOn" class="hint ok-text">
+            ✓ 一键流水线会对全部动作自动描边（缩放之后、导出之前）</span>
+          <span v-else class="hint">存成预设后，一键流水线的「描边」步骤才会执行</span>
+        </div>
         <div v-if="outlineImg" class="preview-box" style="margin-top:8px;max-height:260px">
           <img :src="outlineImg" style="max-height:240px" />
         </div>
@@ -203,6 +259,15 @@ async function runEnhance() {
           </div>
         </div>
         <button class="primary" @click="runScale">缩放选中帧</button>
+        <div class="row preset-row">
+          <button class="small" :disabled="presetBusy === 'scale'" @click="savePreset('scale')">
+            保存为精灵预设</button>
+          <button v-if="scalePresetOn" class="small" :disabled="presetBusy === 'scale'"
+                  @click="clearPreset('scale')">关闭预设</button>
+          <span v-if="scalePresetOn" class="hint ok-text">
+            ✓ 一键流水线会对全部动作自动缩放（抠图之后、描边之前）</span>
+          <span v-else class="hint">存成预设后，一键流水线的「缩放」步骤才会执行</span>
+        </div>
       </div>
 
       <div class="panel">
@@ -260,3 +325,9 @@ async function runEnhance() {
     </div>
   </div>
 </template>
+
+<style scoped>
+.preset-row { align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.preset-row .hint { font-size: 12px; }
+.ok-text { color: var(--ok); }
+</style>

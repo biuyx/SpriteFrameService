@@ -98,6 +98,95 @@ def preview_spine(sprite_id: str):
             "conflicts": sorted(k for k, v in used.items() if v > 1)}
 
 
+def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
+                     req: SpineExportRequest, ctx) -> dict:
+    """导出任务体（端点与自动流水线收口共用）。"""
+    out = _export_dir(sprite_id, name)
+    if out.exists():
+        shutil.rmtree(out, ignore_errors=True)
+    (out / "images").mkdir(parents=True, exist_ok=True)
+
+    anims, atlas_items, skipped = [], [], []
+    total = len(action_ids)
+    for n, aid in enumerate(action_ids):
+        if ctx.cancelled():
+            break
+        try:
+            action = sprite_store.get_action(sprite_id, aid)
+            session = get_session(aid)
+        except Exception as e:
+            skipped.append({"action_id": aid, "reason": "无法打开: %s" % e})
+            continue
+        anim = anim_name_of(action)
+        ctx.report(n / total * 80, "[%d/%d] %s" % (n + 1, total, anim))
+
+        frames = session.frame_manager.frames
+        if not frames:
+            skipped.append({"action_id": aid, "name": action.get("name"),
+                            "reason": "无帧"})
+            continue
+        names, size = [], None
+        for fr in frames:
+            if req.use_processed:
+                img = session.load_display_array(fr.index)
+            else:
+                img = session.frame_store.load_raw(fr.id)
+            if img is None:
+                continue
+            if img.ndim == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGBA)
+            elif img.shape[2] == 3:
+                img = np.dstack([img, np.full(img.shape[:2], 255, np.uint8)])
+            img = fit_canvas(img, req.canvas, req.scale)
+            fname = frame_name(anim, req.start_index + len(names), req.frame_pattern)
+            ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA))
+            if not ok:
+                continue
+            (out / "images" / (fname + ".png")).write_bytes(buf.tobytes())
+            names.append(fname)
+            size = (img.shape[1], img.shape[0])
+            if req.atlas:
+                atlas_items.append((fname, img))
+        session.clear_frame_arrays()
+        if not names:
+            skipped.append({"action_id": aid, "name": action.get("name"),
+                            "reason": "帧图像不可读"})
+            continue
+        anims.append({"name": anim, "frames": names,
+                      "fps": _action_fps(session, req.fps), "loop": req.loop,
+                      "width": size[0], "height": size[1]})
+
+    if not anims:
+        raise RuntimeError("没有导出任何动画：" +
+                           json.dumps(skipped, ensure_ascii=False))
+
+    ctx.report(85, "生成骨架 JSON...")
+    (out / (name + ".json")).write_text(
+        json.dumps(build_skeleton(anims), ensure_ascii=False, indent=2),
+        encoding="utf-8")
+
+    atlas_info = None
+    if req.atlas and atlas_items:
+        ctx.report(90, "打包图集（%d 帧）..." % len(atlas_items))
+        text, png = pack_atlas(atlas_items, name)
+        (out / (name + ".atlas")).write_text(text, encoding="utf-8")
+        (out / (name + ".png")).write_bytes(png)
+        atlas_info = {"regions": len(atlas_items),
+                      "size": text.splitlines()[2].split(":")[1].strip(),
+                      "bytes": len(png)}
+
+    frames_total = sum(len(a["frames"]) for a in anims)
+    ctx.report(100, "导出完成：%d 个动画 / %d 帧" % (len(anims), frames_total))
+    return {
+        "name": name, "dir": str(out), "frames": frames_total,
+        "animations": [{"name": a["name"], "frames": len(a["frames"]),
+                        "fps": a["fps"], "size": [a["width"], a["height"]]}
+                       for a in anims],
+        "atlas": atlas_info, "skipped": skipped,
+        "files": sorted(p.name for p in out.iterdir() if p.is_file()),
+    }
+
+
 @router.post("/export")
 def export_spine(sprite_id: str, req: SpineExportRequest):
     """导出 Spine 资源包（后台任务）：images/ + .json + .atlas + .png。"""
@@ -107,100 +196,16 @@ def export_spine(sprite_id: str, req: SpineExportRequest):
         raise HTTPException(status_code=404, detail=str(e))
 
     name = (req.name or sprite.get("name") or sprite_id).strip()
-    refs = list(sprite.get("actions", []))
+    ids = [r["id"] for r in sprite.get("actions", [])]
     if req.action_ids:
         want = set(req.action_ids)
-        refs = [r for r in refs if r["id"] in want]
-    if not refs:
+        ids = [i for i in ids if i in want]
+    if not ids:
         raise HTTPException(status_code=400, detail="没有可导出的动作")
 
-    def _job(ctx):
-        out = _export_dir(sprite_id, name)
-        if out.exists():
-            shutil.rmtree(out, ignore_errors=True)
-        (out / "images").mkdir(parents=True, exist_ok=True)
-
-        anims, atlas_items, skipped = [], [], []
-        total = len(refs)
-        for n, ref in enumerate(refs):
-            if ctx.cancelled():
-                break
-            try:
-                action = sprite_store.get_action(sprite_id, ref["id"])
-                session = get_session(ref["id"])
-            except Exception as e:
-                skipped.append({"action_id": ref["id"], "reason": "无法打开: %s" % e})
-                continue
-            anim = anim_name_of(action)
-            ctx.report(n / total * 80, "[%d/%d] %s" % (n + 1, total, anim))
-
-            frames = session.frame_manager.frames
-            if not frames:
-                skipped.append({"action_id": ref["id"], "name": action.get("name"),
-                                "reason": "无帧"})
-                continue
-            names, size = [], None
-            for fr in frames:
-                if req.use_processed:
-                    img = session.load_display_array(fr.index)
-                else:
-                    img = session.frame_store.load_raw(fr.id)
-                if img is None:
-                    continue
-                if img.ndim == 2:
-                    img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGBA)
-                elif img.shape[2] == 3:
-                    img = np.dstack([img, np.full(img.shape[:2], 255, np.uint8)])
-                img = fit_canvas(img, req.canvas, req.scale)
-                fname = frame_name(anim, req.start_index + len(names), req.frame_pattern)
-                ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA))
-                if not ok:
-                    continue
-                (out / "images" / (fname + ".png")).write_bytes(buf.tobytes())
-                names.append(fname)
-                size = (img.shape[1], img.shape[0])
-                if req.atlas:
-                    atlas_items.append((fname, img))
-            session.clear_frame_arrays()
-            if not names:
-                skipped.append({"action_id": ref["id"], "name": action.get("name"),
-                                "reason": "帧图像不可读"})
-                continue
-            anims.append({"name": anim, "frames": names,
-                          "fps": _action_fps(session, req.fps), "loop": req.loop,
-                          "width": size[0], "height": size[1]})
-
-        if not anims:
-            raise RuntimeError("没有导出任何动画：" +
-                               json.dumps(skipped, ensure_ascii=False))
-
-        ctx.report(85, "生成骨架 JSON...")
-        (out / (name + ".json")).write_text(
-            json.dumps(build_skeleton(anims), ensure_ascii=False, indent=2),
-            encoding="utf-8")
-
-        atlas_info = None
-        if req.atlas and atlas_items:
-            ctx.report(90, "打包图集（%d 帧）..." % len(atlas_items))
-            text, png = pack_atlas(atlas_items, name)
-            (out / (name + ".atlas")).write_text(text, encoding="utf-8")
-            (out / (name + ".png")).write_bytes(png)
-            atlas_info = {"regions": len(atlas_items),
-                          "size": text.splitlines()[2].split(":")[1].strip(),
-                          "bytes": len(png)}
-
-        frames_total = sum(len(a["frames"]) for a in anims)
-        ctx.report(100, "导出完成：%d 个动画 / %d 帧" % (len(anims), frames_total))
-        return {
-            "name": name, "dir": str(out), "frames": frames_total,
-            "animations": [{"name": a["name"], "frames": len(a["frames"]),
-                            "fps": a["fps"], "size": [a["width"], a["height"]]}
-                           for a in anims],
-            "atlas": atlas_info, "skipped": skipped,
-            "files": sorted(p.name for p in out.iterdir() if p.is_file()),
-        }
-
-    job = job_manager.submit("spine_export", _job, pool="cpu")
+    job = job_manager.submit(
+        "spine_export",
+        lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu")
     return {"job_id": job.id, "name": name}
 
 

@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -19,9 +20,28 @@ from app.api.deps import get_session
 from app.services.sprite_store import sprite_store
 from app.services.template_store import template_store
 
-STEPS = ["firstframe", "generate", "extract", "matting", "export"]
+# 缩放在描边之前：先定稿尺寸再描边，描边宽度才是成品的实际像素宽
+STEPS = ["firstframe", "generate", "extract", "matting", "scale", "outline", "export"]
 STEP_LABEL = {"firstframe": "首帧", "generate": "视频生成", "extract": "抽帧",
-              "matting": "抠图", "export": "导出"}
+              "matting": "抠图", "scale": "缩放", "outline": "描边", "export": "导出"}
+
+# 缩放/描边是可选工序：精灵预设里没开就整批跳过，不算阻塞
+OPTIONAL_STEPS = ("scale", "outline")
+
+# 上一步依赖关系（plan 放行「将由上一步产出」用）
+PREV_STEP = {"generate": "firstframe", "extract": "generate", "matting": "extract",
+             "scale": "matting", "outline": "matting", "export": "matting"}
+
+DEFAULT_OUTLINE_PRESET = {          # 未配置时的描边缺省（enabled=False 即不执行）
+    "enabled": False, "width": 2, "color": [0, 0, 0], "opacity": 1.0,
+    "position": "outer", "corner": "round", "antialias": True,
+    "alpha_threshold": 128, "auto_pad": True,
+}
+
+DEFAULT_SCALE_PRESET = {            # 未配置时的缩放缺省（enabled=False 即不执行）
+    "enabled": False, "mode": "percent", "percent": 40,
+    "width": 128, "height": 128, "algorithm": "lanczos",
+}
 
 # 本地重活并发（与 cpu 池规模一致），避免十几个动作同时抠图打爆机器
 _local_gate = threading.Semaphore(2)
@@ -36,6 +56,10 @@ DEFAULT_OUTPUT_PRESET = {          # 精灵导出预设缺省：序列帧 PNG
 
 class StepBlocked(Exception):
     """前置条件不满足（消息即原因）。"""
+
+
+class StepDisabled(Exception):
+    """可选工序未启用——不是错误，整批跳过即可。"""
 
 
 # ------------------------------------------------------------ 状态读写
@@ -128,6 +152,38 @@ def check_matting(sprite_id: str, action: dict, opts: dict, session=None):
     return {"model": model}
 
 
+def _preset(sprite_id: str, key: str, default: dict) -> dict:
+    """取精灵级工艺预设（缺省合并，保证字段齐全）。"""
+    sp = sprite_store.get_sprite(sprite_id)
+    return {**default, **((sp.get("preset") or {}).get(key) or {})}
+
+
+def check_outline(sprite_id: str, action: dict, opts: dict, session=None):
+    cfg = _preset(sprite_id, "outline", DEFAULT_OUTLINE_PRESET)
+    if not cfg.get("enabled"):
+        raise StepDisabled("精灵未启用描边预设")
+    if float(cfg.get("width") or 0) <= 0:
+        raise StepDisabled("描边宽度为 0")
+    session = session or get_session(action["id"])
+    if session.frame_manager.frame_count == 0:
+        raise StepBlocked("无帧（将由上一步抽出）")
+    if not any(f.has_processed for f in session.frame_manager.frames):
+        raise StepBlocked("没有已抠图的帧（将由上一步生成）")
+    return {"width": cfg["width"], "position": cfg["position"]}
+
+
+def check_scale(sprite_id: str, action: dict, opts: dict, session=None):
+    cfg = _preset(sprite_id, "scale", DEFAULT_SCALE_PRESET)
+    if not cfg.get("enabled"):
+        raise StepDisabled("精灵未启用缩放预设")
+    session = session or get_session(action["id"])
+    if session.frame_manager.frame_count == 0:
+        raise StepBlocked("无帧（将由上一步抽出）")
+    target = (f"{cfg['percent']}%" if cfg.get("mode") == "percent"
+              else f"{cfg['width']}x{cfg['height']}")
+    return {"target": target, "algorithm": cfg.get("algorithm", "lanczos")}
+
+
 def check_export(sprite_id: str, action: dict, opts: dict, session=None):
     session = session or get_session(action["id"])
     frames = session.frame_manager.frames
@@ -138,6 +194,20 @@ def check_export(sprite_id: str, action: dict, opts: dict, session=None):
     sp = sprite_store.get_sprite(sprite_id)
     out = (sp.get("preset") or {}).get("output") or DEFAULT_OUTPUT_PRESET
     return {"format": out.get("format", "frames")}
+
+
+def _last_ops(session) -> dict:
+    """各工序在工序记录里最后一次出现的位置（没出现为 -1）。
+
+    描边/缩放没有磁盘产物可判定，用工序记录的先后顺序判断是否「还有效」：
+    重新抠图会覆盖处理图，此后的描边记录才算数。
+    """
+    try:
+        from app.services import recipe
+        ops = [s.get("op") for s in recipe.read(session).get("steps", [])]
+    except Exception:
+        return {}
+    return {op: i for i, op in enumerate(ops)}     # 同名保留最后一次
 
 
 def _is_done(step: str, sprite_id: str, action: dict, session=None) -> bool:
@@ -152,6 +222,20 @@ def _is_done(step: str, sprite_id: str, action: dict, session=None) -> bool:
         return len(frames) > 0
     if step == "matting":
         return bool(frames) and all(f.has_processed for f in frames)
+    if step in ("scale", "outline"):
+        if not frames:
+            return False
+        pos = _last_ops(session)
+        mine = pos.get(step, -1)
+        if mine < 0:
+            return False
+        # 抽帧/抠图/历史回退（描边还要看缩放）之后动过的话，之前那次就失效了。
+        # 回退不会删工序记录，所以必须把 revert 也算进来，否则会误判为已完成。
+        after = [pos.get("background", -1), pos.get("extract", -1),
+                 pos.get("revert", -1)]
+        if step == "outline":
+            after.append(pos.get("scale", -1))
+        return mine > max(after)
     if step == "export":
         s = sprite_store._action_summary(sprite_id, action["id"])
         return bool(s.get("export_count"))
@@ -180,16 +264,20 @@ def plan_action(sprite_id: str, action: dict, opts: dict) -> dict:
         try:
             checker = {"firstframe": check_firstframe, "generate": check_generate,
                        "extract": check_extract, "matting": check_matting,
+                       "outline": check_outline, "scale": check_scale,
                        "export": check_export}[step]
             info = (checker(sprite_id, action, opts) if step in ("firstframe", "generate")
                     else checker(sprite_id, action, opts, session))
             result[step] = {"status": "run", **info}
             will_have[step] = True
+        except StepDisabled as e:
+            # 未启用不是阻塞：跳过它，后续步骤照常
+            result[step] = {"status": "skip", "reason": str(e)}
+            will_have[step] = True
         except (StepBlocked, ValueError) as e:
             msg = str(e)
             # 依赖上一步产物：上一步将执行则放行（执行期会再校验）
-            prev = {"generate": "firstframe", "extract": "generate",
-                    "matting": "extract", "export": "matting"}.get(step)
+            prev = PREV_STEP.get(step)
             if "将由上一步" in msg and prev and will_have.get(prev):
                 result[step] = {"status": "run", "note": "依赖上一步产物"}
                 will_have[step] = True
@@ -201,6 +289,74 @@ def plan_action(sprite_id: str, action: dict, opts: dict) -> dict:
             will_have[step] = False
     runnable = any(v["status"] == "run" for v in result.values())
     return {"steps": result, "runnable": runnable}
+
+
+# ------------------------------------------------------------ 批次收口
+def _claim_batch(sprite_id: str, batch_id: str) -> bool:
+    """抢占该批次的收口权；同一批次只有一个调用者拿到 True。
+
+    用 O_EXCL 建标记文件：多个动作同时跑完也只有一个能建成，
+    且跨进程重启仍然有效（不会重复导出）。
+    """
+    d = sprite_store.sprite_dir(sprite_id) / "batches"
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(d / f"{batch_id}.claim"),
+                     os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    os.write(fd, str(time.time()).encode())
+    os.close(fd)
+    return True
+
+
+def finish_batch(sprite_id: str, state: dict) -> Optional[dict]:
+    """一批动作全部跑完后的角色级收口：目前是导出 Spine 资源。
+
+    每个动作跑完都会调一次；只有「最后一个跑完的」那次会真正触发——
+    因此中途失败几个、事后补跑，补完那次自然接上，不需要轮询。
+    """
+    batch = state.get("batch") or {}
+    members = batch.get("members") or []
+    spine = batch.get("spine")
+    if not batch.get("id") or not members or not spine:
+        return None
+
+    pending = []
+    for aid in members:
+        try:
+            st = (sprite_store.get_action(sprite_id, aid).get("pipeline") or {})
+        except Exception:
+            continue
+        if st.get("status") != "done":
+            pending.append(aid)
+    if pending:
+        return None                      # 还有没跑完的，交给最后那个
+    if not _claim_batch(sprite_id, batch["id"]):
+        return None                      # 已有人收口
+
+    return submit_spine_export(sprite_id, spine)
+
+
+def submit_spine_export(sprite_id: str, spine: dict) -> dict:
+    """提交角色级 Spine 导出。
+
+    导出范围是该精灵的全部动作，不只是这一批——骨架和图集是整角色一份，
+    只导本批会把其余动画从产物里抹掉。
+    """
+    from app.api.spine_api import SpineExportRequest, run_spine_export
+    from app.services.job_manager import job_manager
+    sp = sprite_store.get_sprite(sprite_id)
+    ids = [a["id"] for a in sp.get("actions", [])]
+    req = SpineExportRequest(**{k: v for k, v in (spine or {}).items()
+                                if k in SpineExportRequest.model_fields})
+    name = (req.name or sp.get("name") or sprite_id).strip()
+    job = job_manager.submit(
+        "spine_export",
+        lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu")
+    return {"action": "spine_export", "job_id": job.id, "name": name,
+            "actions": len(ids),
+            "message": f"已提交 Spine 导出「{name}」（{len(ids)} 个动作）"}
 
 
 # ------------------------------------------------------------ 执行
@@ -243,6 +399,17 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
             state["current"] = step
             _save_state(sprite_id, action_id, state)
             stage(i, STEP_LABEL[step] + "…")
+
+            # 可选工序未启用：跳过，不影响后续步骤
+            if step in OPTIONAL_STEPS:
+                try:
+                    (check_outline if step == "outline" else check_scale)(
+                        sprite_id, action, opts, session)
+                except StepDisabled as e:
+                    state.setdefault("skipped", {})[step] = str(e)
+                    state["current"] = None
+                    _save_state(sprite_id, action_id, state)
+                    continue
 
             if step == "firstframe":
                 from app.core.first_frame_generator import run_gen_first_frame
@@ -300,6 +467,32 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                     with _local_gate, session.lock:
                         run_bg_remove(session, indices, "ai", params, _Sub(i))
                 done.append(step); state["done"] = done
+            elif step == "scale":
+                from app.api.image_ops import run_scale
+                cfg = _preset(sprite_id, "scale", DEFAULT_SCALE_PRESET)
+                check_scale(sprite_id, action, opts, session)
+                indices = [f.index for f in session.frame_manager.frames]
+                if indices:
+                    with _local_gate, session.lock:
+                        run_scale(session, indices, cfg.get("mode", "percent"),
+                                  float(cfg.get("percent", 100)),
+                                  int(cfg.get("width", 128)), int(cfg.get("height", 128)),
+                                  cfg.get("algorithm", "lanczos"), _Sub(i))
+                done.append(step); state["done"] = done
+            elif step == "outline":
+                from app.api.image_ops import run_outline
+                from app.api.schemas import OutlineParams
+                cfg = _preset(sprite_id, "outline", DEFAULT_OUTLINE_PRESET)
+                check_outline(sprite_id, action, opts, session)
+                params = OutlineParams(**{k: v for k, v in cfg.items()
+                                          if k in OutlineParams.model_fields})
+                indices = [f.index for f in session.frame_manager.frames
+                           if f.has_processed]
+                if indices:
+                    with _local_gate, session.lock:
+                        run_outline(session, indices, params,
+                                    bool(cfg.get("auto_pad", True)), _Sub(i))
+                done.append(step); state["done"] = done
             elif step == "export":
                 from app.api.export_api import run_export
                 from app.models.export_config import ExportConfig
@@ -320,8 +513,10 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
 
         state.update({"status": "done", "current": None})
         _save_state(sprite_id, action_id, state)
-        ctx.report(100, "流水线完成")
-        return {"status": "done", "done": done}
+        finish = finish_batch(sprite_id, state)
+        ctx.report(100, "流水线完成" + (f"；{finish['message']}" if finish else ""))
+        return {"status": "done", "done": done,
+                **({"batch_finish": finish} if finish else {})}
     except Exception as e:
         msg = str(e)
         state.update({"status": "error", "error": f"{STEP_LABEL.get(state.get('current'), '')}: {msg}"[:300]})

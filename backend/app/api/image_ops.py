@@ -58,116 +58,129 @@ def test_outline(session_id: str, req: OutlineTestRequest):
                     media_type="image/png")
 
 
+def run_outline(session, indices: list, p, auto_pad: bool, ctx) -> dict:
+    """描边任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    from app.core.outline import add_outline, pad_rgba, required_pad
+
+    ctx.report(0, "开始描边...")
+    arrays = session.load_display_arrays(indices)
+    rgba_idx = [(i, a) for i, a in zip(indices, arrays)
+                if a is not None and a.ndim == 3 and a.shape[2] == 4]
+    if not rgba_idx:
+        session.clear_frame_arrays()
+        return {"processed": 0, "total": len(indices),
+                "error": "没有可描边的帧——描边要求 RGBA，请先完成抠图"}
+
+    # 外描边可能超出画布：所有帧扩同一个量，保持帧间尺寸与基线一致
+    pad = 0
+    if auto_pad and p.position in ("outer", "center"):
+        pad = required_pad([a[:, :, 3] for _, a in rgba_idx], p.width,
+                           p.alpha_threshold)
+
+    _push_history(session, indices, "描边",
+                  f"{p.position} {p.width}px RGB{tuple(p.color)}"
+                  + (f" | 扩边 {pad}px" if pad else "")
+                  + f" | {len(rgba_idx)}帧")
+
+    processed = 0
+    for i, (idx, img) in enumerate(rgba_idx):
+        if ctx.cancelled():
+            break
+        src = pad_rgba(img, pad) if pad else img
+        out = add_outline(src, p.width, p.color, p.opacity, p.position,
+                          p.corner, p.antialias, p.alpha_threshold)
+        session.save_processed(idx, out)
+        processed += 1
+        ctx.report((i + 1) / len(rgba_idx) * 100, f"描边 {i+1}/{len(rgba_idx)}")
+
+    session.clear_frame_arrays()
+    session.persist_metadata()
+    from app.services import recipe
+    recipe.record_step(session, "outline",
+                       {"width": p.width, "color": list(p.color),
+                        "opacity": p.opacity, "position": p.position,
+                        "corner": p.corner, "antialias": p.antialias,
+                        "pad": pad},
+                       {"processed": processed})
+    ctx.report(100, f"描边完成: {processed}/{len(rgba_idx)} 帧"
+                    + (f"（已扩边 {pad}px）" if pad else ""))
+    return {"processed": processed, "total": len(indices), "pad": pad,
+            "skipped": len(indices) - len(rgba_idx)}
+
+
 @router.post("/outline")
 def outline_frames(session_id: str, req: ImageOutlineRequest):
     """给已抠图的帧加纯色描边。抠图之后、导出之前执行。"""
-    from app.core.outline import add_outline, pad_rgba, required_pad
-
     session = get_session(session_id)
     indices = require_indices(session, req.indices)
-    p = req.params
-
-    def _job(ctx):
-        ctx.report(0, "开始描边...")
-        arrays = session.load_display_arrays(indices)
-        rgba_idx = [(i, a) for i, a in zip(indices, arrays)
-                    if a is not None and a.ndim == 3 and a.shape[2] == 4]
-        if not rgba_idx:
-            session.clear_frame_arrays()
-            return {"processed": 0, "total": len(indices),
-                    "error": "没有可描边的帧——描边要求 RGBA，请先完成抠图"}
-
-        # 外描边可能超出画布：所有帧扩同一个量，保持帧间尺寸与基线一致
-        pad = 0
-        if req.auto_pad and p.position in ("outer", "center"):
-            pad = required_pad([a[:, :, 3] for _, a in rgba_idx], p.width,
-                               p.alpha_threshold)
-
-        _push_history(session, indices, "描边",
-                      f"{p.position} {p.width}px RGB{tuple(p.color)}"
-                      + (f" | 扩边 {pad}px" if pad else "")
-                      + f" | {len(rgba_idx)}帧")
-
-        processed = 0
-        for i, (idx, img) in enumerate(rgba_idx):
-            if ctx.cancelled():
-                break
-            src = pad_rgba(img, pad) if pad else img
-            out = add_outline(src, p.width, p.color, p.opacity, p.position,
-                              p.corner, p.antialias, p.alpha_threshold)
-            session.save_processed(idx, out)
-            processed += 1
-            ctx.report((i + 1) / len(rgba_idx) * 100, f"描边 {i+1}/{len(rgba_idx)}")
-
-        session.clear_frame_arrays()
-        session.persist_metadata()
-        from app.services import recipe
-        recipe.record_step(session, "outline",
-                           {"width": p.width, "color": list(p.color),
-                            "opacity": p.opacity, "position": p.position,
-                            "corner": p.corner, "antialias": p.antialias,
-                            "pad": pad},
-                           {"processed": processed})
-        ctx.report(100, f"描边完成: {processed}/{len(rgba_idx)} 帧"
-                        + (f"（已扩边 {pad}px）" if pad else ""))
-        return {"processed": processed, "total": len(indices), "pad": pad,
-                "skipped": len(indices) - len(rgba_idx)}
-
-    job = job_manager.submit("outline", _job, lock=session.lock)
+    job = job_manager.submit(
+        "outline",
+        lambda ctx: run_outline(session, indices, req.params, req.auto_pad, ctx),
+        lock=session.lock)
     return {"job_id": job.id}
 
 
 # ---------- 缩放 ----------
+def run_scale(session, indices: list, mode: str, percent: float,
+              width: int, height: int, algorithm: str, ctx) -> dict:
+    """缩放任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    algo = _ALGO_MAP.get(algorithm, Image.Resampling.LANCZOS)
+    ctx.report(0, "开始缩放...")
+    arrays = session.load_display_arrays(indices)
+    first = next((a for a in arrays if a is not None), None)
+    if first is None:
+        return {"processed": 0, "message": "没有可用的帧图像"}
+
+    orig_h, orig_w = first.shape[:2]
+    if mode == "percent":
+        k = percent / 100.0
+        target_w, target_h = int(orig_w * k), int(orig_h * k)
+    else:
+        target_w, target_h = width, height
+
+    if target_w < 1 or target_h < 1:
+        return {"processed": 0, "message": "目标尺寸非法"}
+    if (target_w, target_h) == (orig_w, orig_h):
+        session.clear_frame_arrays()
+        return {"processed": 0, "total": len(indices), "message": "尺寸未变，跳过",
+                "from": f"{orig_w}x{orig_h}", "to": f"{target_w}x{target_h}"}
+
+    _push_history(session, indices, "批量缩放",
+                  f"{len(indices)}帧 {orig_w}x{orig_h}→{target_w}x{target_h} {algorithm}")
+
+    processed = 0
+    for i, (idx, img) in enumerate(zip(indices, arrays)):
+        if ctx.cancelled():
+            break
+        if img is None:
+            continue
+        pil = Image.fromarray(img)
+        scaled = pil.resize((target_w, target_h), algo)
+        session.save_processed(idx, np.array(scaled))
+        processed += 1
+        ctx.report((i + 1) / len(indices) * 100, f"缩放 {i+1}/{len(indices)}")
+
+    session.clear_frame_arrays()
+    session.persist_metadata()
+    from app.services import recipe
+    recipe.record_step(session, "scale",
+                       {"mode": mode, "percent": percent,
+                        "width": width, "height": height, "algorithm": algorithm},
+                       {"processed": processed, "to": f"{target_w}x{target_h}"})
+    ctx.report(100, f"缩放完成: {processed}/{len(indices)} 帧 → {target_w}x{target_h}")
+    return {"processed": processed, "total": len(indices),
+            "from": f"{orig_w}x{orig_h}", "to": f"{target_w}x{target_h}"}
+
+
 @router.post("/scale")
 def scale_frames(session_id: str, req: ScaleRequest):
     session = get_session(session_id)
     indices = require_indices(session, req.indices)
-    algo = _ALGO_MAP.get(req.algorithm, Image.Resampling.LANCZOS)
-
-    def _job(ctx):
-        ctx.report(0, "开始缩放...")
-        arrays = session.load_display_arrays(indices)
-        first = next((a for a in arrays if a is not None), None)
-        if first is None:
-            return {"processed": 0, "message": "没有可用的帧图像"}
-
-        orig_h, orig_w = first.shape[:2]
-        if req.mode == "percent":
-            scale = req.percent / 100.0
-            target_w, target_h = int(orig_w * scale), int(orig_h * scale)
-        else:
-            target_w, target_h = req.width, req.height
-
-        if target_w < 1 or target_h < 1:
-            return {"processed": 0, "message": "目标尺寸非法"}
-
-        _push_history(session, indices, "批量缩放",
-                      f"{len(indices)}帧 {orig_w}x{orig_h}→{target_w}x{target_h} {req.algorithm}")
-
-        processed = 0
-        for i, (idx, img) in enumerate(zip(indices, arrays)):
-            if ctx.cancelled():
-                break
-            if img is None:
-                continue
-            pil = Image.fromarray(img)
-            scaled = pil.resize((target_w, target_h), algo)
-            session.save_processed(idx, np.array(scaled))
-            processed += 1
-            ctx.report((i + 1) / len(indices) * 100, f"缩放 {i+1}/{len(indices)}")
-
-        session.clear_frame_arrays()
-        session.persist_metadata()
-        from app.services import recipe
-        recipe.record_step(session, "scale",
-                           {"mode": req.mode, "percent": req.percent,
-                            "width": req.width, "height": req.height,
-                            "algorithm": req.algorithm},
-                           {"processed": processed, "to": f"{target_w}x{target_h}"})
-        return {"processed": processed, "total": len(indices),
-                "from": f"{orig_w}x{orig_h}", "to": f"{target_w}x{target_h}"}
-
-    job = job_manager.submit("scale", _job, lock=session.lock)
+    job = job_manager.submit(
+        "scale",
+        lambda ctx: run_scale(session, indices, req.mode, req.percent,
+                              req.width, req.height, req.algorithm, ctx),
+        lock=session.lock)
     return {"job_id": job.id}
 
 

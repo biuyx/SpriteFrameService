@@ -181,6 +181,12 @@ class SpriteStore:
             "preset": {
                 "matting": {"model": _default_matting_model(), "alpha_threshold": 128,
                             "erode": 1, "feather": 0},
+                # 描边/缩放是可选工序：enabled 打开后自动流水线才会执行
+                "outline": {"enabled": False, "width": 2, "color": [0, 0, 0],
+                            "opacity": 1.0, "position": "outer", "corner": "round",
+                            "antialias": True, "alpha_threshold": 128, "auto_pad": True},
+                "scale": {"enabled": False, "mode": "percent", "percent": 40,
+                          "width": 128, "height": 128, "algorithm": "lanczos"},
                 "output": {},
             },
             "actions": [],

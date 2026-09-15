@@ -16,9 +16,14 @@ const STEPS = [
   { key: 'generate', label: '视频生成' },
   { key: 'extract', label: '抽帧' },
   { key: 'matting', label: '抠图' },
+  { key: 'scale', label: '缩放', hint: '需在「图像处理」里保存精灵缩放预设，否则整批跳过' },
+  { key: 'outline', label: '描边', hint: '在缩放之后执行，描边宽度即成品实际像素宽；需先保存精灵描边预设' },
   { key: 'export', label: '导出' },
 ]
-const stepOn = ref({ firstframe: true, generate: true, extract: true, matting: true, export: true })
+const stepOn = ref({ firstframe: true, generate: true, extract: true, matting: true,
+                     scale: true, outline: true, export: true })
+// 角色级收口：这一批全部跑完后自动导出整角色的 Spine 资源
+const spineOn = ref(false)
 const force = ref(false)               // 强制重做已完成步骤
 const pauseAfterFf = ref(true)         // 首帧生成后暂停等确认
 const sets = ref([])
@@ -28,6 +33,7 @@ const planning = ref(false)
 const phase = ref('pick')              // pick | running
 const rows = ref([])
 const skippedRows = ref([])
+const spineJob = ref(null)             // 角色级收口任务（Spine 导出）
 
 const targetIds = computed(() => props.preselected?.length
   ? props.preselected : props.actions.map(a => a.id))
@@ -66,14 +72,18 @@ async function start() {
   const c = cost.value
   const money = (c.images || c.videos) ? `\n预计消耗：生图 ${c.images} 张、视频 ${c.videos} 个（按量计费）。` : ''
   const pause = stepOn.value.firstframe && pauseAfterFf.value ? '\n首帧生成后会暂停，确认后再继续。' : ''
-  if (!(await askConfirm(`对 ${runnable.value.length} 个动作执行流水线（${steps.value.map(k => STEPS.find(s => s.key === k).label).join(' → ')}）？${money}${pause}`))) return
+  const spine = spineOn.value ? '\n全部跑完后自动导出整角色的 Spine 资源。' : ''
+  if (!(await askConfirm(`对 ${runnable.value.length} 个动作执行流水线（${steps.value.map(k => STEPS.find(s => s.key === k).label).join(' → ')}）？${money}${pause}${spine}`))) return
   try {
     const r = await api.pipelineStart(store.currentSprite.id, {
       action_ids: runnable.value.map(p => p.action_id), steps: steps.value,
       force: force.value ? steps.value : [], set_id: setId.value || null,
       pause_after_firstframe: pauseAfterFf.value,
+      spine: spineOn.value,
+      spine_options: spineOn.value ? { scale: 0.4, canvas: 128 } : null,
     })
     skippedRows.value = r.skipped
+    if (r.spine) toast(r.spine.message)
     rows.value = r.submitted.map(x => ({ ...x, status: 'queued', progress: 0, message: '', error: null, pstatus: null }))
     phase.value = 'running'
     startPolling()
@@ -92,12 +102,31 @@ async function poll() {
     try {
       const j = await api.job(row.job_id)
       row.status = j.status; row.progress = j.progress; row.message = j.message; row.error = j.error
-      if (j.status === 'done') row.pstatus = j.result?.status || 'done'
+      if (j.status === 'done') {
+        row.pstatus = j.result?.status || 'done'
+        // 最后跑完的那个动作会带回角色级收口任务（Spine 导出）
+        if (j.result?.batch_finish && !spineJob.value) {
+          spineJob.value = { ...j.result.batch_finish, status: 'queued', progress: 0, message: '' }
+          toast(j.result.batch_finish.message)
+        }
+      }
       if (j.status === 'error') row.pstatus = 'error'
     } catch (e) {
       if (e.status === 404) { row.status = 'error'; row.error = '任务记录不存在（服务可能已重启）'; row.pstatus = 'error' }
     }
     if (!['done', 'error', 'cancelled'].includes(row.status)) active = true
+  }
+  // Spine 收口任务：动作全部跑完后才出现，单独跟进度
+  const sj = spineJob.value
+  if (sj && !['done', 'error', 'cancelled'].includes(sj.status)) {
+    try {
+      const j = await api.job(sj.job_id)
+      sj.status = j.status; sj.progress = j.progress; sj.message = j.message
+      sj.error = j.error; sj.result = j.result
+      if (j.status === 'done') toast(`Spine 导出完成：${j.message || sj.name}`)
+      if (j.status === 'error') toast(`Spine 导出失败: ${(j.error || '').split('\n')[0]}`)
+    } catch { /* 任务记录可能被淘汰，忽略 */ }
+    if (!['done', 'error', 'cancelled'].includes(sj.status)) active = true
   }
   if (!active) {
     stopPolling()
@@ -136,7 +165,7 @@ async function resume(list) {
         <div class="opts">
           <div class="row" style="gap:12px;align-items:center;flex-wrap:wrap">
             <span class="hint">步骤：</span>
-            <label v-for="s in STEPS" :key="s.key" class="chk">
+            <label v-for="s in STEPS" :key="s.key" class="chk" :title="s.hint || ''">
               <input type="checkbox" v-model="stepOn[s.key]" /> {{ s.label }}</label>
             <span class="sep">|</span>
             <label class="chk" title="已完成的步骤也重新执行（重新生成/重抽/重抠/重导）">
@@ -151,7 +180,14 @@ async function resume(list) {
                 <option value="">自动匹配（同分组 / 含该动作）</option>
                 <option v-for="s in sets" :key="s.id" :value="s.id">{{ s.name }}（{{ s.frames.length }}）</option>
               </select></div>
+            <span class="sep">|</span>
+            <label class="chk" title="这批动作全部跑完后，自动把整个角色打成 Spine 骨架 JSON + 图集">
+              <input type="checkbox" v-model="spineOn" /> 完成后导出 Spine 资源</label>
           </div>
+          <p v-if="spineOn" class="hint" style="margin:6px 0 0">
+            收口按整个角色导出（不只这一批），用 0.4 缩放 / 128 画布。
+            全部动作跑完才会触发；中途有失败的就不导，补跑完成后自动接上。
+          </p>
         </div>
 
         <div class="plan-wrap">
@@ -201,7 +237,17 @@ async function resume(list) {
             <b>{{ s.name }}</b><span class="spacer" style="flex:1"></span>
             <span class="warn-text">跳过：{{ s.reason }}</span>
           </div>
+          <div v-if="spineJob" class="act-row finish-row">
+            <b>▣ Spine 资源（{{ spineJob.name }}）</b>
+            <span class="hint msg" :title="spineJob.error || spineJob.message">{{ spineJob.message }}</span>
+            <span class="spacer" style="flex:1"></span>
+            <span :class="{ 'ok-text': spineJob.status === 'done', 'warn-text': spineJob.status === 'error' }">
+              {{ spineJob.status === 'running' ? Math.round(spineJob.progress) + '%'
+                 : (STATUS_TXT[spineJob.status] || spineJob.status) }}</span>
+          </div>
         </div>
+        <p v-if="spineOn && !spineJob" class="hint" style="margin:6px 0 0">
+          全部动作跑完后会自动提交 Spine 导出。</p>
         <p class="hint" style="margin:6px 0 0">
           待确认的动作：到「首帧图库 › 动作首帧总览」过目，不满意可单张重生成，然后点「确认继续」。</p>
         <div class="modal-foot">
@@ -215,6 +261,7 @@ async function resume(list) {
 </template>
 
 <style scoped>
+.finish-row { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
 .modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90; display: flex; align-items: center; justify-content: center; }
 .modal { width: 760px; max-width: 94vw; max-height: 88vh; overflow-y: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px 18px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }

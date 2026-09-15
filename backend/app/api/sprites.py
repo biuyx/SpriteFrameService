@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import shutil
+import time
+import uuid
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -672,6 +674,9 @@ class PipelineStartRequest(PipelinePlanRequest):
     pause_after_firstframe: bool = True
     model: Optional[str] = None
     resolution: Optional[str] = None
+    # 角色级收口：这一批动作全部跑完后，自动导出整角色的 Spine 资源
+    spine: bool = False
+    spine_options: Optional[dict] = None
 
 
 class PipelineResumeRequest(BaseModel):
@@ -713,7 +718,13 @@ def pipeline_start(sprite_id: str, req: PipelineStartRequest):
     _wrap(lambda: sprite_store.get_sprite(sprite_id))
     steps = [s for s in STEPS if s in (req.steps or STEPS)]
     opts = {"steps": steps, "force": req.force or [], "set_id": req.set_id}
-    submitted, skipped = [], []
+    # 批次：全部跑完后由最后完成的那个动作触发角色级收口（Spine 导出）
+    batch = None
+    if req.spine:
+        batch = {"id": uuid.uuid4().hex[:8], "members": [],
+                 "spine": dict(req.spine_options or {})}
+    # 先过一遍筛出真正要跑的，批次成员要在写状态前就确定
+    runnable, skipped = [], []
     for aid in req.action_ids:
         try:
             action = sprite_store.get_action(sprite_id, aid)
@@ -731,15 +742,33 @@ def pipeline_start(sprite_id: str, req: PipelineStartRequest):
                                 if v["status"] == "blocked"), "没有可执行的步骤")
             skipped.append({"action_id": aid, "name": name, "reason": first_block})
             continue
-        sprite_store.update_action(sprite_id, aid, {"pipeline": {
+        runnable.append((aid, name))
+
+    if batch is not None:
+        batch["members"] = [aid for aid, _ in runnable]
+
+    submitted = []
+    for aid, name in runnable:
+        state = {
             "steps": steps, "force": req.force or [], "set_id": req.set_id,
             "pause_after_firstframe": req.pause_after_firstframe,
             "model": req.model, "resolution": req.resolution,
             "done": [], "status": "queued", "current": None, "error": None,
-            "started_at": __import__("time").time(),
-        }})
+            "started_at": time.time(),
+        }
+        if batch is not None:
+            state["batch"] = batch
+        sprite_store.update_action(sprite_id, aid, {"pipeline": state})
         submitted.append(_pipeline_submit(sprite_id, aid, name))
-    return {"submitted": submitted, "skipped": skipped}
+
+    # 请求了收口但没有任何动作要跑（都已完成）：直接导出，别让用户空等
+    finish = None
+    if req.spine and not submitted:
+        from app.core.pipeline import submit_spine_export
+        finish = submit_spine_export(sprite_id, req.spine_options or {})
+    return {"submitted": submitted, "skipped": skipped,
+            **({"batch_id": batch["id"]} if batch else {}),
+            **({"spine": finish} if finish else {})}
 
 
 @router.post("/{sprite_id}/pipeline/resume")
