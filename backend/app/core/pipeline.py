@@ -159,6 +159,20 @@ def _preset(sprite_id: str, key: str, default: dict) -> dict:
     return {**default, **((sp.get("preset") or {}).get(key) or {})}
 
 
+def size_ops_of(sprite_id: str) -> List[str]:
+    """导出时会应用的 缩放 / 描边（按执行顺序），供计划预览显示。"""
+    sc = _preset(sprite_id, "scale", DEFAULT_SCALE_PRESET)
+    ol = _preset(sprite_id, "outline", DEFAULT_OUTLINE_PRESET)
+    ops = []
+    if sc.get("enabled"):
+        ops.append("缩放 " + (f"{sc.get('percent')}%" if sc.get("mode") == "percent"
+                              else f"{sc.get('width')}x{sc.get('height')}"))
+    if ol.get("enabled") and float(ol.get("width") or 0) > 0:
+        rgb = tuple(ol.get("color") or (0, 0, 0))
+        ops.append(f"描边 {ol.get('width')}px RGB{rgb}")
+    return ops
+
+
 def check_export(sprite_id: str, action: dict, opts: dict, session=None):
     session = session or get_session(action["id"])
     frames = session.frame_manager.frames
@@ -168,7 +182,8 @@ def check_export(sprite_id: str, action: dict, opts: dict, session=None):
         raise StepBlocked("没有已抠图的帧（将由上一步生成）")
     sp = sprite_store.get_sprite(sprite_id)
     out = (sp.get("preset") or {}).get("output") or DEFAULT_OUTPUT_PRESET
-    return {"format": out.get("format", "frames")}
+    return {"format": out.get("format", "frames"),
+            "size_ops": size_ops_of(sprite_id)}
 
 
 def _is_done(step: str, sprite_id: str, action: dict, session=None) -> bool:

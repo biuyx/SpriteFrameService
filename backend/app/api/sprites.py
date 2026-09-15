@@ -696,7 +696,7 @@ def _pipeline_submit(sprite_id: str, action_id: str, name: str):
 @router.post("/{sprite_id}/pipeline/plan")
 def pipeline_plan(sprite_id: str, req: PipelinePlanRequest):
     """执行前预览：每个动作每步 run / skip / blocked（原因）。"""
-    from app.core.pipeline import STEPS, plan_action
+    from app.core.pipeline import STEPS, plan_action, size_ops_of
     _wrap(lambda: sprite_store.get_sprite(sprite_id))
     opts = {"steps": req.steps or STEPS, "force": req.force or [], "set_id": req.set_id}
     out = []
@@ -708,7 +708,9 @@ def pipeline_plan(sprite_id: str, req: PipelinePlanRequest):
         p = plan_action(sprite_id, action, opts)
         out.append({"action_id": aid, "name": action.get("name", aid),
                     "pipeline": action.get("pipeline"), **p})
-    return {"plans": out, "steps": req.steps or STEPS}
+    # 精灵级的导出处理（缩放/描边）对整批一致，单独给出来供界面显示
+    return {"plans": out, "steps": req.steps or STEPS,
+            "size_ops": size_ops_of(sprite_id)}
 
 
 @router.post("/{sprite_id}/pipeline/start")

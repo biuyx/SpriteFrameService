@@ -32,6 +32,7 @@ const phase = ref('pick')              // pick | running
 const rows = ref([])
 const skippedRows = ref([])
 const spineJob = ref(null)             // 角色级收口任务（Spine 导出）
+const sizeOps = ref([])                // 导出时应用的缩放/描边（精灵预设，整批一致）
 
 const targetIds = computed(() => props.preselected?.length
   ? props.preselected : props.actions.map(a => a.id))
@@ -50,9 +51,17 @@ async function replan() {
       force: force.value ? steps.value : [], set_id: setId.value || null,
     })
     plans.value = r.plans
+    sizeOps.value = r.size_ops || []
   } catch (e) { toast(`计划失败: ${e.message}`) } finally { planning.value = false }
 }
 watch([stepOn, force, setId], () => { clearTimeout(planTimer); planTimer = setTimeout(replan, 250) }, { deep: true })
+
+function cellTitle(c) {
+  if (!c) return ''
+  const parts = [c.reason, c.note, c.template, c.rule, c.set_name,
+                 (c.size_ops || []).join(' → ')]
+  return parts.filter(Boolean).join(' | ')
+}
 
 const runnable = computed(() => plans.value.filter(p => p.runnable))
 const cost = computed(() => ({
@@ -70,8 +79,10 @@ async function start() {
   const c = cost.value
   const money = (c.images || c.videos) ? `\n预计消耗：生图 ${c.images} 张、视频 ${c.videos} 个（按量计费）。` : ''
   const pause = stepOn.value.firstframe && pauseAfterFf.value ? '\n首帧生成后会暂停，确认后再继续。' : ''
+  const ops = (stepOn.value.export && sizeOps.value.length)
+    ? `\n导出时应用：${sizeOps.value.join(' → ')}（不改帧文件）。` : ''
   const spine = spineOn.value ? '\n全部跑完后自动导出整角色的 Spine 资源。' : ''
-  if (!(await askConfirm(`对 ${runnable.value.length} 个动作执行流水线（${steps.value.map(k => STEPS.find(s => s.key === k).label).join(' → ')}）？${money}${pause}${spine}`))) return
+  if (!(await askConfirm(`对 ${runnable.value.length} 个动作执行流水线（${steps.value.map(k => STEPS.find(s => s.key === k).label).join(' → ')}）？${money}${ops}${pause}${spine}`))) return
   try {
     const r = await api.pipelineStart(store.currentSprite.id, {
       action_ids: runnable.value.map(p => p.action_id), steps: steps.value,
@@ -183,6 +194,19 @@ async function resume(list) {
             <label class="chk" title="这批动作全部跑完后，自动把整个角色打成 Spine 骨架 JSON + 图集">
               <input type="checkbox" v-model="spineOn" /> 完成后导出 Spine 资源</label>
           </div>
+
+          <div class="row size-row" :class="{ off: !stepOn.export }">
+            <span class="hint">导出处理：</span>
+            <template v-if="sizeOps.length">
+              <template v-for="(o, i) in sizeOps" :key="o">
+                <span v-if="i" class="arrow">→</span>
+                <span class="op-chip">{{ o }}</span>
+              </template>
+              <span class="hint">导出时作用在副本上，帧文件保持原分辨率</span>
+            </template>
+            <span v-else class="hint">
+              未设置缩放/描边预设，按帧原样导出。要加的话去「图像处理」调好参数后存为导出预设。</span>
+          </div>
           <p v-if="spineOn" class="hint" style="margin:6px 0 0">
             收口按整个角色导出（不只这一批），帧统一压进 128 画布，描边按精灵预设在压进画布后应用。
             全部动作跑完才会触发；中途有失败的就不导，补跑完成后自动接上。
@@ -200,9 +224,13 @@ async function resume(list) {
               <tr v-for="p in plans" :key="p.action_id" :class="{ dim: !p.runnable }">
                 <td><b>{{ p.name }}</b></td>
                 <td v-for="s in STEPS.filter(x => stepOn[x.key])" :key="s.key" class="cell" :class="p.steps[s.key]?.status"
-                    :title="p.steps[s.key]?.reason || p.steps[s.key]?.note || p.steps[s.key]?.template || p.steps[s.key]?.rule || p.steps[s.key]?.set_name || ''">
+                    :title="cellTitle(p.steps[s.key])">
                   {{ ICON[p.steps[s.key]?.status] || '' }}
                   <span class="cell-txt">{{ p.steps[s.key]?.status === 'blocked' ? p.steps[s.key].reason : (p.steps[s.key]?.status === 'skip' ? '已完成' : '') }}</span>
+                  <span v-if="s.key === 'export' && p.steps.export?.size_ops?.length"
+                        class="ops-mark" :title="p.steps.export.size_ops.join(' → ')">
+                    {{ p.steps.export.size_ops.length === 2 ? '＋缩放·描边'
+                       : '＋' + p.steps.export.size_ops[0].split(' ')[0] }}</span>
                 </td>
                 <td class="hint">{{ p.pipeline?.status ? (STATUS_TXT[p.pipeline.status] || p.pipeline.status) : '' }}</td>
               </tr>
@@ -213,8 +241,7 @@ async function resume(list) {
         </div>
         <p class="hint" style="margin:6px 0 0">
           ▶ 将执行 · ⏭ 已完成跳过 · ⛔ 阻塞（悬停看原因）。可执行 {{ runnable.length }}/{{ plans.length }} 个；
-          预计消耗：生图 {{ cost.images }} 张、视频 {{ cost.videos }} 个。<br>
-          缩放与描边不是独立步骤——在「图像处理」里存成精灵预设后，导出时自动应用（先缩放后描边），帧文件保持原分辨率。</p>
+          预计消耗：生图 {{ cost.images }} 张、视频 {{ cost.videos }} 个。</p>
         <div class="modal-foot">
           <button class="primary" :disabled="!runnable.length || planning" @click="start">
             开始执行（{{ runnable.length }} 个）</button>
@@ -279,6 +306,17 @@ async function resume(list) {
 .cell.skip { color: var(--text-dim); }
 .cell.blocked { color: var(--warn); }
 .cell-txt { font-size: 11px; margin-left: 2px; }
+.size-row {
+  gap: 6px; align-items: center; flex-wrap: wrap;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.size-row.off { opacity: .45; }
+.op-chip {
+  font-size: 12px; padding: 1px 8px; border-radius: 9px;
+  background: var(--bg-panel); border: 1px solid var(--border); color: var(--ok);
+}
+.arrow { color: var(--text-dim); font-size: 12px; }
+.ops-mark { font-size: 10px; margin-left: 3px; color: var(--ok); white-space: nowrap; }
 .act-list { border: 1px solid var(--border); border-radius: 5px; max-height: 380px; overflow-y: auto; margin-bottom: 8px; }
 .act-row { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
 .act-row:last-child { border-bottom: none; }
