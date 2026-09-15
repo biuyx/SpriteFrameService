@@ -16,12 +16,11 @@ const STEPS = [
   { key: 'generate', label: '视频生成' },
   { key: 'extract', label: '抽帧' },
   { key: 'matting', label: '抠图' },
-  { key: 'scale', label: '缩放', hint: '需在「图像处理」里保存精灵缩放预设，否则整批跳过' },
-  { key: 'outline', label: '描边', hint: '在缩放之后执行，描边宽度即成品实际像素宽；需先保存精灵描边预设' },
+  { key: 'outline', label: '描边', hint: '需在「图像处理」里保存精灵描边预设，否则整批跳过' },
   { key: 'export', label: '导出' },
 ]
 const stepOn = ref({ firstframe: true, generate: true, extract: true, matting: true,
-                     scale: true, outline: true, export: true })
+                     outline: true, export: true })
 // 角色级收口：这一批全部跑完后自动导出整角色的 Spine 资源
 const spineOn = ref(false)
 const force = ref(false)               // 强制重做已完成步骤
@@ -80,7 +79,8 @@ async function start() {
       force: force.value ? steps.value : [], set_id: setId.value || null,
       pause_after_firstframe: pauseAfterFf.value,
       spine: spineOn.value,
-      spine_options: spineOn.value ? { scale: 0.4, canvas: 128 } : null,
+      // 只给画布、不给额外缩放：帧压进 128 画布即可，结果不受源帧尺寸影响
+      spine_options: spineOn.value ? { scale: 1.0, canvas: 128 } : null,
     })
     skippedRows.value = r.skipped
     if (r.spine) toast(r.spine.message)
@@ -185,7 +185,7 @@ async function resume(list) {
               <input type="checkbox" v-model="spineOn" /> 完成后导出 Spine 资源</label>
           </div>
           <p v-if="spineOn" class="hint" style="margin:6px 0 0">
-            收口按整个角色导出（不只这一批），用 0.4 缩放 / 128 画布。
+            收口按整个角色导出（不只这一批），帧统一压进 128 画布。
             全部动作跑完才会触发；中途有失败的就不导，补跑完成后自动接上。
           </p>
         </div>
