@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useStore, gotoSprite, toast, askConfirm } from '../stores'
 import api from '../api'
+import { startJob } from '../jobs'
 import BatchImportModal from '../components/BatchImportModal.vue'
 
 const store = useStore()
@@ -121,6 +122,30 @@ async function createSprite() {
   } finally {
     creatingBusy.value = false
   }
+}
+
+// ---- 复制精灵（完整副本用于 A/B 抽卡对比）----
+const copying = ref(null)   // {src, name, copy_first_frames, copy_refs, copy_workdata}
+function startCopy(sp) {
+  copying.value = { src: sp, name: `${sp.name}_副本`,
+                    copy_first_frames: true, copy_refs: true, copy_workdata: true }
+}
+async function runCopy() {
+  const c = copying.value
+  if (!c || !c.name.trim()) return
+  const payload = { name: c.name.trim(), tags: null,
+                    copy_first_frames: c.copy_first_frames, copy_refs: c.copy_refs,
+                    copy_workdata: c.copy_workdata }
+  const srcName = c.src.name
+  copying.value = null
+  await startJob(() => api.copySprite(c.src.id, payload), {
+    title: `复制精灵 ${srcName}`,
+    onDone: async (r) => {
+      const mb = r?.bytes ? ` · 素材 ${(r.bytes / 1048576).toFixed(0)}MB` : ''
+      toast(`已复制为「${r?.name}」：动作 ${r?.actions} 个${mb}`)
+      await load()
+    },
+  })
 }
 
 function startEdit(sp) {
@@ -243,6 +268,8 @@ onMounted(load)
             <td class="ops" @click.stop>
               <button class="small" @click="open(sp)">打开</button>
               <button class="small" @click="startEdit(sp)">编辑</button>
+              <button class="small" title="复制为副本（可含全部素材，用于 A/B 抽卡对比）"
+                      @click="startCopy(sp)">复制</button>
               <button class="small danger" @click="removeSprite(sp)">删除</button>
             </td>
           </tr>
@@ -265,6 +292,31 @@ onMounted(load)
       <div class="edit-ops">
         <button class="primary" @click="saveEdit">保存</button>
         <button @click="editing = null">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 复制精灵 -->
+  <div v-if="copying" class="edit-mask" @click.self="copying = null">
+    <div class="edit-box">
+      <h3>复制精灵「{{ copying.src.name }}」</h3>
+      <div class="field"><label>副本名称</label>
+        <input v-model="copying.name" @keyup.enter="runCopy" autofocus /></div>
+      <div class="field">
+        <label>复制内容</label>
+        <label class="chk" style="margin-top:4px"><input type="checkbox" v-model="copying.copy_first_frames" /> 首帧图</label>
+        <label class="chk"><input type="checkbox" v-model="copying.copy_refs" /> 参考图库（含正面/背面立绘标记）</label>
+        <label class="chk"><input type="checkbox" v-model="copying.copy_workdata" /> 全部素材：素材版本(视频)、帧、抠图、导出</label>
+      </div>
+      <p class="hint" style="margin:0 0 12px;line-height:1.7">
+        副本与原角色完全独立，动作骨架（模板绑定、提示词与参数记忆、工艺/导出预设）一并复制。
+        <template v-if="copying.copy_workdata">勾选「全部素材」后可在副本上重新抽卡，与原角色做 A/B 对比；
+        体积较大，复制在后台进行。</template>
+        <template v-else>不含素材时副本只有骨架与首帧，需重新生成。</template>
+        编辑历史不复制。</p>
+      <div class="edit-ops">
+        <button class="primary" @click="runCopy">开始复制</button>
+        <button @click="copying = null">取消</button>
       </div>
     </div>
   </div>

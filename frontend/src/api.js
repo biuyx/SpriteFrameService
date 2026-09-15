@@ -47,6 +47,8 @@ const api = {
   sprites: () => request('GET', '/api/sprites'),
   // payload: {name, tags, from_sprite_id?, copy_first_frames?, copy_refs?}
   createSprite: (payload) => request('POST', '/api/sprites', { json: payload }),
+  // 复制精灵（完整副本含素材，走后台任务）
+  copySprite: (sid, payload) => request('POST', `/api/sprites/${sid}/copy`, { json: payload }),
   sprite: (sid) => request('GET', `/api/sprites/${sid}`),
   patchSprite: (sid, patch) => request('PATCH', `/api/sprites/${sid}`, { json: patch }),
   deleteSprite: (sid) => request('DELETE', `/api/sprites/${sid}`),

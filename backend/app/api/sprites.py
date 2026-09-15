@@ -113,6 +113,40 @@ def create_sprite(req: SpriteCreate):
     return sprite_store.create_sprite(req.name, req.tags)
 
 
+class SpriteCopy(BaseModel):
+    name: str = Field(..., description="副本名称")
+    tags: Optional[List[str]] = None
+    copy_first_frames: bool = True
+    copy_refs: bool = True
+    copy_workdata: bool = Field(default=True, description="连同素材版本/帧/抠图/导出一并复制")
+
+
+@router.post("/{sprite_id}/copy")
+def copy_sprite(sprite_id: str, req: SpriteCopy):
+    """复制精灵（完整副本用于 A/B 抽卡对比）。体积可能很大，走后台任务。"""
+    from app.services.job_manager import job_manager
+    sp = _wrap(lambda: sprite_store.get_sprite(sprite_id))
+
+    def _job(ctx):
+        def on_progress(done, total, aname):
+            pct = (done / total * 100) if total else 100
+            ctx.report(min(99, pct), f"复制动作 {done}/{total} {aname}")
+        ctx.report(1, "开始复制...")
+        r = sprite_store.fork_sprite(
+            sprite_id, req.name, req.tags,
+            copy_first_frames=req.copy_first_frames, copy_refs=req.copy_refs,
+            copy_workdata=req.copy_workdata, progress=on_progress)
+        mb = r["bytes"] / 1048576
+        ctx.report(100, f"复制完成：动作 {r['actions']} 个"
+                        + (f"，素材 {mb:.0f}MB" if r["bytes"] else ""))
+        return {"sprite_id": r["sprite"]["id"], "name": r["sprite"]["name"],
+                "source": r["source"], "actions": r["actions"],
+                "first_frames": r["first_frames"], "refs": r["refs"], "bytes": r["bytes"]}
+
+    job = job_manager.submit("copy_sprite", _job, pool="io")
+    return {"job_id": job.id, "source": sp.get("name", sprite_id)}
+
+
 @router.get("/legacy-sessions")
 def legacy_sessions():
     """旧版匿名会话列表（供认领）。"""

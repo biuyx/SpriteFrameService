@@ -54,6 +54,17 @@ def _default_matting_model() -> str:
         return "isnet-anime"
 
 
+def _replace_paths(obj, old: str, new: str):
+    """递归替换结构里的路径前缀（帧元数据存的是绝对路径，复制后必须改写）。"""
+    if isinstance(obj, dict):
+        return {k: _replace_paths(v, old, new) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_replace_paths(v, old, new) for v in obj]
+    if isinstance(obj, str) and old in obj:
+        return obj.replace(old, new)
+    return obj
+
+
 class SpriteStoreError(Exception):
     """实体层错误（API 层转 4xx）。"""
 
@@ -181,14 +192,35 @@ class SpriteStore:
             self._write_json(self.sprite_json(sprite_id), payload)
         return payload
 
-    def fork_sprite(self, src_id: str, name: str, tags: Optional[List[str]] = None,
-                    copy_first_frames: bool = True,
-                    copy_refs: bool = False) -> dict:
-        """以已有精灵为模板新建：复制档案预设与动作骨架。
+    # 完整复制时跳过的子目录：本地编辑历史与预览缓存，副本从新开始记录
+    _FORK_SKIP = ("history", "preview")
 
-        复制：工艺/导出预设、动作（名称、模板绑定、提示词与参数记忆、参数覆盖），
-        可选复制各动作首帧图与参考图库（含立绘标记）。
-        不复制素材视频/帧/抠图/导出——新角色这些必然重做，且帧元数据存的是绝对路径。
+    @staticmethod
+    def _rewrite_json_paths(root: Path, old: str, new: str) -> None:
+        """改写复制后目录内所有 JSON 里指向源动作目录的绝对路径。"""
+        for p in root.rglob("*.json"):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            fixed = _replace_paths(data, old, new)
+            if fixed != data:
+                try:
+                    p.write_text(json.dumps(fixed, ensure_ascii=False, indent=1),
+                                 encoding="utf-8")
+                except OSError:
+                    pass
+
+    def fork_sprite(self, src_id: str, name: str, tags: Optional[List[str]] = None,
+                    copy_first_frames: bool = True, copy_refs: bool = False,
+                    copy_workdata: bool = False, progress=None) -> dict:
+        """以已有精灵为模板新建。
+
+        默认只复制骨架：工艺/导出预设、动作（名称、模板绑定、提示词与参数记忆、
+        参数覆盖），可选带上首帧图与参考图库（含立绘标记）。
+        copy_workdata=True 为完整副本：连同素材版本、帧、抠图、导出一并复制
+        （用于 A/B 抽卡对比），复制后改写帧元数据里的绝对路径；
+        编辑历史(history)与预览缓存不复制。
         """
         import shutil
 
@@ -198,37 +230,67 @@ class SpriteStore:
         if isinstance(src.get("preset"), dict):
             self.update_sprite(new_id, {"preset": copy.deepcopy(src["preset"])})
 
-        stats = {"actions": 0, "first_frames": 0, "refs": 0}
-        for ref in src.get("actions", []):
+        stats = {"actions": 0, "first_frames": 0, "refs": 0, "bytes": 0}
+        actions = src.get("actions", [])
+        total = len(actions)
+        for i, ref in enumerate(actions):
+            if progress:
+                progress(i, total, ref.get("name", ""))
             try:
                 a = self._read_json(self.action_json(src_id, ref["id"]))
             except SpriteStoreError:
                 continue
-            src_ff = self.action_dir(src_id, ref["id"]) / "first_frame.png"
-            take_ff = copy_first_frames and src_ff.is_file()
-            ff_meta = copy.deepcopy(a.get("first_frame")) if take_ff else None
-            na = self.create_action(new_id, a.get("name", ""), first_frame=ff_meta)
-            patch = {k: copy.deepcopy(a[k]) for k in ("template_id", "gen_prefs",
-                                                      "preset_override") if a.get(k)}
-            if patch:
-                self.update_action(new_id, na["id"], patch)
-            if take_ff:
-                try:
-                    shutil.copyfile(src_ff, self.action_dir(new_id, na["id"]) / "first_frame.png")
-                    stats["first_frames"] += 1
-                except OSError:
-                    pass
+            new_aid = uuid.uuid4().hex[:12]
+            src_dir = self.action_dir(src_id, ref["id"])
+            dst_dir = self.action_dir(new_id, new_aid)
+
+            if copy_workdata and src_dir.is_dir():
+                shutil.copytree(src_dir, dst_dir,
+                                ignore=shutil.ignore_patterns(*self._FORK_SKIP))
+                self._rewrite_json_paths(dst_dir, str(src_dir), str(dst_dir))
+                stats["bytes"] += sum(f.stat().st_size for f in dst_dir.rglob("*")
+                                      if f.is_file())
+            else:
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                if copy_first_frames and (src_dir / "first_frame.png").is_file():
+                    try:
+                        shutil.copyfile(src_dir / "first_frame.png",
+                                        dst_dir / "first_frame.png")
+                    except OSError:
+                        pass
+
+            payload = _replace_paths(copy.deepcopy(a), str(src_dir), str(dst_dir))
+            payload.update({"id": new_aid, "sprite_id": new_id, "created_at": _now()})
+            payload.pop("pipeline", None)         # 执行记录不继承
+            if not copy_workdata:
+                payload["status"] = "new"
+                if not (dst_dir / "first_frame.png").is_file():
+                    payload["first_frame"] = None
+            self._write_json(self.action_json(new_id, new_aid), payload)
+
+            with self._lock:
+                data = self._read_json(self.sprite_json(new_id))
+                data["actions"].append({"id": new_aid, "name": payload.get("name", "")})
+                self._write_json(self.sprite_json(new_id), data)
+                self._ensure_index()
+                self._action_index[new_aid] = new_id
+
+            if (dst_dir / "first_frame.png").is_file():
+                stats["first_frames"] += 1
             stats["actions"] += 1
 
         if copy_refs:
             src_ref_dir = self.reference_dir(src_id)
             if src_ref_dir.is_dir():
                 try:
-                    shutil.copytree(src_ref_dir, self.reference_dir(new_id), dirs_exist_ok=True)
+                    shutil.copytree(src_ref_dir, self.reference_dir(new_id),
+                                    dirs_exist_ok=True)
                     stats["refs"] = len(self.list_refs(new_id))
                 except OSError:
                     pass
 
+        if progress:
+            progress(total, total, "")
         return {"sprite": self.get_sprite(new_id), "source": src.get("name", src_id), **stats}
 
     def update_sprite(self, sprite_id: str, patch: dict) -> dict:
