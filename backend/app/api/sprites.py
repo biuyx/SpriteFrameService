@@ -28,6 +28,10 @@ router = APIRouter(prefix="/sprites", tags=["sprites"])
 class SpriteCreate(BaseModel):
     name: str = Field(..., description="精灵名称")
     tags: Optional[List[str]] = Field(default=None)
+    # 以已有精灵为模板新建（复制动作骨架与预设，不复制素材/帧/导出）
+    from_sprite_id: Optional[str] = Field(default=None)
+    copy_first_frames: bool = Field(default=True, description="连同各动作首帧图一起复制")
+    copy_refs: bool = Field(default=False, description="连同参考图库（含立绘标记）一起复制")
 
 
 class SpritePatch(BaseModel):
@@ -50,6 +54,7 @@ class ActionPatch(BaseModel):
     first_frame: Optional[dict] = None
     preset_override: Optional[dict] = None
     template_id: Optional[str] = None
+    gen_prefs: Optional[dict] = None       # 生成设定记忆（提示词/参数/参考集）
 
 
 class ClaimRequest(BaseModel):
@@ -98,6 +103,13 @@ def list_sprites():
 
 @router.post("")
 def create_sprite(req: SpriteCreate):
+    """新建精灵；给 from_sprite_id 则以该精灵为模板复制动作骨架。"""
+    if req.from_sprite_id:
+        r = _wrap(lambda: sprite_store.fork_sprite(
+            req.from_sprite_id, req.name, req.tags,
+            copy_first_frames=req.copy_first_frames, copy_refs=req.copy_refs))
+        return {**r["sprite"], "forked_from": r["source"],
+                "copied": {k: r[k] for k in ("actions", "first_frames", "refs")}}
     return sprite_store.create_sprite(req.name, req.tags)
 
 

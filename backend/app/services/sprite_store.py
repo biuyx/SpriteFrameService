@@ -14,6 +14,7 @@ action_id 全局唯一（uuid hex12），SessionManager 用它直接定位工作
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -179,6 +180,56 @@ class SpriteStore:
             (self.sprite_dir(sprite_id) / "actions").mkdir(parents=True, exist_ok=True)
             self._write_json(self.sprite_json(sprite_id), payload)
         return payload
+
+    def fork_sprite(self, src_id: str, name: str, tags: Optional[List[str]] = None,
+                    copy_first_frames: bool = True,
+                    copy_refs: bool = False) -> dict:
+        """以已有精灵为模板新建：复制档案预设与动作骨架。
+
+        复制：工艺/导出预设、动作（名称、模板绑定、提示词与参数记忆、参数覆盖），
+        可选复制各动作首帧图与参考图库（含立绘标记）。
+        不复制素材视频/帧/抠图/导出——新角色这些必然重做，且帧元数据存的是绝对路径。
+        """
+        import shutil
+
+        src = self._read_json(self.sprite_json(src_id))   # 不存在即抛错
+        new_sp = self.create_sprite(name, tags if tags is not None else src.get("tags"))
+        new_id = new_sp["id"]
+        if isinstance(src.get("preset"), dict):
+            self.update_sprite(new_id, {"preset": copy.deepcopy(src["preset"])})
+
+        stats = {"actions": 0, "first_frames": 0, "refs": 0}
+        for ref in src.get("actions", []):
+            try:
+                a = self._read_json(self.action_json(src_id, ref["id"]))
+            except SpriteStoreError:
+                continue
+            src_ff = self.action_dir(src_id, ref["id"]) / "first_frame.png"
+            take_ff = copy_first_frames and src_ff.is_file()
+            ff_meta = copy.deepcopy(a.get("first_frame")) if take_ff else None
+            na = self.create_action(new_id, a.get("name", ""), first_frame=ff_meta)
+            patch = {k: copy.deepcopy(a[k]) for k in ("template_id", "gen_prefs",
+                                                      "preset_override") if a.get(k)}
+            if patch:
+                self.update_action(new_id, na["id"], patch)
+            if take_ff:
+                try:
+                    shutil.copyfile(src_ff, self.action_dir(new_id, na["id"]) / "first_frame.png")
+                    stats["first_frames"] += 1
+                except OSError:
+                    pass
+            stats["actions"] += 1
+
+        if copy_refs:
+            src_ref_dir = self.reference_dir(src_id)
+            if src_ref_dir.is_dir():
+                try:
+                    shutil.copytree(src_ref_dir, self.reference_dir(new_id), dirs_exist_ok=True)
+                    stats["refs"] = len(self.list_refs(new_id))
+                except OSError:
+                    pass
+
+        return {"sprite": self.get_sprite(new_id), "source": src.get("name", src_id), **stats}
 
     def update_sprite(self, sprite_id: str, patch: dict) -> dict:
         """浅合并更新（仅允许 name/tags/preset）。"""

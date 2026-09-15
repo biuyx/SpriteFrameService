@@ -45,7 +45,8 @@ const api = {
 
   // 精灵 / 动作
   sprites: () => request('GET', '/api/sprites'),
-  createSprite: (name, tags) => request('POST', '/api/sprites', { json: { name, tags } }),
+  // payload: {name, tags, from_sprite_id?, copy_first_frames?, copy_refs?}
+  createSprite: (payload) => request('POST', '/api/sprites', { json: payload }),
   sprite: (sid) => request('GET', `/api/sprites/${sid}`),
   patchSprite: (sid, patch) => request('PATCH', `/api/sprites/${sid}`, { json: patch }),
   deleteSprite: (sid) => request('DELETE', `/api/sprites/${sid}`),

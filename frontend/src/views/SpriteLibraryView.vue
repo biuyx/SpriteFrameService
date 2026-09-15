@@ -27,6 +27,12 @@ watch([keyword, category, sortBy], ([k, c, s]) => {
 const creating = ref(false)
 const newName = ref('')
 const newTags = ref('')
+// 以已有角色为模板新建（复制动作骨架/模板绑定/提示词与参数记忆/工艺预设）
+const fromSprite = ref('')
+const copyFirstFrames = ref(true)
+const copyRefs = ref(false)
+const creatingBusy = ref(false)
+const fromSpriteObj = computed(() => sprites.value.find(s => s.id === fromSprite.value) || null)
 
 // 编辑（改名 / 分类）
 const editing = ref(null)         // {id, name, tags: 'a, b'}
@@ -87,13 +93,34 @@ function parseTags(s) {
 
 async function createSprite() {
   const name = newName.value.trim()
-  if (!name) return
-  const sp = await api.createSprite(name, parseTags(newTags.value))
-  newName.value = ''
-  newTags.value = ''
-  creating.value = false
-  toast(`已创建精灵「${sp.name}」`)
-  gotoSprite(sp)
+  if (!name || creatingBusy.value) return
+  creatingBusy.value = true
+  try {
+    // 分类留空且用了模板角色时传 null：继承模板角色的分类
+    const tags = parseTags(newTags.value)
+    const sp = await api.createSprite({
+      name, tags: (tags.length || !fromSprite.value) ? tags : null,
+      from_sprite_id: fromSprite.value || null,
+      copy_first_frames: copyFirstFrames.value,
+      copy_refs: copyRefs.value,
+    })
+    newName.value = ''
+    newTags.value = ''
+    creating.value = false
+    if (sp.forked_from) {
+      const c = sp.copied || {}
+      toast(`已以「${sp.forked_from}」为模板创建「${sp.name}」：` +
+            `动作 ${c.actions} 个` + (c.first_frames ? ` · 首帧 ${c.first_frames} 张` : '') +
+            (c.refs ? ` · 参考图 ${c.refs} 张` : ''))
+    } else {
+      toast(`已创建精灵「${sp.name}」`)
+    }
+    gotoSprite(sp)
+  } catch (e) {
+    toast(`创建失败: ${e.message}`)
+  } finally {
+    creatingBusy.value = false
+  }
 }
 
 function startEdit(sp) {
@@ -147,10 +174,25 @@ onMounted(load)
     </div>
 
     <div v-if="creating" class="create-bar">
-      <input v-model="newName" placeholder="精灵名称，如：厨师" style="width:180px" @keyup.enter="createSprite" autofocus />
-      <input v-model="newTags" placeholder="项目分类（可选，逗号分隔）" style="width:220px" @keyup.enter="createSprite" />
-      <button class="primary" @click="createSprite">创建</button>
-      <button @click="creating = false">取消</button>
+      <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin:0">
+        <input v-model="newName" placeholder="精灵名称，如：厨师" style="width:180px" @keyup.enter="createSprite" autofocus />
+        <input v-model="newTags" placeholder="项目分类（可选，逗号分隔）" style="width:200px" @keyup.enter="createSprite" />
+        <div class="field inline"><label>模板角色</label>
+          <select v-model="fromSprite" style="max-width:190px" title="以已有角色为模板：复制动作、模板绑定、提示词与参数记忆、工艺/导出预设">
+            <option value="">不使用（空白新建）</option>
+            <option v-for="s in sprites" :key="s.id" :value="s.id">{{ s.name }}（{{ s.action_count }} 动作）</option>
+          </select></div>
+        <button class="primary" :disabled="creatingBusy" @click="createSprite">
+          {{ creatingBusy ? '创建中…' : '创建' }}</button>
+        <button :disabled="creatingBusy" @click="creating = false">取消</button>
+      </div>
+      <div v-if="fromSprite" class="row" style="gap:12px;align-items:center;margin:6px 0 0">
+        <label class="chk"><input type="checkbox" v-model="copyFirstFrames" /> 复制首帧图</label>
+        <label class="chk" title="含正面/背面立绘标记；换角色时通常不勾"><input type="checkbox" v-model="copyRefs" /> 复制参考图库</label>
+        <span class="hint">
+          将复制「{{ fromSpriteObj?.name }}」的 {{ fromSpriteObj?.action_count }} 个动作骨架
+          （动作名、模板绑定、提示词与参数记忆、工艺/导出预设）；素材视频、帧、抠图与导出不复制。</span>
+      </div>
     </div>
 
     <div v-if="loading" class="hint" style="padding:40px;text-align:center">加载中...</div>
@@ -238,6 +280,7 @@ onMounted(load)
 .count { font-size: 13px; color: var(--text-dim); font-weight: 400; }
 .search { width: 170px; }
 .spacer { flex: 1; }
+.chk { display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer; }
 .create-bar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: 5px;
