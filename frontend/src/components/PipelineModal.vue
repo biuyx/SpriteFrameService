@@ -16,11 +16,10 @@ const STEPS = [
   { key: 'generate', label: '视频生成' },
   { key: 'extract', label: '抽帧' },
   { key: 'matting', label: '抠图' },
-  { key: 'outline', label: '描边', hint: '需在「图像处理」里保存精灵描边预设，否则整批跳过' },
-  { key: 'export', label: '导出' },
+  { key: 'export', label: '导出', hint: '按精灵预设在导出时应用缩放与描边，不改帧文件' },
 ]
 const stepOn = ref({ firstframe: true, generate: true, extract: true, matting: true,
-                     outline: true, export: true })
+                     export: true })
 // 角色级收口：这一批全部跑完后自动导出整角色的 Spine 资源
 const spineOn = ref(false)
 const force = ref(false)               // 强制重做已完成步骤
@@ -79,8 +78,8 @@ async function start() {
       force: force.value ? steps.value : [], set_id: setId.value || null,
       pause_after_firstframe: pauseAfterFf.value,
       spine: spineOn.value,
-      // 只给画布、不给额外缩放：帧压进 128 画布即可，结果不受源帧尺寸影响
-      spine_options: spineOn.value ? { scale: 1.0, canvas: 128 } : null,
+      // 尺寸只由画布决定；描边不传则由后端取精灵预设
+      spine_options: spineOn.value ? { canvas: 128 } : null,
     })
     skippedRows.value = r.skipped
     if (r.spine) toast(r.spine.message)
@@ -185,7 +184,7 @@ async function resume(list) {
               <input type="checkbox" v-model="spineOn" /> 完成后导出 Spine 资源</label>
           </div>
           <p v-if="spineOn" class="hint" style="margin:6px 0 0">
-            收口按整个角色导出（不只这一批），帧统一压进 128 画布。
+            收口按整个角色导出（不只这一批），帧统一压进 128 画布，描边按精灵预设在压进画布后应用。
             全部动作跑完才会触发；中途有失败的就不导，补跑完成后自动接上。
           </p>
         </div>
@@ -214,7 +213,8 @@ async function resume(list) {
         </div>
         <p class="hint" style="margin:6px 0 0">
           ▶ 将执行 · ⏭ 已完成跳过 · ⛔ 阻塞（悬停看原因）。可执行 {{ runnable.length }}/{{ plans.length }} 个；
-          预计消耗：生图 {{ cost.images }} 张、视频 {{ cost.videos }} 个。</p>
+          预计消耗：生图 {{ cost.images }} 张、视频 {{ cost.videos }} 个。<br>
+          缩放与描边不是独立步骤——在「图像处理」里存成精灵预设后，导出时自动应用（先缩放后描边），帧文件保持原分辨率。</p>
         <div class="modal-foot">
           <button class="primary" :disabled="!runnable.length || planning" @click="start">
             开始执行（{{ runnable.length }} 个）</button>

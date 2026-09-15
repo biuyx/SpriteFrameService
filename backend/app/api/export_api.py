@@ -40,6 +40,99 @@ def _safe_child(base: Path, *parts: str) -> Path:
     return target_r
 
 
+def apply_size_ops(images: list, scale_cfg, outline_cfg, log=None) -> list:
+    """导出时的 缩放 → 描边，返回新图像列表，不改原数组。
+
+    顺序固定：先定稿尺寸再描边，所以描边宽度填多少，成品里就是多少像素。
+    描边在缩放之后做，一批帧统一扩同一个边量，帧间尺寸与基线保持一致。
+    """
+    import numpy as np
+    from PIL import Image
+
+    from app.api.image_ops import _ALGO_MAP
+
+    out = list(images)
+
+    if scale_cfg is not None and getattr(scale_cfg, "enabled", False):
+        first = next((im for im in out if im is not None), None)
+        if first is not None:
+            algo = _ALGO_MAP.get(scale_cfg.algorithm, Image.Resampling.LANCZOS)
+            h0, w0 = first.shape[:2]
+
+            def target(im):
+                # 按比例：每帧各按自身尺寸缩，帧间尺寸有差异时不会被强行拉齐；
+                # 固定尺寸：全部拉到同一个目标，保证精灵图每格一致
+                if scale_cfg.mode == "percent":
+                    k = scale_cfg.percent / 100.0
+                    h, w = im.shape[:2]
+                    return max(1, int(w * k)), max(1, int(h * k))
+                return max(1, scale_cfg.width), max(1, scale_cfg.height)
+
+            changed = False
+            new = []
+            for im in out:
+                if im is None:
+                    new.append(im)
+                    continue
+                tw, th = target(im)
+                if (tw, th) == (im.shape[1], im.shape[0]):
+                    new.append(im)
+                    continue
+                new.append(np.array(Image.fromarray(im).resize((tw, th), algo)))
+                changed = True
+            if changed:
+                out = new
+                t0 = target(first)
+                if log:
+                    log(f"缩放 {w0}x{h0}→{t0[0]}x{t0[1]}")
+
+    if (outline_cfg is not None and getattr(outline_cfg, "enabled", False)
+            and outline_cfg.width > 0):
+        from app.core.outline import add_outline, pad_rgba, required_pad
+        rgba = [im for im in out if im is not None and im.ndim == 3 and im.shape[2] == 4]
+        if rgba:
+            pad = 0
+            if outline_cfg.auto_pad and outline_cfg.position in ("outer", "center"):
+                pad = required_pad([im[:, :, 3] for im in rgba], outline_cfg.width,
+                                   outline_cfg.alpha_threshold)
+            new = []
+            for im in out:
+                if im is None or im.ndim != 3 or im.shape[2] != 4:
+                    new.append(im)
+                    continue
+                src = pad_rgba(im, pad) if pad else im
+                new.append(add_outline(src, outline_cfg.width, tuple(outline_cfg.color),
+                                       outline_cfg.opacity, outline_cfg.position,
+                                       outline_cfg.corner, outline_cfg.antialias,
+                                       outline_cfg.alpha_threshold))
+            out = new
+            if log:
+                log(f"描边 {outline_cfg.width}px" + (f"（扩边 {pad}px）" if pad else ""))
+        elif log:
+            log("跳过描边：没有 RGBA 帧（需先抠图）")
+    return out
+
+
+def _apply_to_frames(frames: list, cfg, ctx):
+    """把导出缩放/描边应用到帧副本上（原帧对象与磁盘文件都不动）。"""
+    scale_cfg, outline_cfg = getattr(cfg, "scale", None), getattr(cfg, "outline", None)
+    on = (scale_cfg is not None and scale_cfg.enabled) or \
+         (outline_cfg is not None and outline_cfg.enabled and outline_cfg.width > 0)
+    if not on:
+        return frames, []
+    notes = []
+    images = [f.display_image if f.display_image is not None else f.image for f in frames]
+    result = apply_size_ops(images, scale_cfg, outline_cfg, notes.append)
+    if notes:
+        ctx.report(25, " / ".join(notes))
+    copies = []
+    for f, im in zip(frames, result):
+        c = f.model_copy()
+        c.processed_image = im
+        copies.append(c)
+    return copies, notes
+
+
 def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
     """导出任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
     export_dir = session.storage.export_dir(export_name)
@@ -62,6 +155,9 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
     if lt.enabled and len(frames) > 1:
         frames = apply_transition_to_frame_data(frames, lt.count, lt.mode)
 
+    # 缩放 / 描边：同样只作用于导出副本，帧文件保持原样
+    frames, size_notes = _apply_to_frames(frames, cfg, ctx)
+
     ctx.report(30, "开始导出...")
     exporter = Exporter()
     main_path, info = exporter.export(frames, cfg)
@@ -76,6 +172,7 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
                         if hasattr(config.format, "value") else str(config.format),
                         "name": export_name,
                         "loop_transition": lt.enabled,
+                        "size_ops": size_notes,
                         "frame_indices": indices[:50]},
                        {"files": files})
     return {

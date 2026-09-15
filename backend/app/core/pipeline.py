@@ -20,23 +20,27 @@ from app.api.deps import get_session
 from app.services.sprite_store import sprite_store
 from app.services.template_store import template_store
 
-# 流水线不做缩放：缩放会改写帧本身，和 Spine 导出的缩放叠乘，角色越缩越小。
-# 尺寸统一交给导出环节（Spine 导出的画布/缩放），帧始终保持原始分辨率。
-STEPS = ["firstframe", "generate", "extract", "matting", "outline", "export"]
+# 缩放与描边都不是独立工序：它们会改写帧本身，且与导出环节的尺寸处理叠乘。
+# 改由「导出」这一步按精灵预设非破坏性地应用（缩放 → 描边），帧始终是原分辨率。
+STEPS = ["firstframe", "generate", "extract", "matting", "export"]
 STEP_LABEL = {"firstframe": "首帧", "generate": "视频生成", "extract": "抽帧",
-              "matting": "抠图", "outline": "描边", "export": "导出"}
+              "matting": "抠图", "export": "导出"}
 
-# 描边是可选工序：精灵预设里没开就整批跳过，不算阻塞
-OPTIONAL_STEPS = ("outline",)
+OPTIONAL_STEPS = ()
 
 # 上一步依赖关系（plan 放行「将由上一步产出」用）
 PREV_STEP = {"generate": "firstframe", "extract": "generate", "matting": "extract",
-             "outline": "matting", "export": "matting"}
+             "export": "matting"}
 
-DEFAULT_OUTLINE_PRESET = {          # 未配置时的描边缺省（enabled=False 即不执行）
+DEFAULT_OUTLINE_PRESET = {          # 未配置时的描边缺省（enabled=False 即不描边）
     "enabled": False, "width": 2, "color": [0, 0, 0], "opacity": 1.0,
     "position": "outer", "corner": "round", "antialias": True,
     "alpha_threshold": 128, "auto_pad": True,
+}
+
+DEFAULT_SCALE_PRESET = {            # 未配置时的缩放缺省（enabled=False 即原尺寸导出）
+    "enabled": False, "mode": "percent", "percent": 100,
+    "width": 128, "height": 128, "algorithm": "lanczos",
 }
 
 
@@ -155,20 +159,6 @@ def _preset(sprite_id: str, key: str, default: dict) -> dict:
     return {**default, **((sp.get("preset") or {}).get(key) or {})}
 
 
-def check_outline(sprite_id: str, action: dict, opts: dict, session=None):
-    cfg = _preset(sprite_id, "outline", DEFAULT_OUTLINE_PRESET)
-    if not cfg.get("enabled"):
-        raise StepDisabled("精灵未启用描边预设")
-    if float(cfg.get("width") or 0) <= 0:
-        raise StepDisabled("描边宽度为 0")
-    session = session or get_session(action["id"])
-    if session.frame_manager.frame_count == 0:
-        raise StepBlocked("无帧（将由上一步抽出）")
-    if not any(f.has_processed for f in session.frame_manager.frames):
-        raise StepBlocked("没有已抠图的帧（将由上一步生成）")
-    return {"width": cfg["width"], "position": cfg["position"]}
-
-
 def check_export(sprite_id: str, action: dict, opts: dict, session=None):
     session = session or get_session(action["id"])
     frames = session.frame_manager.frames
@@ -179,20 +169,6 @@ def check_export(sprite_id: str, action: dict, opts: dict, session=None):
     sp = sprite_store.get_sprite(sprite_id)
     out = (sp.get("preset") or {}).get("output") or DEFAULT_OUTPUT_PRESET
     return {"format": out.get("format", "frames")}
-
-
-def _last_ops(session) -> dict:
-    """各工序在工序记录里最后一次出现的位置（没出现为 -1）。
-
-    描边/缩放没有磁盘产物可判定，用工序记录的先后顺序判断是否「还有效」：
-    重新抠图会覆盖处理图，此后的描边记录才算数。
-    """
-    try:
-        from app.services import recipe
-        ops = [s.get("op") for s in recipe.read(session).get("steps", [])]
-    except Exception:
-        return {}
-    return {op: i for i, op in enumerate(ops)}     # 同名保留最后一次
 
 
 def _is_done(step: str, sprite_id: str, action: dict, session=None) -> bool:
@@ -207,17 +183,6 @@ def _is_done(step: str, sprite_id: str, action: dict, session=None) -> bool:
         return len(frames) > 0
     if step == "matting":
         return bool(frames) and all(f.has_processed for f in frames)
-    if step == "outline":
-        if not frames:
-            return False
-        pos = _last_ops(session)
-        mine = pos.get("outline", -1)
-        if mine < 0:
-            return False
-        # 抽帧/抠图/手工缩放/历史回退之后动过的话，之前那次描边就失效了。
-        # 回退不会删工序记录，所以必须把 revert 也算进来，否则会误判为已完成。
-        return mine > max(pos.get("background", -1), pos.get("extract", -1),
-                          pos.get("scale", -1), pos.get("revert", -1))
     if step == "export":
         s = sprite_store._action_summary(sprite_id, action["id"])
         return bool(s.get("export_count"))
@@ -246,7 +211,7 @@ def plan_action(sprite_id: str, action: dict, opts: dict) -> dict:
         try:
             checker = {"firstframe": check_firstframe, "generate": check_generate,
                        "extract": check_extract, "matting": check_matting,
-                       "outline": check_outline, "export": check_export}[step]
+                       "export": check_export}[step]
             info = (checker(sprite_id, action, opts) if step in ("firstframe", "generate")
                     else checker(sprite_id, action, opts, session))
             result[step] = {"status": "run", **info}
@@ -381,16 +346,6 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
             _save_state(sprite_id, action_id, state)
             stage(i, STEP_LABEL[step] + "…")
 
-            # 可选工序未启用：跳过，不影响后续步骤
-            if step in OPTIONAL_STEPS:
-                try:
-                    check_outline(sprite_id, action, opts, session)
-                except StepDisabled as e:
-                    state.setdefault("skipped", {})[step] = str(e)
-                    state["current"] = None
-                    _save_state(sprite_id, action_id, state)
-                    continue
-
             if step == "firstframe":
                 from app.core.first_frame_generator import run_gen_first_frame
                 info = check_firstframe(sprite_id, action, opts)
@@ -447,20 +402,6 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                     with _local_gate, session.lock:
                         run_bg_remove(session, indices, "ai", params, _Sub(i))
                 done.append(step); state["done"] = done
-            elif step == "outline":
-                from app.api.image_ops import run_outline
-                from app.api.schemas import OutlineParams
-                cfg = _preset(sprite_id, "outline", DEFAULT_OUTLINE_PRESET)
-                check_outline(sprite_id, action, opts, session)
-                params = OutlineParams(**{k: v for k, v in cfg.items()
-                                          if k in OutlineParams.model_fields})
-                indices = [f.index for f in session.frame_manager.frames
-                           if f.has_processed]
-                if indices:
-                    with _local_gate, session.lock:
-                        run_outline(session, indices, params,
-                                    bool(cfg.get("auto_pad", True)), _Sub(i))
-                done.append(step); state["done"] = done
             elif step == "export":
                 from app.api.export_api import run_export
                 from app.models.export_config import ExportConfig
@@ -471,8 +412,12 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 name = _sanitize(pattern.replace("{sprite}", sp.get("name", "sprite"))
                                  .replace("{action}", action.get("name", "action")))
                 cfg = ExportConfig(**{k: v for k, v in out.items()
-                                      if k not in ("output_path", "output_name", "frame_indices")},
-                                   output_name=name)
+                                      if k not in ("output_path", "output_name",
+                                                   "frame_indices", "scale", "outline")},
+                                   output_name=name,
+                                   scale=_preset(sprite_id, "scale", DEFAULT_SCALE_PRESET),
+                                   outline=_preset(sprite_id, "outline",
+                                                   DEFAULT_OUTLINE_PRESET))
                 indices = [f.index for f in session.frame_manager.frames if f.has_processed]
                 with _local_gate, session.lock:
                     run_export(session, cfg, indices, name, _Sub(i))

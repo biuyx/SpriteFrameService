@@ -7,16 +7,16 @@ import api from '../api'
 const emit = defineEmits(['close'])
 const store = useStore()
 
-// 预设：与既有工程（efRenter1101，Spine 3.8.99）一致
+// 尺寸只由画布决定：帧等比压进画布，结果与源帧分辨率无关，也不会和别处的缩放叠乘
 const PRESETS = {
-  efrenter: { label: '既有工程同款（0.4 缩放 · 128 画布）', scale: 0.4, canvas: 128 },
-  full: { label: '原尺寸（320 画布）', scale: 1, canvas: 320 },
-  custom: { label: '自定义', scale: 1, canvas: null },
+  efrenter: { label: '既有工程同款（128 画布）', canvas: 128 },
+  big: { label: '256 画布', canvas: 256 },
+  full: { label: '320 画布', canvas: 320 },
+  custom: { label: '自定义', canvas: null },
 }
 
 const preset = ref('efrenter')
 const name = ref('')
-const scale = ref(0.4)
 const canvas = ref(128)
 const fps = ref(12)
 const loop = ref(true)
@@ -34,12 +34,16 @@ const result = ref(null)
 function applyPreset(k) {
   const p = PRESETS[k]
   if (!p || k === 'custom') return
-  scale.value = p.scale
   canvas.value = p.canvas
 }
 
+// 描边取精灵预设，在压进画布之后执行——填几 px 成品就是几 px
+const outlinePreset = computed(() => store.currentSprite?.preset?.outline || null)
+const outlineOn = ref(true)
+
 onMounted(async () => {
   name.value = store.currentSprite?.name || ''
+  outlineOn.value = !!outlinePreset.value?.enabled
   try {
     const r = await api.spinePreview(store.currentSprite.id)
     items.value = r.items
@@ -76,12 +80,15 @@ async function run() {
     name: name.value.trim() || undefined,
     action_ids: selected.value.map(i => i.action_id),
     fps: fps.value,
-    scale: scale.value,
     canvas: canvas.value || null,
     frame_pattern: pattern.value.trim() || '{anim}_{i:04d}',
     start_index: startIndex.value,
     loop: loop.value,
     atlas: atlas.value,
+    // 不勾就显式关掉，别让后端回落到精灵预设
+    outline: outlineOn.value && outlinePreset.value
+      ? { ...outlinePreset.value, enabled: true }
+      : { enabled: false },
   }
   try {
     await startJob(() => api.spineExport(store.currentSprite.id, payload), {
@@ -124,12 +131,22 @@ function download() {
               <option v-for="(p, k) in PRESETS" :key="k" :value="k">{{ p.label }}</option>
             </select>
           </div>
-          <div class="field inline"><label>缩放</label>
-            <input type="number" v-model.number="scale" step="0.05" min="0.05" max="4"
-                   style="width:70px" @input="preset = 'custom'" /></div>
           <div class="field inline"><label>画布</label>
             <input type="number" v-model.number="canvas" min="16" max="4096"
                    style="width:80px" placeholder="不统一" @input="preset = 'custom'" /></div>
+        </div>
+        <div class="ops-row">
+          <label class="chk" :class="{ off: !outlinePreset }"
+                 title="描边在压进画布之后执行，宽度就是成品的实际像素宽">
+            <input type="checkbox" v-model="outlineOn" :disabled="!outlinePreset" />
+            应用描边预设</label>
+          <span v-if="outlinePreset" class="hint">
+            {{ outlinePreset.width }}px ·
+            RGB({{ (outlinePreset.color || []).join(',') }}) ·
+            {{ outlinePreset.position }}
+            <template v-if="!outlinePreset.enabled">（预设当前是关闭的，这里可临时启用）</template>
+          </span>
+          <span v-else class="hint">该精灵还没有描边预设——到「图像处理 → 描边」存一个</span>
         </div>
         <div class="ops-row">
           <div class="field inline"><label>默认帧率</label>
@@ -183,6 +200,8 @@ function download() {
 
         <div v-if="result" class="result-box">
           ✓ 导出完成：{{ result.animations.length }} 个动画 / {{ result.frames }} 帧
+          <template v-if="result.canvas">· 画布 {{ result.canvas }}</template>
+          <template v-if="result.outline">· 描边 {{ result.outline.width }}px</template>
           <template v-if="result.atlas">· 图集 {{ result.atlas.size }}（{{ result.atlas.regions }} 区域）</template>
           <div class="dim" style="margin-top:4px">{{ result.dir }}</div>
           <div v-if="result.skipped?.length" class="warn-text" style="margin-top:4px">

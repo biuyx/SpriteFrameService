@@ -93,6 +93,29 @@ class LoopTransitionConfig(BaseModel):
     mode: str = Field(default="blend", description="blend=像素混合 / align=轮廓对齐")
 
 
+class ExportScaleConfig(BaseModel):
+    """导出缩放（非破坏性：只作用于导出的副本，帧文件保持原分辨率）"""
+    enabled: bool = Field(default=False, description="是否启用")
+    mode: str = Field(default="percent", description="percent=按比例 / size=固定尺寸")
+    percent: float = Field(default=100, gt=0, le=400, description="缩放比例(%)")
+    width: int = Field(default=128, ge=1, description="目标宽(size 模式)")
+    height: int = Field(default=128, ge=1, description="目标高(size 模式)")
+    algorithm: str = Field(default="lanczos", description="缩放算法")
+
+
+class ExportOutlineConfig(BaseModel):
+    """导出描边（非破坏性，且在缩放之后执行——宽度即成品实际像素宽）"""
+    enabled: bool = Field(default=False, description="是否启用")
+    width: float = Field(default=2, ge=0, le=32, description="描边宽度(px，成品像素)")
+    color: Tuple[int, int, int] = Field(default=(0, 0, 0), description="描边颜色 RGB")
+    opacity: float = Field(default=1.0, ge=0, le=1, description="不透明度")
+    position: str = Field(default="outer", description="outer/inner/center")
+    corner: str = Field(default="round", description="round 圆角 / miter 尖角")
+    antialias: bool = Field(default=True, description="抗锯齿；像素风应关闭")
+    alpha_threshold: int = Field(default=128, ge=1, le=255, description="视为实心的 alpha 阈值")
+    auto_pad: bool = Field(default=True, description="角色贴边时自动扩透明边")
+
+
 class ExportConfig(BaseModel):
     """导出配置模型"""
     format: ExportFormat = Field(default=ExportFormat.SPRITE_SHEET, description="导出格式")
@@ -109,6 +132,16 @@ class ExportConfig(BaseModel):
     loop_transition: LoopTransitionConfig = Field(
         default_factory=LoopTransitionConfig,
         description="循环过渡配置"
+    )
+
+    # 尺寸与描边：导出时按 缩放 → 描边 的顺序非破坏性应用，帧文件不受影响
+    scale: ExportScaleConfig = Field(
+        default_factory=ExportScaleConfig,
+        description="导出缩放配置"
+    )
+    outline: ExportOutlineConfig = Field(
+        default_factory=ExportOutlineConfig,
+        description="导出描边配置"
     )
 
     # 精灵图配置（WEBP 格式下为 None 时表示导出单独的 WebP 帧）

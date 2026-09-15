@@ -34,8 +34,12 @@ class SpineExportRequest(BaseModel):
     name: Optional[str] = Field(default=None, description="骨架/图集名，缺省用精灵名")
     action_ids: Optional[List[str]] = Field(default=None, description="导出的动作（缺省全部）")
     fps: float = Field(12, gt=0, le=60, description="未记录抽帧帧率时的默认值")
-    scale: float = Field(1.0, gt=0, le=4, description="导出缩放（既有工程为 0.4）")
-    canvas: Optional[int] = Field(None, ge=16, le=4096, description="统一方形画布边长")
+    # 尺寸只由画布决定：帧等比压进画布，结果与源帧分辨率无关。
+    # 不再提供额外缩放系数——它会和画布的兜底缩放叠乘，角色越缩越小。
+    canvas: Optional[int] = Field(128, ge=16, le=4096, description="统一方形画布边长")
+    outline: Optional[dict] = Field(
+        default=None,
+        description="描边（压进画布之后执行，宽度即成品实际像素宽）；缺省用精灵预设")
     frame_pattern: str = Field("{anim}_{i:04d}", description="帧命名格式")
     start_index: int = Field(1, ge=0, description="帧号起始值（既有工程从 1 开始）")
     loop: bool = Field(True, description="动画末尾回到首帧（循环衔接）")
@@ -106,6 +110,15 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
         shutil.rmtree(out, ignore_errors=True)
     (out / "images").mkdir(parents=True, exist_ok=True)
 
+    # 描边参数：请求里给了就用，否则取精灵预设；两边都没有就不描
+    from app.models.export_config import ExportOutlineConfig
+    ocfg = req.outline
+    if ocfg is None:
+        ocfg = ((sprite_store.get_sprite(sprite_id).get("preset") or {})
+                .get("outline") or {})
+    outline_cfg = ExportOutlineConfig(**{k: v for k, v in ocfg.items()
+                                         if k in ExportOutlineConfig.model_fields})
+
     anims, atlas_items, skipped = [], [], []
     total = len(action_ids)
     for n, aid in enumerate(action_ids):
@@ -125,7 +138,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
             skipped.append({"action_id": aid, "name": action.get("name"),
                             "reason": "无帧"})
             continue
-        names, size = [], None
+        imgs = []
         for fr in frames:
             if req.use_processed:
                 img = session.load_display_array(fr.index)
@@ -137,7 +150,16 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
                 img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGBA)
             elif img.shape[2] == 3:
                 img = np.dstack([img, np.full(img.shape[:2], 255, np.uint8)])
-            img = fit_canvas(img, req.canvas, req.scale)
+            imgs.append(fit_canvas(img, req.canvas, 1.0))
+        session.clear_frame_arrays()
+
+        # 描边在压进画布之后：填几 px，成品里就是几 px
+        if outline_cfg.enabled and outline_cfg.width > 0 and imgs:
+            from app.api.export_api import apply_size_ops
+            imgs = apply_size_ops(imgs, None, outline_cfg)
+
+        names, size = [], None
+        for img in imgs:
             fname = frame_name(anim, req.start_index + len(names), req.frame_pattern)
             ok, buf = cv2.imencode(".png", cv2.cvtColor(img, cv2.COLOR_RGBA2BGRA))
             if not ok:
@@ -147,7 +169,6 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
             size = (img.shape[1], img.shape[0])
             if req.atlas:
                 atlas_items.append((fname, img))
-        session.clear_frame_arrays()
         if not names:
             skipped.append({"action_id": aid, "name": action.get("name"),
                             "reason": "帧图像不可读"})
@@ -183,6 +204,9 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
                         "fps": a["fps"], "size": [a["width"], a["height"]]}
                        for a in anims],
         "atlas": atlas_info, "skipped": skipped,
+        "canvas": req.canvas,
+        "outline": ({"width": outline_cfg.width, "color": list(outline_cfg.color)}
+                    if outline_cfg.enabled and outline_cfg.width > 0 else None),
         "files": sorted(p.name for p in out.iterdir() if p.is_file()),
     }
 

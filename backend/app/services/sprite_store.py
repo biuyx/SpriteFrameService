@@ -181,8 +181,9 @@ class SpriteStore:
             "preset": {
                 "matting": {"model": _default_matting_model(), "alpha_threshold": 128,
                             "erode": 1, "feather": 0},
-                # 描边是可选工序：enabled 打开后自动流水线才会执行。
-                # 缩放不入流水线——改写帧会和导出环节的缩放叠乘，尺寸统一交给导出。
+                # 缩放/描边在导出时非破坏性应用（先缩放后描边），帧文件始终是原分辨率
+                "scale": {"enabled": False, "mode": "percent", "percent": 100,
+                          "width": 128, "height": 128, "algorithm": "lanczos"},
                 "outline": {"enabled": False, "width": 2, "color": [0, 0, 0],
                             "opacity": 1.0, "position": "outer", "corner": "round",
                             "antialias": True, "alpha_threshold": 128, "auto_pad": True},

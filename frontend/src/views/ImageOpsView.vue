@@ -82,43 +82,52 @@ const selected = computed(() =>
   store.frames.filter((f) => f.is_selected).map((f) => f.index)
 )
 
-// ---- 精灵级描边预设：存一次，自动流水线的「描边」步就按它对全角色执行 ----
-const presetBusy = ref(false)
+// ---- 精灵级导出预设：缩放/描边存一次，导出时对全角色非破坏性应用 ----
+const presetBusy = ref('')
+const LABEL = { outline: '描边', scale: '缩放' }
 
-async function savePreset() {
+function presetBody(kind) {
+  return kind === 'outline'
+    ? { ...outlineParams(), enabled: true, alpha_threshold: 128,
+        auto_pad: outline.value.auto_pad }
+    : { enabled: true, mode: scaleMode.value, percent: percent.value,
+        width: width.value, height: height.value, algorithm: algorithm.value }
+}
+
+async function savePreset(kind) {
   const sprite = store.currentSprite
   if (!sprite) return toast('没有当前精灵')
-  const body = { ...outlineParams(), enabled: true, alpha_threshold: 128,
-                 auto_pad: outline.value.auto_pad }
-  presetBusy.value = true
+  const body = presetBody(kind)
+  presetBusy.value = kind
   try {
-    await api.patchSprite(sprite.id, { preset: { outline: body } })
-    sprite.preset = { ...(sprite.preset || {}), outline: body }
-    toast(`已保存为「${sprite.name}」的描边预设，一键流水线会对全部动作自动执行`)
+    await api.patchSprite(sprite.id, { preset: { [kind]: body } })
+    sprite.preset = { ...(sprite.preset || {}), [kind]: body }
+    toast(`已保存为「${sprite.name}」的${LABEL[kind]}预设，导出时对全部动作自动应用（不改帧文件）`)
   } catch (e) {
     toast(`保存失败: ${e.message}`)
   } finally {
-    presetBusy.value = false
+    presetBusy.value = ''
   }
 }
 
-async function clearPreset() {
+async function clearPreset(kind) {
   const sprite = store.currentSprite
   if (!sprite) return
-  const cur = (sprite.preset || {}).outline || {}
-  presetBusy.value = true
+  const cur = (sprite.preset || {})[kind] || {}
+  presetBusy.value = kind
   try {
-    await api.patchSprite(sprite.id, { preset: { outline: { ...cur, enabled: false } } })
-    sprite.preset = { ...(sprite.preset || {}), outline: { ...cur, enabled: false } }
-    toast('已关闭描边预设，流水线将跳过该步')
+    await api.patchSprite(sprite.id, { preset: { [kind]: { ...cur, enabled: false } } })
+    sprite.preset = { ...(sprite.preset || {}), [kind]: { ...cur, enabled: false } }
+    toast(`已关闭${LABEL[kind]}预设，导出时不再应用`)
   } catch (e) {
     toast(`操作失败: ${e.message}`)
   } finally {
-    presetBusy.value = false
+    presetBusy.value = ''
   }
 }
 
 const outlinePresetOn = computed(() => !!store.currentSprite?.preset?.outline?.enabled)
+const scalePresetOn = computed(() => !!store.currentSprite?.preset?.scale?.enabled)
 
 const esrganModels = computed(() => store.capabilities?.realesrgan || [])
 const esrganAvailable = computed(() =>
@@ -181,10 +190,10 @@ async function runEnhance() {
     <div>
       <div class="panel">
         <h3>描边</h3>
-        <p class="desc">给已抠图的帧加纯色描边（抠图之后、导出之前执行）。<br>
-          描边按<b>当前帧分辨率</b>算：导出 Spine 时若把帧压进更小的画布，描边会同比变细。
-          想要成品 3px、导出缩到四分之一，这里就得填 12px。<br>
-          重复执行会在已有描边外再描一圈——要改参数请先在「历史回退」撤销上一次描边。</p>
+        <p class="desc">给已抠图的帧加纯色描边。<b>推荐存成导出预设</b>：导出时在缩放之后应用，
+          填几 px 成品就是几 px，且不改帧文件。<br>
+          下面的「描边」按钮是就地改帧（会覆盖抠图结果、重复执行会再描一圈），
+          只在需要把描边烧进帧里时用，撤销走「历史回退」。</p>
         <div class="row">
           <div class="field inline"><label>宽度(px)</label>
             <input type="number" v-model.number="outline.width" :min="0.5" :max="16" step="0.5" style="width:70px" /></div>
@@ -216,13 +225,13 @@ async function runEnhance() {
           <span v-if="!processedCount" class="hint warn">尚无已抠图的帧</span>
         </div>
         <div class="row preset-row">
-          <button class="small" :disabled="presetBusy" @click="savePreset">
-            保存为精灵预设</button>
-          <button v-if="outlinePresetOn" class="small" :disabled="presetBusy"
-                  @click="clearPreset">关闭预设</button>
+          <button class="small" :disabled="presetBusy === 'outline'" @click="savePreset('outline')">
+            存为导出描边预设</button>
+          <button v-if="outlinePresetOn" class="small" :disabled="presetBusy === 'outline'"
+                  @click="clearPreset('outline')">关闭预设</button>
           <span v-if="outlinePresetOn" class="hint ok-text">
-            ✓ 一键流水线会对全部动作自动描边（抠图之后、导出之前）</span>
-          <span v-else class="hint">存成预设后，一键流水线的「描边」步骤才会执行</span>
+            ✓ 导出时对全角色自动描边（缩放之后执行，不改帧文件）</span>
+          <span v-else class="hint">存成预设后，导出时自动应用；上面的按钮是就地改帧，会覆盖抠图结果</span>
         </div>
         <div v-if="outlineImg" class="preview-box" style="margin-top:8px;max-height:260px">
           <img :src="outlineImg" style="max-height:240px" />
@@ -252,10 +261,18 @@ async function runEnhance() {
             </select>
           </div>
         </div>
-        <button class="primary" @click="runScale">缩放选中帧</button>
-        <p class="hint" style="margin-top:8px">
-          缩放不进流水线：它会改写帧本身，和导出时的缩放叠乘，角色只会越缩越小。
-          出 Spine 资源时在导出弹窗里设画布和缩放即可，帧保持原始分辨率。
+        <button class="primary" @click="runScale">缩放选中帧（就地改帧）</button>
+        <div class="row preset-row">
+          <button class="small" :disabled="presetBusy === 'scale'" @click="savePreset('scale')">
+            存为导出缩放预设</button>
+          <button v-if="scalePresetOn" class="small" :disabled="presetBusy === 'scale'"
+                  @click="clearPreset('scale')">关闭预设</button>
+          <span v-if="scalePresetOn" class="hint ok-text">
+            ✓ 导出时对全角色自动缩放（在描边之前，不改帧文件）</span>
+          <span v-else class="hint">存成预设后，导出时自动应用，帧文件保持原分辨率</span>
+        </div>
+        <p class="hint" style="margin-top:6px">
+          导出 Spine 时尺寸由画布决定，这里的缩放预设不参与，不会叠乘。
         </p>
       </div>
 

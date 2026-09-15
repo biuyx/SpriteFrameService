@@ -8,6 +8,20 @@ const store = useStore()
 const format = ref('sprite_sheet')
 const outputName = ref('sprite')
 
+// 精灵预设里启用的尺寸/描边处理，导出时按此顺序非破坏性应用
+const sizeOps = computed(() => {
+  const p = store.currentSprite?.preset || {}
+  const ops = []
+  if (p.scale?.enabled) {
+    ops.push('缩放 ' + (p.scale.mode === 'percent'
+      ? `${p.scale.percent}%` : `${p.scale.width}x${p.scale.height}`))
+  }
+  if (p.outline?.enabled && p.outline.width > 0) {
+    ops.push(`描边 ${p.outline.width}px`)
+  }
+  return ops
+})
+
 const sprite = reactive({
   layout: 'grid', columns: null, padding: 0,
   frame_width: null, frame_height: null,
@@ -47,6 +61,9 @@ function buildConfig() {
       count: store.loopTransition.count,
       mode: store.loopTransition.mode,
     },
+    // 尺寸与描边的唯一来源是精灵预设，导出时非破坏性应用（先缩放后描边）
+    scale: store.currentSprite?.preset?.scale || { enabled: false },
+    outline: store.currentSprite?.preset?.outline || { enabled: false },
   }
   if (format.value === 'sprite_sheet') {
     return {
@@ -141,6 +158,9 @@ async function savePreset() {
   if (!store.currentSprite) return
   const cfg = buildConfig()
   delete cfg.output_name
+  // 缩放/描边单独存在 preset.scale / preset.outline，不在导出预设里留副本
+  delete cfg.scale
+  delete cfg.outline
   const output = { ...cfg, name_pattern: namePattern.value.trim() || '{sprite}_{action}' }
   const sp = await api.patchSprite(store.currentSprite.id, {
     preset: { ...(store.currentSprite.preset || {}), output } })
@@ -272,6 +292,15 @@ onMounted(refreshExports)
           </div>
         </div>
 
+        <p class="hint" style="margin:8px 0 0">
+          <template v-if="sizeOps.length">
+            导出时将应用（不改帧文件）：{{ sizeOps.join(' → ') }}。
+            在「图像处理」里可改这两个预设。
+          </template>
+          <template v-else>
+            未设置缩放/描边预设，按帧的原样导出。需要的话到「图像处理」里存一个。
+          </template>
+        </p>
         <div class="row">
           <button class="primary" @click="doExport">开始导出</button>
         </div>
