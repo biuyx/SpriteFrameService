@@ -5,9 +5,10 @@
 """
 from __future__ import annotations
 
-import threading
 from typing import Optional, Tuple
 
+from app.config import get_settings
+from app.services.concurrency import ConcurrencyGate, heartbeat
 from app.services.ffset_store import ffset_store
 from app.services.prompt_store import BUILTIN, resolve_for_action
 from app.services.sprite_store import sprite_store
@@ -15,8 +16,10 @@ from app.services.template_store import template_store
 
 DEFAULT_PROMPT = BUILTIN["first_frame"]
 
-# 生图并发闸门（秒级请求，小并发即可跑满）
-_gate = threading.Semaphore(3)
+# 生图并发闸门（秒级请求，小并发即可跑满）。
+# 用带上报的闸门而非裸信号量：批量首帧时排队的任务要显示「排队中」而不是
+# 「生图中」，且排队期间要能取消。
+_gate = ConcurrencyGate(lambda: get_settings().first_frame_max_concurrent, "生图")
 
 
 def action_key(action: dict) -> str:
@@ -78,15 +81,17 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
         meta = {"prompt_id": r["prompt_id"], "prompt_version": r["version"],
                 "prompt_name": r["name"], "source": r["source"]}
 
-    ctx.report(15, "生图中（Seedream）...")
-    with _gate:
+    # 先排队再报「生图中」：顺序反了会让排队中的任务谎称已在生图
+    with _gate.hold(ctx):
         if ctx.cancelled():
             raise RuntimeError("已取消")
-        try:
-            # 图序与提示词对应：图1=姿势参考，图2=角色立绘
-            data = generate_image(text, [ref, art])
-        except ArkImageError as e:
-            raise RuntimeError(str(e))
+        ctx.report(15, "生图中（Seedream）...")
+        with heartbeat(ctx, "生图中（Seedream）", start=15, end=80, expect=20):
+            try:
+                # 图序与提示词对应：图1=姿势参考，图2=角色立绘
+                data = generate_image(text, [ref, art])
+            except ArkImageError as e:
+                raise RuntimeError(str(e))
 
     ctx.report(85, "落盘...")
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)

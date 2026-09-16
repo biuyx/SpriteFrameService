@@ -1,7 +1,7 @@
 """视频生成 API：Seedance 生成、take 版本管理、并发闸门、重挂。"""
 from __future__ import annotations
 
-import threading
+
 import time
 from typing import Optional
 
@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import get_session
 from app.config import get_settings
+from app.services.concurrency import ConcurrencyGate
 from app.services.job_manager import job_manager
 from app.services.take_store import TakeStore
 
@@ -20,37 +21,9 @@ router = APIRouter(tags=["generate"])
 
 
 # ------------------------------------------------------------ 生成并发闸门
-class _ConcurrencyGate:
-    """限制同时进行中的生成任务数。上限每次现取（设置修改立即生效）。
-
-    超限的任务排队等待而不是拒绝——远端生成本来就要等几分钟，
-    多等一会儿比让用户重试友好；等待中可取消。
-    """
-
-    def __init__(self):
-        self._active = 0
-        self._cond = threading.Condition()
-
-    @property
-    def active(self) -> int:
-        return self._active
-
-    def acquire(self, ctx) -> None:
-        with self._cond:
-            while self._active >= max(1, get_settings().generate_max_concurrent):
-                ctx.report(1, f"排队中（生成并发已满 {self._active} 个）...")
-                if ctx.cancelled():
-                    raise RuntimeError("已取消")
-                self._cond.wait(timeout=2)
-            self._active += 1
-
-    def release(self) -> None:
-        with self._cond:
-            self._active = max(0, self._active - 1)
-            self._cond.notify_all()
-
-
-generate_gate = _ConcurrencyGate()
+# 闸门实现见 services/concurrency.py（与首帧生图共用：排队时上报且可取消）
+generate_gate = ConcurrencyGate(
+    lambda: get_settings().generate_max_concurrent, "生成")
 
 
 # ------------------------------------------------------------ 能力

@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import os
 import re
-import threading
 import time
 from typing import List, Optional
 
 from app.api.deps import get_session
+from app.services.concurrency import ConcurrencyGate
 from app.services.sprite_store import sprite_store
 from app.services.template_store import template_store
 
@@ -44,8 +44,10 @@ DEFAULT_SCALE_PRESET = {            # 未配置时的缩放缺省（enabled=Fals
 }
 
 
-# 本地重活并发（与 cpu 池规模一致），避免十几个动作同时抠图打爆机器
-_local_gate = threading.Semaphore(2)
+# 本地重活并发（与 cpu 池规模一致），避免十几个动作同时抠图打爆机器。
+# 用带上报的闸门而非裸信号量：批量跑时排队的动作要显示「排队中」，
+# 否则会停在上一条消息上，看着像卡住。
+_local_gate = ConcurrencyGate(lambda: 2, "本地处理")
 
 DEFAULT_OUTPUT_PRESET = {          # 精灵导出预设缺省：序列帧 PNG
     "format": "frames",
@@ -383,9 +385,12 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                     session, action, tpl,
                     state.get("model") or s.ark_model,
                     state.get("resolution") or "480p", "adaptive")
-                generate_gate.acquire(ctx)
+                # 用 _Sub(i)：排队上报要落在本步的进度区间里，
+                # 用外层 ctx 会把整条流水线的进度直接打回 1%
+                sub = _Sub(i)
+                generate_gate.acquire(sub)
                 try:
-                    run_generate(session, payload, _Sub(i))
+                    run_generate(session, payload, sub)
                 finally:
                     generate_gate.release()
                 session = get_session(action_id)
@@ -398,7 +403,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 if not rule:
                     raise StepBlocked("模板无抽帧规则")
                 end = min(float(rule["end"]), session.video_info.duration)
-                with _local_gate, session.lock:
+                with _local_gate.hold(_Sub(i)), session.lock:
                     run_extract(session, float(rule["start"]), end, float(rule["fps"]),
                                 rule.get("keep"), rule.get("total"), _Sub(i))
                 done.append(step); state["done"] = done
@@ -414,7 +419,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 indices = [f.index for f in frames
                            if step in force or not f.has_processed]
                 if indices:
-                    with _local_gate, session.lock:
+                    with _local_gate.hold(_Sub(i)), session.lock:
                         run_bg_remove(session, indices, "ai", params, _Sub(i))
                 done.append(step); state["done"] = done
             elif step == "export":
@@ -434,7 +439,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                                    outline=_preset(sprite_id, "outline",
                                                    DEFAULT_OUTLINE_PRESET))
                 indices = [f.index for f in session.frame_manager.frames if f.has_processed]
-                with _local_gate, session.lock:
+                with _local_gate.hold(_Sub(i)), session.lock:
                     run_export(session, cfg, indices, name, _Sub(i))
                 done.append(step); state["done"] = done
             _save_state(sprite_id, action_id, state)

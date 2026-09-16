@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     ark_image_model: str = "doubao-seedream-5-0-pro-260628"
     ark_timeout_seconds: int = 900   # 单次生成总超时
     generate_max_concurrent: int = 5  # 同时进行中的生成任务数上限（1~10）
+    first_frame_max_concurrent: int = 3  # 同时进行中的首帧生图数上限（1~10）
 
     # --- 处理 ---
     force_cpu: bool = False
