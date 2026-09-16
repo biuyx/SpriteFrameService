@@ -337,7 +337,33 @@ SPRITE_ALLOW_MODEL_DOWNLOAD=false  # 允许 RTMPose 缺模型时联网下载
 
 ---
 
-## 冒烟测试
+## 测试
+
+### 单元测试
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+92 个用例，约 7 秒跑完，不需要启动服务、不联网、不调用任何计费接口。
+数据目录由夹具指向临时目录，**不会碰到真实的 `data/`**（夹具会断言这一点，
+隔离失败就直接终止）。
+
+| 文件 | 覆盖 |
+| ---- | ---- |
+| `test_concurrency.py` | 并发闸门（上限、排队上报、排队中取消、许可不泄漏）、进度心跳 |
+| `test_job_manager.py` | 准入队列（排队不占线程池）、取消、失败后释放许可 |
+| `test_spine_export.py` | 帧命名、画布、图集裁剪与偏移、骨架结构与模板字段 |
+| `test_spine_import.py` | atlas 解析、帧名格式推断、JSON/skel 骨架、模板反解 |
+| `test_image_ops.py` | 描边几何与 alpha、导出时「缩放 → 描边」顺序与非破坏性 |
+| `test_pipeline.py` | 工序构成、导出处理摘要、闸门类型 |
+| `test_api.py` | 抽帧规则归属校验、Spine 产物列表与路径穿越防护 |
+
+依赖参考 Spine 工程的用例在文件缺失时自动跳过，不影响其他环境。
+
+### 冒烟测试（需要服务在跑）
 
 ```bash
 # 进程内（无需启动服务，需先安装 requirements-dev.txt）
