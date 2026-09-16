@@ -63,6 +63,10 @@ def import_template(req: ImportRequest):
     no_fps = [a["name"] for a in tpl["animations"] if not a.get("fps")]
     if no_fps:
         warnings.append(f"{len(no_fps)} 个动画没读出帧率，导出时用默认值")
+    if (tpl.get("skin_count") or 1) > 1:
+        names = "、".join(n for n in (tpl.get("skin_names") or []) if n)
+        warnings.append(f"参考工程有 {tpl['skin_count']} 套皮肤（{names}），"
+                        "导出只产出 default 一套——换装需在 Spine 里另行处理")
     if tpl.get("source_kind") == "skel":
         warnings.append("参考来自 .skel 二进制；如有 Spine 导出的 .json，"
                         "用它做参考更可靠")

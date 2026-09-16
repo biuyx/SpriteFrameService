@@ -534,6 +534,9 @@ def build_template(skeleton: dict, atlas: Optional[dict] = None,
     tpl = {
         "name": name or "导入的模板",
         "spine_version": skeleton.get("version") or "",
+        # 导出只产出一套 default 皮肤；参考工程有多套时导入端会给出警告
+        "skin_count": len(skeleton.get("skins") or []),
+        "skin_names": [sk.get("name") for sk in (skeleton.get("skins") or [])],
         "frame_pattern": pattern,
         "start_index": start if start is not None else 1,
         "canvas": canvas,

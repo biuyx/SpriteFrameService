@@ -3,7 +3,7 @@
 基于 [SpriteFrameStudio（小猫学游戏）](https://github.com/game-cat/SpriteFrameStudio) 重构的服务化版本：以 **FastAPI 后端服务 + REST API + Vue3 前端页面** 形态提供，去掉原项目中的视频生成（i2v / SmoothMix）模块（将另行实现）。
 
 - **部署目标**：Linux（venv + systemd）；开发可在 Windows 完成。
-- **核心能力**：视频抽帧、AI/颜色抠图、姿势/轮廓/特征/区域SSIM 分析、去相似帧、找循环帧、循环过渡、首尾补帧、描边、缩放/裁剪/边缘优化、RealESRGAN 增强、魔棒编辑、精灵图/GIF/WebP/Godot 导出、历史撤销。
+- **核心能力**：视频抽帧、AI/颜色抠图、姿势/轮廓/特征/区域SSIM 分析、去相似帧、找循环帧、循环过渡、首尾补帧、描边、缩放/裁剪/边缘优化、RealESRGAN 增强、魔棒编辑、精灵图/GIF/WebP/Godot 导出、**Spine 骨架 + 图集导出**、历史撤销。
 
 > ⚠️ 本项目基于 SpriteFrameStudio 开发，原作者：小猫学游戏，原项目协议 **CC BY 4.0**（可商用、可修改、需署名）。
 
@@ -15,7 +15,8 @@
 backend/                 FastAPI 后端（无 Qt 依赖）
   app/
     api/                  REST 路由：sessions/videos/frames/analysis/background/image/export/history/jobs/capabilities
-    core/                 移植的核心模块（抽帧/抠图/姿势/导出/魔棒/历史）
+    core/                 核心模块（抽帧/抠图/姿势/导出/魔棒/历史/描边/
+                          Spine 导出 spine_export、Spine 工程反解 spine_import）
     models/               pydantic 模型（帧/姿势/导出配置）
     services/             会话、帧落盘、后台任务管理
     utils/                image_utils（web）、pngquant（跨平台）
@@ -312,9 +313,11 @@ SPRITE_ALLOW_MODEL_DOWNLOAD=false  # 允许 RTMPose 缺模型时联网下载
 | 视频 | `POST /api/sessions/{id}/video`<br>`GET /api/sessions/{id}/video`<br>`GET /api/sessions/{id}/video/info` | 上传 / 预览流 / 元数据 |
 | 帧 | `POST .../frames/extract`<br>`GET .../frames`<br>`GET .../frames/{i}/image?type=raw\|processed\|preview`<br>`POST .../frames/selection`<br>`DELETE .../frames/{i}`<br>`POST .../frames/reorder`<br>`POST .../frames/loop-transition`<br>`POST .../frames/supplement` | 抽帧(任务) / 列表 / 图像 / 选择 / 删除 / 重排 / 循环过渡预览(GIF) / 首尾补帧 |
 | 分析 | `POST .../analysis/detect`<br>`GET .../analysis/{i}`<br>`GET .../analysis/{i}/overlay?mode=pose`<br>`POST .../analysis/remove-similar`<br>`POST .../analysis/find-loop` | 姿势/轮廓/特征/SSIM 检测与比对 |
-| 背景 | `POST .../background/test`<br>`POST .../background/remove`<br>`POST .../background/outline` | 单帧调参 / 批量抠图 / 描边 |
-| 图像 | `POST .../image/scale`<br>`POST .../image/crop-whitespace`<br>`POST .../image/optimize-edges`<br>`POST .../image/enhance`<br>`POST .../image/wand/select`<br>`POST .../image/wand/apply` | 缩放/裁剪/边缘/增强/魔棒 |
+| 背景 | `POST .../background/test`<br>`POST .../background/remove` | 单帧调参 / 批量抠图 |
+| 图像 | `POST .../image/outline`<br>`POST .../image/outline/test`<br>`POST .../image/scale`<br>`POST .../image/crop-whitespace`<br>`POST .../image/optimize-edges`<br>`POST .../image/enhance`<br>`POST .../image/wand/select`<br>`POST .../image/wand/apply` | 描边(批量/单帧预览)、缩放/裁剪/边缘/增强/魔棒。均为就地改帧，撤销走历史回退 |
 | 导出 | `POST .../export`<br>`GET .../export/list`<br>`GET .../export/{name}/download` | 精灵图/GIF/WebP/Godot，结果打包 zip |
+| Spine | `GET /api/sprites/{id}/spine/preview`<br>`POST /api/sprites/{id}/spine/export`<br>`GET /api/sprites/{id}/spine/exports`<br>`GET /api/sprites/{id}/spine/download?name=`<br>`DELETE /api/sprites/{id}/spine/exports/{name}` | 角色级：动画名预检 / 导出骨架+图集(任务) / 产物列表 / 下载 zip / 删除产物 |
+| Spine 模板 | `GET /api/spine-templates`<br>`POST /api/spine-templates/import`<br>`PATCH\|DELETE /api/spine-templates/{id}` | 从既有 Spine 工程反解导出约定，导出时照抄 |
 | 历史 | `GET .../history`<br>`POST .../history/revert` | 撤销/回退 |
 | 任务 | `GET /api/jobs`<br>`GET /api/jobs/{id}`<br>`POST /api/jobs/{id}/cancel` | 后台任务状态与取消 |
 
@@ -344,6 +347,69 @@ SPRITE_ALLOW_MODEL_DOWNLOAD=false  # 允许 RTMPose 缺模型时联网下载
 ```
 
 覆盖：会话→上传→抽帧→特征检测→去相似→抠图→缩放→找循环→历史回退→精灵图/GIF导出→下载→清理。
+
+---
+
+## Spine 资源导出
+
+把角色的全部序列帧打成 Spine 能直接打开的骨架数据与图集。产物：
+
+```
+{骨架名}.json     骨架数据（Spine 里 Import Data 选它）
+{骨架名}.atlas    图集索引
+{骨架名}.png      图集贴图
+images/           序列帧，按 {动画名}_{帧号} 命名
+```
+
+`.spine` 是私有二进制格式，官方既无 API 也无 CLI 能生成。需要工程文件时，
+在 Spine 里 **Import Data** 选上面的 JSON，再另存为 `.spine`。
+
+**动画名**从参考视频库取：每条模板有「Spine 动画名」字段，可逐条编辑，
+也可按变体名一键套用建议值（走路→walk1、工作→sit_work1…）。导出前会查重名。
+
+**尺寸只由画布决定**，帧等比压进方形画布，结果与源帧分辨率无关。
+不要再叠一层缩放系数——它会和画布的兜底缩放相乘，角色越缩越小。
+
+**描边**在压进画布之后执行，所以宽度填几 px，成品里就是几 px。
+参数取精灵的描边预设（在「图像处理」里存），导出弹窗可临时开关。
+
+### 导出模板：照抄既有工程的约定
+
+一套工程里有不少约定只存在于文件本身，不看就复现不出来：骨架版本、
+帧命名格式与起始帧号、附件的渲染尺寸、图集压缩比、每个动画的插槽名与
+对齐偏移。在导出弹窗里填参考工程的目录（或 `.json` / `.skel`）导入一次，
+之后导出选用该模板即可照抄。
+
+两个容易踩的点，都靠模板解决：
+
+- **附件的渲染尺寸 ≠ 图集里的贴图尺寸**。某工程附件声明 320×320，图集
+  `orig` 却是 128——打包时按 0.4 压过贴图，角色在游戏里仍按 320 渲染。
+  把附件尺寸设成导出尺寸，角色就会缩到 2.5 分之一
+- **骨骼与附件各带一层非零偏移**，是美术逐个动画调的对齐量；插槽名也未必
+  统一取首帧（可能只用动画名，也可能取中间某一帧）
+
+自带 Spine 3.8 二进制骨架解析；其他版本请用 Spine 导出的 `.json` 作参考，
+那是公开格式。
+
+当前导出只支持**纯逐帧贴图动画**。参考工程里若有网格或裁剪附件，导入会直接
+报错拒绝，不会悄悄产出一个错的结果；若有多套皮肤，导入时会给出警告——能解析，
+但导出只产出 `default` 一套，换装需在 Spine 里另行处理。
+
+### 产物在哪里下载
+
+导出弹窗底部常驻「已导出的产物」列表，手动导的与流水线收口导的都在这里，
+随时可再下载或删除。产物也可直接从磁盘取：
+
+```
+data/spine_exports/{精灵id}/{骨架名}/
+```
+
+### 与自动流水线配合
+
+流水线是按动作跑的，Spine 资源却是整角色一份，所以它不是流水线的一步，
+而是**收口**：勾「完成后导出 Spine 资源」，这批动作全部跑完后由最后完成的
+那个触发，自动打包整个角色。同时跑完也只导一次（排他标记文件，跨重启有效）；
+中途有失败的就不导，补跑完成后自动接上。
 
 ---
 
