@@ -1,0 +1,22 @@
+# 仓库内文本统一 LF。此前多次出现 Windows 上编辑把整文件翻成 CRLF，
+# 导致一次小改动产生整文件差异、且容易造成无谓冲突。
+* text=auto eol=lf
+
+# Windows 批处理与 PowerShell 需要 CRLF
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制不做行尾转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.mp4  binary
+*.mov  binary
+*.zip  binary
+*.onnx binary
+*.skel binary
+*.exe  binary
+*.dll  binary
