@@ -75,6 +75,15 @@ class ConcurrencyGate:
                 raise RuntimeError("已取消")
             self._active += 1
 
+    def try_acquire(self) -> bool:
+        """非阻塞取许可，供调度层做准入：拿不到就让任务留在队列里，
+        不要占着工作线程空等（16 个 io 线程曾被 13 个空等的首帧任务占满）。"""
+        with self._cond:
+            if self._active >= max(1, self._limit()):
+                return False
+            self._active += 1
+            return True
+
     def release(self) -> None:
         with self._cond:
             self._active = max(0, self._active - 1)

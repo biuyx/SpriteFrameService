@@ -11,7 +11,7 @@ export function useJobs() {
   return jobs
 }
 
-export async function startJob(startFn, { onDone, onError, title } = {}) {
+export async function startJob(startFn, { onDone, onError, onProgress, title } = {}) {
   let jobId
   try {
     const res = await startFn()
@@ -48,6 +48,7 @@ export async function startJob(startFn, { onDone, onError, title } = {}) {
       item.message = j.message
       item.result = j.result
       item.error = j.error
+      if (onProgress) onProgress(j)
       if (j.status === 'done') {
         stopPoll(jobId)
         toast(`${item.title} 完成`)

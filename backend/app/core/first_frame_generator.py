@@ -17,9 +17,11 @@ from app.services.template_store import template_store
 DEFAULT_PROMPT = BUILTIN["first_frame"]
 
 # 生图并发闸门（秒级请求，小并发即可跑满）。
-# 用带上报的闸门而非裸信号量：批量首帧时排队的任务要显示「排队中」而不是
-# 「生图中」，且排队期间要能取消。
-_gate = ConcurrencyGate(lambda: get_settings().first_frame_max_concurrent, "生图")
+# 端点提交任务时把它交给 job_manager 做准入：排队的任务不占线程池 worker，
+# 排队期间取消立刻生效。流水线内部是单条任务里顺序跑，拿不到准入的好处，
+# 仍在线程内用 hold() 等待——那时占的是它自己那条流水线的线程。
+first_frame_gate = ConcurrencyGate(
+    lambda: get_settings().first_frame_max_concurrent, "生图")
 
 
 def action_key(action: dict) -> str:
@@ -81,17 +83,17 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
         meta = {"prompt_id": r["prompt_id"], "prompt_version": r["version"],
                 "prompt_name": r["name"], "source": r["source"]}
 
-    # 先排队再报「生图中」：顺序反了会让排队中的任务谎称已在生图
-    with _gate.hold(ctx):
-        if ctx.cancelled():
-            raise RuntimeError("已取消")
-        ctx.report(15, "生图中（Seedream）...")
-        with heartbeat(ctx, "生图中（Seedream）", start=15, end=80, expect=20):
-            try:
-                # 图序与提示词对应：图1=姿势参考，图2=角色立绘
-                data = generate_image(text, [ref, art])
-            except ArkImageError as e:
-                raise RuntimeError(str(e))
+    if ctx.cancelled():
+        raise RuntimeError("已取消")
+    # 并发由调用方把关（端点走准入队列、流水线用 hold）；这里只管生图。
+    # 同步接口拿不到真实进度，用心跳按已等待秒数推进，免得整段静止。
+    ctx.report(15, "生图中（Seedream）...")
+    with heartbeat(ctx, "生图中（Seedream）", start=15, end=80, expect=20):
+        try:
+            # 图序与提示词对应：图1=姿势参考，图2=角色立绘
+            data = generate_image(text, [ref, art])
+        except ArkImageError as e:
+            raise RuntimeError(str(e))
 
     ctx.report(85, "落盘...")
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_UNCHANGED)

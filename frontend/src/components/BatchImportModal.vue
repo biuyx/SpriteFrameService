@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { toast } from '../stores'
+import { startJob } from '../jobs'
 import api from '../api'
 
 const emit = defineEmits(['close', 'done'])
@@ -16,6 +17,8 @@ const importing = ref(false)
 const preview = ref(null)          // batch-scan 结果
 const checked = ref({})            // dir_name -> bool
 const result = ref(null)           // batch-import 结果
+const progress = ref(0)            // 后台建档进度
+const progressMsg = ref('')
 
 onMounted(async () => {
   try {
@@ -79,18 +82,28 @@ async function runImport() {
     }))
   if (!sprites.length) return toast('请至少勾选一个角色')
   importing.value = true
+  progress.value = 0
+  progressMsg.value = '提交中…'
   try {
-    result.value = await api.batchImport({
+    // 建几十个精灵、几百个动作是长任务，后端改走后台任务，这里跟进度
+    await startJob(() => api.batchImport({
       ...scanPayload(),
       project: project.value.trim() || null,
       sprites,
+    }), {
+      title: `批量建档（${sprites.length} 个角色）`,
+      onProgress: (j) => { progress.value = j.progress; progressMsg.value = j.message },
+      onDone: (r) => {
+        result.value = r
+        importing.value = false
+        toast('批量导入完成')
+        emit('done')
+      },
+      onError: () => { importing.value = false },
     })
-    toast('批量导入完成')
-    emit('done')
   } catch (e) {
-    toast(`导入失败: ${e.message}`)
-  } finally {
     importing.value = false
+    toast(`导入失败: ${e.message}`)
   }
 }
 </script>
@@ -159,9 +172,13 @@ async function runImport() {
             <span v-if="s.existing_sprite_id" class="warn-text">已存在，仅补缺失动作</span>
           </label>
         </div>
+        <div v-if="importing" class="imp-prog">
+          <div class="imp-bar"><div class="imp-fill" :style="{ width: progress + '%' }"></div></div>
+          <span class="hint">{{ progressMsg || '建档中…' }}</span>
+        </div>
         <div class="modal-foot">
           <button class="primary" :disabled="importing" @click="runImport">
-            {{ importing ? '导入中...' : `执行导入（${totalActions()} 个动作）` }}</button>
+            {{ importing ? `建档中 ${Math.round(progress)}%` : `执行导入（${totalActions()} 个动作）` }}</button>
           <button :disabled="importing" @click="emit('close')">关闭</button>
         </div>
       </template>
@@ -214,4 +231,7 @@ async function runImport() {
   border: 1px solid var(--border); border-radius: 5px; font-size: 12px;
 }
 .result-box p { margin: 2px 0; }
+.imp-prog { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.imp-bar { flex: 1; height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; }
+.imp-fill { height: 100%; background: var(--accent); transition: width .3s; }
 </style>

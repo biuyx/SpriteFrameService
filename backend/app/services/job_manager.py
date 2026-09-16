@@ -6,6 +6,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
@@ -95,6 +96,46 @@ class JobManager:
             max_workers=io_workers,
             thread_name_prefix="spriteframe-io",
         )
+        # 准入队列：受并发闸门限制的任务在拿到许可前不进线程池。
+        # 否则批量提交时，超出闸门的那些会占着 worker 空等，
+        # 池子被自己堵死，别的 io 任务一个都排不进来。
+        self._pending: "OrderedDict[str, tuple]" = OrderedDict()
+        self._pending_lock = threading.Lock()
+        self._admit_wake = threading.Event()
+        self._admitter = threading.Thread(
+            target=self._admit_loop, name="spriteframe-admit", daemon=True)
+        self._admitter.start()
+
+    def _admit_loop(self) -> None:
+        """常驻：给排队中的任务发许可。
+
+        不做「空了就退出」——退出与提交之间有竞态窗口，一旦落进去任务会永远
+        留在队列里。一个每 0.25s 醒一次的守护线程比那点开销值得。
+        """
+        while True:
+            self._admit_wake.wait(timeout=0.25)
+            self._admit_wake.clear()
+            with self._pending_lock:
+                queue = list(self._pending.items())
+            done = []
+            for jid, (gate, job, runner, executor) in queue:
+                if job.cancel_requested:
+                    with job._lock:
+                        job.status = JobStatus.CANCELLED
+                        job.message = "已取消（排队中）"
+                    job.finished_at = time.time()
+                    done.append(jid)
+                elif gate.try_acquire():
+                    executor.submit(runner)
+                    done.append(jid)
+                else:
+                    with job._lock:
+                        if job.status == JobStatus.QUEUED:
+                            job.message = f"排队中（并发已满 {gate.active} 个）..."
+            if done:
+                with self._pending_lock:
+                    for jid in done:
+                        self._pending.pop(jid, None)
 
     def _evict_locked(self) -> None:
         """在持有 _jobs_lock 时调用：淘汰最早的已结束任务。"""
@@ -110,12 +151,15 @@ class JobManager:
             self._jobs.pop(job.id, None)
 
     def submit(self, job_type: str, fn: Callable[[JobContext], Any],
-               lock: Optional[Any] = None, pool: str = "cpu") -> Job:
+               lock: Optional[Any] = None, pool: str = "cpu",
+               gate: Optional[Any] = None) -> Job:
         """提交任务。
 
         lock: 可选的互斥锁（如会话锁）。在工作线程内获取，使同一会话的任务
         串行执行，避免并发改写帧数据；提交调用本身不会因此阻塞。
         pool: "cpu"（默认，本地处理）或 "io"（外部 API 等待，如视频生成）。
+        gate: 可选的并发闸门（ConcurrencyGate）。给了就走准入队列：拿到许可
+        前任务留在队列里不占线程，排队期间取消可立即生效。
         """
         job = Job(id=uuid.uuid4().hex[:12], type=job_type)
         with self._jobs_lock:
@@ -157,13 +201,22 @@ class JobManager:
                     job.status = JobStatus.ERROR
                     job.error = detail
             finally:
+                if gate is not None:
+                    gate.release()
                 job.finished_at = time.time()
                 # 任务结束后再淘汰一次，使任务表在提交停止后也能收敛到上限
                 with self._jobs_lock:
                     self._evict_locked()
 
         executor = self._io_executor if pool == "io" else self._executor
-        executor.submit(_runner)
+        if gate is None:
+            executor.submit(_runner)
+            return job
+        with self._pending_lock:
+            self._pending[job.id] = (gate, job, _runner, executor)
+            with job._lock:
+                job.message = "排队中..."
+        self._admit_wake.set()
         return job
 
     def cancel(self, job_id: str) -> bool:

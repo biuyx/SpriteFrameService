@@ -138,14 +138,11 @@ def generate_video(session_id: str, req: GenerateRequest):
 
     def _job(ctx):
         from app.core.video_generator import run_generate
-        generate_gate.acquire(ctx)   # 并发上限（可在设置中调整，默认 5）
-        try:
-            return run_generate(session, payload, ctx)
-        finally:
-            generate_gate.release()
+        return run_generate(session, payload, ctx)
 
-    # io 池 + 不占会话锁：纯网络等待，只写新 take 文件，不碰帧数据
-    job = job_manager.submit("generate", _job, pool="io")
+    # io 池 + 不占会话锁：纯网络等待，只写新 take 文件，不碰帧数据。
+    # 并发上限交给准入队列：排队的任务不占线程，取消也立即生效。
+    job = job_manager.submit("generate", _job, pool="io", gate=generate_gate)
     return {"job_id": job.id}
 
 
@@ -229,13 +226,9 @@ def batch_generate(sprite_id: str, req: BatchGenerateRequest):
 
         def _job(ctx, _session=session, _payload=payload):
             from app.core.video_generator import run_generate
-            generate_gate.acquire(ctx)
-            try:
-                return run_generate(_session, _payload, ctx)
-            finally:
-                generate_gate.release()
+            return run_generate(_session, _payload, ctx)
 
-        job = job_manager.submit("generate", _job, pool="io")
+        job = job_manager.submit("generate", _job, pool="io", gate=generate_gate)
         submitted.append({"action_id": aid, "name": name, "job_id": job.id,
                           "variant": template.get("variant"),
                           "duration": payload["params"]["duration"]})

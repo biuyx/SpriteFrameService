@@ -425,8 +425,8 @@ def batch_scan(req: BatchScanRequest):
         from app.services.template_store import template_store
         group_tpls = template_store.by_group(req.template_group)
         if not group_tpls:
-            raise HTTPException(status_code=400,
-                                detail=f"参考视频库分组「{req.template_group or '未分组'}」下没有模板")
+            raise RuntimeError(
+                f"参考视频库分组「{req.template_group or '未分组'}」下没有模板")
         group_keys = {t["key"] for t in group_tpls}
         for s in sprites:
             images = {a["key"]: a["file"] for a in s["actions"]}
@@ -476,10 +476,25 @@ def batch_scan(req: BatchScanRequest):
 
 @router.post("/batch-import")
 def batch_import(req: BatchImportRequest):
-    """执行批量建档：建精灵与动作、物化首帧、按 key 关联动作模板。幂等。"""
+    """执行批量建档（后台任务）。
+
+    建几十个精灵、几百个动作并逐个物化首帧，同步跑会让请求长时间挂着且
+    毫无进度，所以放进后台任务；目录这类一眼能看出的错仍然同步返回。
+    """
+    from app.services.job_manager import job_manager
+
+    if not Path(req.frames_dir.strip()).is_dir():
+        raise HTTPException(status_code=400,
+                            detail=f"首帧目录不存在: {req.frames_dir.strip()}")
+    job = job_manager.submit("batch_import", lambda ctx: _run_batch_import(req, ctx))
+    return {"job_id": job.id, "sprites": len(req.sprites)}
+
+
+def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
+    """批量建档任务体：建精灵与动作、物化首帧、按 key 关联动作模板。幂等。"""
     root = Path(req.frames_dir.strip())
     if not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"首帧目录不存在: {root}")
+        raise RuntimeError(f"首帧目录不存在: {root}")
 
     from app.services.template_store import template_store
 
@@ -512,7 +527,10 @@ def batch_import(req: BatchImportRequest):
              "actions_created": 0, "actions_skipped": 0,
              "actions_no_frame": 0, "errors": []}
 
-    for spec in req.sprites:
+    total_sp = len(req.sprites)
+    for n, spec in enumerate(req.sprites):
+        ctx.report(n / max(1, total_sp) * 100,
+                   f"建档 {n + 1}/{total_sp} {spec.name or spec.dir_name}")
         src_dir = root / spec.dir_name
         if not src_dir.is_dir():
             stats["errors"].append(f"角色目录不存在: {spec.dir_name}")
@@ -582,6 +600,9 @@ def batch_import(req: BatchImportRequest):
             existing_actions.add(a_name)
             stats["actions_created"] += 1
 
+    ctx.report(100, "建档完成：精灵 %d 个 / 动作 %d 个"
+                    % (stats.get("sprites_created", 0) + stats.get("sprites_reused", 0),
+                       stats.get("actions_created", 0)))
     return {"templates": templates_result, **stats}
 
 
@@ -603,7 +624,8 @@ def _prompt_meta(req) -> dict:
 @router.post("/{sprite_id}/actions/{action_id}/gen-first-frame")
 def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
     """为单个动作 AI 生成首帧（按张计费）。"""
-    from app.core.first_frame_generator import resolve_refs, run_gen_first_frame
+    from app.core.first_frame_generator import (first_frame_gate, resolve_refs,
+                                                run_gen_first_frame)
     from app.services.job_manager import job_manager
 
     action = _wrap(lambda: sprite_store.get_action(sprite_id, action_id))
@@ -618,7 +640,7 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
                                         req.prompt, ctx,
                                         prompt_meta=_prompt_meta(req),
                                         remember=req.remember),
-        pool="io")
+        pool="io", gate=first_frame_gate)
     return {"job_id": job.id}
 
 
@@ -635,7 +657,8 @@ class BatchFfGenRequest(BaseModel):
 @router.post("/{sprite_id}/batch-gen-first-frames")
 def batch_gen_first_frames(sprite_id: str, req: BatchFfGenRequest):
     """为多个动作批量生成首帧（并发闸门 3，逐张计费）。"""
-    from app.core.first_frame_generator import resolve_refs, run_gen_first_frame
+    from app.core.first_frame_generator import (first_frame_gate, resolve_refs,
+                                                run_gen_first_frame)
     from app.services.job_manager import job_manager
 
     _wrap(lambda: sprite_store.get_sprite(sprite_id))
@@ -657,7 +680,7 @@ def batch_gen_first_frames(sprite_id: str, req: BatchFfGenRequest):
             (lambda _a: lambda ctx: run_gen_first_frame(
                 sprite_id, _a, req.set_id, req.prompt, ctx,
                 prompt_meta=_prompt_meta(req), remember=req.remember))(aid),
-            pool="io")
+            pool="io", gate=first_frame_gate)
         submitted.append({"action_id": aid, "name": name, "job_id": job.id})
     return {"submitted": submitted, "skipped": skipped}
 

@@ -364,9 +364,14 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
             stage(i, STEP_LABEL[step] + "…")
 
             if step == "firstframe":
-                from app.core.first_frame_generator import run_gen_first_frame
+                from app.core.first_frame_generator import (first_frame_gate,
+                                                            run_gen_first_frame)
                 info = check_firstframe(sprite_id, action, opts)
-                run_gen_first_frame(sprite_id, action_id, info["set_id"], None, _Sub(i), remember=True)
+                # 流水线内部顺序执行，享受不到准入队列，仍在本线程排队等许可
+                sub = _Sub(i)
+                with first_frame_gate.hold(sub):
+                    run_gen_first_frame(sprite_id, action_id, info["set_id"],
+                                        None, sub, remember=True)
                 done.append(step); state["done"] = done
                 if state.get("pause_after_firstframe"):
                     state.update({"status": "paused", "current": None,
