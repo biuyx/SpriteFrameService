@@ -125,6 +125,48 @@ class SaveExtractRuleRequest(BaseModel):
     template_id: str
 
 
+def _assert_template_belongs(session, session_id: str, template_id: str) -> None:
+    """只允许写入本动作相关的模板：动作当前绑定的，或当前视频版本所用的。
+
+    界面上本来也只会给出这两个之一，但前端一度因视图未重建而拿着上一个动作的
+    模板 id 发过来，规则就被写到别的模板上，且不会报错。这里兜住。
+    归属无法判定时（如旧版匿名会话）放行，避免挡住历史流程。
+    """
+    from app.services.sprite_store import sprite_store
+    from app.services.take_store import TakeStore
+    from app.services.template_store import template_store
+
+    sprite_id = sprite_store.sprite_of_action(session_id)
+    if sprite_id is None:
+        return
+    try:
+        action = sprite_store.get_action(sprite_id, session_id)
+    except Exception:
+        return
+
+    allowed, labels = set(), {}
+    if action.get("template_id"):
+        allowed.add(action["template_id"])
+        labels[action["template_id"]] = "动作绑定"
+    ts = TakeStore(session.storage)
+    cur = ts.get(ts.current_id()) if ts.current_id() else None
+    if (cur or {}).get("template_id"):
+        allowed.add(cur["template_id"])
+        labels.setdefault(cur["template_id"], "当前视频版本")
+    if not allowed or template_id in allowed:
+        return
+
+    def _name(tid):
+        t = template_store.get(tid) or {}
+        return t.get("variant") or t.get("key") or tid
+
+    expect = "、".join("%s（%s）" % (_name(t), labels[t]) for t in sorted(allowed))
+    raise HTTPException(
+        status_code=400,
+        detail=f"模板「{_name(template_id)}」不属于动作「{action.get('name')}」，"
+               f"不能把它的抽帧规则写过去；该动作可写入的是：{expect}")
+
+
 @router.post("/extract-rule")
 def save_extract_rule(session_id: str, req: SaveExtractRuleRequest):
     """把最近一次抽帧的参数 + 当前保留的帧，存为模板的参考抽帧规则。
@@ -138,6 +180,7 @@ def save_extract_rule(session_id: str, req: SaveExtractRuleRequest):
     from app.services.template_store import template_store
 
     session = get_session(session_id)
+    _assert_template_belongs(session, session_id, req.template_id)
     steps = [s for s in recipe.read(session).get("steps", []) if s.get("op") == "extract"]
     if not steps:
         raise HTTPException(status_code=400, detail="尚未抽帧——先抽帧并确认效果，再保存规则")
