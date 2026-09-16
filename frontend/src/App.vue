@@ -336,7 +336,10 @@ async function jumpToJob(j) {
         <!-- 左侧工作区 -->
         <div class="content-area">
           <div class="content">
-            <component :is="views[tab]" />
+            <!-- key 带上动作 id：切动作时工序视图整体重建。
+                 否则 tab 不变 → Vue 复用同一实例 → 各视图 onMounted 只跑过一次，
+                 界面还停在上一个动作的数据上（曾导致抽帧规则存到上个动作的模板）。 -->
+            <component :is="views[tab]" :key="`${tab}:${store.currentAction?.id || ''}`" />
           </div>
         </div>
 
