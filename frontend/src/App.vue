@@ -23,6 +23,7 @@ import JobPanel from './components/JobPanel.vue'
 import FrameBrowser from './components/FrameBrowser.vue'
 import VideoPanel from './components/VideoPanel.vue'
 import ResourceMenu from './components/ResourceMenu.vue'
+import ManualModal from './components/ManualModal.vue'
 import TemplateLibraryModal from './components/TemplateLibraryModal.vue'
 import FfSetLibraryModal from './components/FfSetLibraryModal.vue'
 import PromptLibraryModal from './components/PromptLibraryModal.vue'
@@ -41,6 +42,7 @@ const authRequired = ref(false)
 const needLogin = ref(false)
 const loginNotice = ref('')
 const settingsOpen = ref(false)
+const manualOpen = ref(false)   // 使用手册（从工序页打开会定位到对应章节）
 // 全局资源弹窗（顶栏「资源库」菜单打开，任一层都可用）：tpl | ffset | prompt | transfer
 const resModal = ref(null)
 function onImported() { store.libraryVersion++ }
@@ -266,6 +268,7 @@ async function jumpToJob(j) {
         / <b>{{ store.currentSprite?.name }}</b>
       </span>
       <span class="spacer"></span>
+      <button class="small" title="使用手册" @click="manualOpen = true">? 手册</button>
       <button class="small" @click="settingsOpen = true">⚙ 设置</button>
       <button v-if="authRequired" class="small" @click="doLogout">退出登录</button>
     </div>
@@ -328,6 +331,8 @@ async function jumpToJob(j) {
         <button class="small primary" style="margin-left:8px" title="对当前动作自动执行 首帧→视频生成→抽帧→抠图→导出（已完成的步骤跳过）"
                 @click="pipelineOpen = true">⚡ 一键执行</button>
         <ResourceMenu style="margin-left:8px" @open="resModal = $event" />
+        <button class="small" style="margin-left:8px" title="使用手册（定位到当前工序）"
+                @click="manualOpen = true">?</button>
         <button class="small" style="margin-left:8px" @click="settingsOpen = true">⚙</button>
         <button v-if="authRequired" class="small" style="margin-left:8px" @click="doLogout">退出登录</button>
       </div>
@@ -372,6 +377,9 @@ async function jumpToJob(j) {
     后台任务 <span v-if="runningCount()">({{ runningCount() }} 进行中)</span>
   </button>
 
+  <!-- 工作台里打开定位到当前工序；库/看板里从头开始，别落到上次停留的工序上 -->
+  <ManualModal v-if="manualOpen" :topic="store.view === 'workbench' ? '' : 'concepts'"
+               @close="manualOpen = false" />
   <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
 
   <!-- 全局资源库弹窗（顶栏「资源库」菜单） -->
