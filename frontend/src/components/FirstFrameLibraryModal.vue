@@ -34,6 +34,23 @@ const sets = ref([])
 const setId = ref('')
 const gen = ref({})               // action_id -> {job_id, message}
 const preview = ref(null)         // 预览中的动作
+
+// 放大后连续翻看：20 个动作逐个点开再关掉要点 40 次
+function stepPreview(d) {
+  const list = props.actions
+  const i = list.findIndex((a) => a.id === preview.value?.id)
+  if (i < 0) return
+  const n = i + d
+  if (n >= 0 && n < list.length) preview.value = list[n]
+}
+function onPreviewKey(e) {
+  if (!preview.value) return
+  if (e.key === 'ArrowRight') { e.preventDefault(); stepPreview(1) }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); stepPreview(-1) }
+  else if (e.key === 'Escape') preview.value = null
+}
+onMounted(() => window.addEventListener('keydown', onPreviewKey))
+onUnmounted(() => window.removeEventListener('keydown', onPreviewKey))
 const ffUpload = ref(null)        // 单动作上传 input
 const ffUploadTarget = ref(null)
 
@@ -363,6 +380,8 @@ onMounted(async () => {
         <b>{{ preview.name }}</b>
         <span class="hint">{{ KIND_TXT[kindOf(preview)] || '' }}</span>
         <span class="spacer"></span>
+        <button class="small" title="上一个（←）" @click="stepPreview(-1)">‹</button>
+        <button class="small" title="下一个（→）" @click="stepPreview(1)">›</button>
         <button class="small" @click="preview = null">✕ 关闭</button>
       </div>
       <img :src="api.actionFirstFrameUrl(props.spriteId, preview.id, ffV[preview.id] || imgV)" alt="" />

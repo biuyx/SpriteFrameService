@@ -87,6 +87,8 @@ const api = {
     request('POST', `/api/sprites/${sid}/batch-gen-first-frames`, { json: payload }),
   applySpriteRef: (sid, rid, actionIds) =>
     request('POST', `/api/sprites/${sid}/refs/${rid}/apply`, { json: { action_ids: actionIds } }),
+  // 素材速览：一次拿齐全角色各动作当前使用的视频
+  spriteVideos: (sid) => request('GET', `/api/sprites/${sid}/videos`),
   legacySessions: () => request('GET', '/api/sprites/legacy-sessions'),
   batchScan: (payload) => request('POST', '/api/sprites/batch-scan', { json: payload }),
   batchImport: (payload) => request('POST', '/api/sprites/batch-import', { json: payload }),

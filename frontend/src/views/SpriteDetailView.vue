@@ -9,6 +9,7 @@ import BatchExtractModal from '../components/BatchExtractModal.vue'
 import BatchFfGenModal from '../components/BatchFfGenModal.vue'
 import PipelineModal from '../components/PipelineModal.vue'
 import SpineExportModal from '../components/SpineExportModal.vue'
+import ReviewModal from '../components/ReviewModal.vue'
 
 const store = useStore()
 const actions = ref([])
@@ -26,6 +27,7 @@ const batchExtOpen = ref(false)
 const ffGenOpen = ref(false)
 const pipelineOpen = ref(false)
 const spineOpen = ref(false)
+const reviewMode = ref('')      // '' 关闭 | frame | video —— 素材速览
 
 const STATUS_LABEL = { new: '未开始', active: '进行中', final: '已定稿' }
 const PIPE_TXT = { queued: '流水线排队', running: '流水线进行中', paused: '待确认', done: '流水线完成', error: '流水线失败' }
@@ -217,6 +219,10 @@ onMounted(async () => {
       <button v-if="legacy.length" class="small" @click="claiming = !claiming">
         认领旧会话 ({{ legacy.length }})
       </button>
+      <button v-if="actions.length" class="small" title="把全角色的首帧图铺开，一次看完"
+              @click="reviewMode = 'frame'">速览首帧</button>
+      <button v-if="actions.length" class="small" title="把全角色的素材视频铺开，静音循环播放"
+              @click="reviewMode = 'video'">速览视频</button>
       <button v-if="actions.length" class="small" @click="ffLibOpen = true">首帧图库</button>
       <button v-if="actions.length" class="small" :title="preselect ? `对已选 ${selectedIds.length} 个` : ''"
               @click="ffGenOpen = true">生成首帧{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
@@ -318,6 +324,8 @@ onMounted(async () => {
   </div>
 
   <SpineExportModal v-if="spineOpen" @close="spineOpen = false" />
+  <ReviewModal v-if="reviewMode" :actions="actions" :mode="reviewMode"
+               @close="reviewMode = ''" />
   <BatchGenerateModal v-if="batchGenOpen" :actions="actions" :preselected="preselect"
                       @close="batchGenOpen = false; load()"
                       @done="load()" />

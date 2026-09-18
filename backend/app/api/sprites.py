@@ -149,6 +149,48 @@ def copy_sprite(sprite_id: str, req: SpriteCopy):
     return {"job_id": job.id, "source": sp.get("name", sprite_id)}
 
 
+@router.get("/{sprite_id}/videos")
+def sprite_videos(sprite_id: str):
+    """全角色各动作「当前使用」的素材视频概况，供人工过一遍。
+
+    一次拿齐，免得前端为 20 个动作发 20 次请求。直接读 take 索引文件：
+    构造 SessionStorage 会顺手建目录，只读接口不该有这种副作用。
+    """
+    import json as _json
+
+    sprite = _wrap(lambda: sprite_store.get_sprite(sprite_id))
+    items = []
+    for action in sprite_store.list_actions(sprite_id):
+        aid = action["id"]
+        rec = {"action_id": aid, "name": action.get("name"),
+               "status": action.get("status"),
+               "has_first_frame": bool((action.get("summary") or {}).get("has_first_frame")),
+               "take_id": None, "takes": 0, "generating": 0, "video": None}
+        tj = sprite_store.action_dir(sprite_id, aid) / "video" / "takes.json"
+        if tj.is_file():
+            try:
+                data = _json.loads(tj.read_text(encoding="utf-8"))
+                takes = data.get("takes") or []
+                rec["takes"] = sum(1 for t in takes if t.get("status") == "succeeded")
+                rec["generating"] = sum(1 for t in takes
+                                        if t.get("status") in ("pending", "running"))
+                cur = next((t for t in takes if t.get("id") == data.get("current")), None)
+                if cur and cur.get("status") == "succeeded":
+                    rec["take_id"] = cur["id"]
+                    rec["video"] = {
+                        "source": cur.get("source"), "model": cur.get("model"),
+                        "fps": cur.get("fps"), "resolution": cur.get("resolution"),
+                        "duration": cur.get("actual_duration")
+                                    or (cur.get("params") or {}).get("duration"),
+                        "bytes": cur.get("bytes"), "created_at": cur.get("created_at"),
+                        "prompt_name": cur.get("prompt_name"),
+                    }
+            except (ValueError, OSError):
+                rec["error"] = "素材索引读不出来"
+        items.append(rec)
+    return {"sprite": sprite.get("name"), "items": items}
+
+
 @router.get("/legacy-sessions")
 def legacy_sessions():
     """旧版匿名会话列表（供认领）。"""

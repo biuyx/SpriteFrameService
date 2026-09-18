@@ -145,6 +145,82 @@ def test_改绑到另一个模板(client, sprite, two_templates):
     assert r.json()["template_id"] == other["id"], "应能改绑而不是只能绑一次"
 
 
+# ------------------------------------------------------- 素材速览
+def test_视频速览列出全部动作(client, sprite):
+    """一次拿齐，前端不必为每个动作单独发请求。"""
+    names = ["走路", "待机", "睡觉"]
+    for n in names:
+        client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": n})
+    r = client.get(f"/api/sprites/{sprite['id']}/videos")
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["sprite"] == sprite["name"]
+    assert sorted(i["name"] for i in d["items"]) == sorted(names)
+
+
+def test_没有素材时字段仍然齐全(client, sprite):
+    """前端按固定字段渲染，缺素材不能少字段。"""
+    client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "空动作"})
+    item = client.get(f"/api/sprites/{sprite['id']}/videos").json()["items"][0]
+    for k in ("action_id", "name", "status", "has_first_frame",
+              "take_id", "takes", "generating", "video"):
+        assert k in item, f"缺字段 {k}"
+    assert item["take_id"] is None and item["video"] is None
+    assert item["takes"] == 0 and item["generating"] == 0
+
+
+def test_只统计成功的版本并取当前使用的那个(client, sprite):
+    import json as _json
+    from app.services.sprite_store import sprite_store
+
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "多版本"}).json()
+    vd = sprite_store.action_dir(sprite["id"], a["id"]) / "video"
+    vd.mkdir(parents=True, exist_ok=True)
+    (vd / "takes.json").write_text(_json.dumps({
+        "current": "t_ok2",
+        "takes": [
+            {"id": "t_ok1", "status": "succeeded", "bytes": 1},
+            {"id": "t_bad", "status": "error"},
+            {"id": "t_run", "status": "running"},
+            {"id": "t_ok2", "status": "succeeded", "fps": 24, "resolution": "480p",
+             "bytes": 2048, "actual_duration": 5, "source": "generate"},
+        ]}), encoding="utf-8")
+
+    item = next(i for i in client.get(f"/api/sprites/{sprite['id']}/videos").json()["items"]
+                if i["action_id"] == a["id"])
+    assert item["takes"] == 2, "只数成功的版本"
+    assert item["generating"] == 1, "进行中的单独计数"
+    assert item["take_id"] == "t_ok2", "应取当前使用的那个"
+    assert item["video"]["duration"] == 5 and item["video"]["fps"] == 24
+
+
+def test_索引损坏不影响整体列表(client, sprite):
+    from app.services.sprite_store import sprite_store
+
+    good = client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "好的"}).json()
+    bad = client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "坏的"}).json()
+    vd = sprite_store.action_dir(sprite["id"], bad["id"]) / "video"
+    vd.mkdir(parents=True, exist_ok=True)
+    (vd / "takes.json").write_text("{ 这不是 json", encoding="utf-8")
+
+    items = client.get(f"/api/sprites/{sprite['id']}/videos").json()["items"]
+    assert len(items) == 2, "一个动作读不出来不该让整个列表挂掉"
+    assert next(i for i in items if i["action_id"] == bad["id"])["error"]
+    assert "error" not in next(i for i in items if i["action_id"] == good["id"])
+
+
+def test_速览不会为动作创建目录(client, sprite):
+    """只读接口不该有副作用——构造 SessionStorage 会顺手建目录。"""
+    from app.services.sprite_store import sprite_store
+
+    a = client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "别建目录"}).json()
+    vd = sprite_store.action_dir(sprite["id"], a["id"]) / "video"
+    assert not vd.exists()
+    client.get(f"/api/sprites/{sprite['id']}/videos")
+    assert not vd.exists(), "速览接口不该创建 video 目录"
+
+
 # ------------------------------------------------------- Spine 产物
 def test_产物列表初始为空(client, sprite):
     r = client.get(f"/api/sprites/{sprite['id']}/spine/exports")
