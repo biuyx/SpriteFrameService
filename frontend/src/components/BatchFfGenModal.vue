@@ -32,9 +32,22 @@ const curSet = computed(() => sets.value.find(s => s.id === setId.value) || null
 const setKeys = computed(() => new Set((curSet.value?.frames || []).map(f => f.key)))
 
 function actionKey(a) {
+  // 绑了模板就用模板的 key，否则退回动作名——参考集按这个 key 找同动作的图
   return templatesById.value[a.template_id]?.key || a.name
 }
 const eligible = (a) => hasFront.value && setKeys.value.has(actionKey(a))
+
+// 参考集里缺这个 key 时，只在「命名没对齐」这种情况给提示：
+// 一方是另一方的前缀（01_idle vs 01_idle_front）才算相近。
+// 不拿同编号的别的动作凑数——01_idle_back 之于 01_idle_front 是另一个姿势，
+// 提示成「相近」会把人带沟里。
+function nearestKey(key) {
+  return [...setKeys.value].find(
+    k => k !== key && (k.startsWith(key) || key.startsWith(k))) || ''
+}
+
+const missingRows = computed(() =>
+  props.actions.filter(a => !setKeys.value.has(actionKey(a))))
 
 onMounted(async () => {
   try {
@@ -161,6 +174,10 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
           <button class="small" @click="selectMissing">选缺首帧的</button>
           <button class="small" @click="selectNone">全不选</button>
           <span class="hint">已勾选 {{ selectedIds.length }} 个</span>
+          <span v-if="missingRows.length" class="spacer" style="flex:1"></span>
+          <span v-if="missingRows.length" class="warn-text" style="font-size:12px"
+                :title="missingRows.map(a => actionKey(a)).join('、')">
+            {{ missingRows.length }} 个动作参考集里没有，已置灰</span>
         </div>
         <div class="act-list">
           <label v-for="a in props.actions" :key="a.id" class="act-row"
@@ -170,7 +187,13 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <span class="hint">{{ actionKey(a) }}</span>
             <span v-if="promptLabel(a)" class="hint prompt-tag" :title="'提示词：' + promptLabel(a)">✎ {{ promptLabel(a) }}</span>
             <span class="spacer" style="flex:1"></span>
-            <span v-if="!setKeys.has(actionKey(a))" class="warn-text">参考集缺此动作</span>
+            <span v-if="!setKeys.has(actionKey(a))" class="warn-text"
+                  :title="`参考集「${curSet?.name || ''}」里没有 key 为「${actionKey(a)}」的图。`
+                          + (nearestKey(actionKey(a))
+                             ? `集合里有相近的「${nearestKey(actionKey(a))}」——多半是命名没对齐`
+                             : '该集合确实没有这个动作，可换个参考集或单独上传首帧')">
+              参考集缺「{{ actionKey(a) }}」<template
+                v-if="nearestKey(actionKey(a))">，有相近的「{{ nearestKey(actionKey(a)) }}」</template></span>
             <span v-else-if="a.summary?.has_first_frame" class="hint">已有首帧（将覆盖）</span>
             <span v-else class="warn-text">缺首帧</span>
           </label>
