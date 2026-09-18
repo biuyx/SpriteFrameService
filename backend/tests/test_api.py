@@ -95,6 +95,56 @@ def test_动作未绑模板时不拦(client, sprite, two_templates):
     assert "不属于动作" not in r.json().get("detail", "")
 
 
+def test_可以后期把模板绑定到动作(client, sprite, two_templates):
+    """界面上此前没有绑定入口，只能手调接口；现在生成页有按钮，接口这条路要稳。"""
+    own, _ = two_templates
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "待绑定"}).json()
+    assert not a.get("template_id"), "新建动作默认不绑模板"
+
+    r = client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                     json={"template_id": own["id"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["template_id"] == own["id"]
+
+    again = next(x for x in client.get(f"/api/sprites/{sprite['id']}/actions").json()["actions"]
+                 if x["id"] == a["id"])
+    assert again["template_id"] == own["id"], "绑定未落库"
+
+
+def test_绑定后抽帧规则校验放行该模板(client, sprite, two_templates):
+    own, other = two_templates
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "绑定后"}).json()
+    client.post(f"/api/sprites/{sprite['id']}/actions/{a['id']}/open")
+
+    # 绑之前：判定不出归属，不拦
+    before = client.post(f"/api/sessions/{a['id']}/frames/extract-rule",
+                         json={"template_id": other["id"]})
+    assert "不属于动作" not in before.json().get("detail", "")
+
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"template_id": own["id"]})
+    # 绑之后：别人的模板被拦下，自己的放行到下一步校验
+    blocked = client.post(f"/api/sessions/{a['id']}/frames/extract-rule",
+                          json={"template_id": other["id"]})
+    assert "不属于动作" in blocked.json()["detail"]
+    allowed = client.post(f"/api/sessions/{a['id']}/frames/extract-rule",
+                          json={"template_id": own["id"]})
+    assert "尚未抽帧" in allowed.json()["detail"]
+
+
+def test_改绑到另一个模板(client, sprite, two_templates):
+    own, other = two_templates
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "改绑"}).json()
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"template_id": own["id"]})
+    r = client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                     json={"template_id": other["id"]})
+    assert r.json()["template_id"] == other["id"], "应能改绑而不是只能绑一次"
+
+
 # ------------------------------------------------------- Spine 产物
 def test_产物列表初始为空(client, sprite):
     r = client.get(f"/api/sprites/{sprite['id']}/spine/exports")

@@ -107,6 +107,10 @@ async function load() {
   }
 }
 
+// 未绑定模板的动作数：看板上一眼能看出还有多少要补
+const unboundCount = computed(() =>
+  actions.value.filter((a) => !templatesById.value[a.template_id]).length)
+
 function tplLabel(a) {
   const t = templatesById.value[a.template_id]
   if (!t) return ''
@@ -258,7 +262,10 @@ onMounted(async () => {
             <th style="width:34px"><input type="checkbox" :checked="allChecked" title="全选/全不选" @change="toggleAll" /></th>
             <th style="width:64px">封面</th>
             <th style="width:22%">动作</th>
-            <th style="width:18%">动作模板</th>
+            <th style="width:18%">动作模板
+              <span v-if="unboundCount" class="hint" style="font-weight:400"
+                    :title="`${unboundCount} 个动作未绑定模板，抽帧规则无法沿用/保存`">
+                （{{ unboundCount }} 个未绑定）</span></th>
             <th>工序进度 <span class="hint" style="font-weight:400">（点工序直达）</span></th>
             <th style="width:150px">操作</th>
           </tr>
@@ -283,7 +290,10 @@ onMounted(async () => {
             </td>
             <td>
               <span v-if="tplLabel(a)" class="tpl">{{ tplLabel(a) }}</span>
-              <span v-else class="hint">—</span>
+              <!-- 没绑模板要显眼：抽帧规则不能沿用也不能保存，且只能逐个动作去绑 -->
+              <span v-else class="tpl-none clickable"
+                    title="未绑定参考视频模板——抽帧规则无法沿用/保存。点这里到「视频生成」绑定"
+                    @click.stop="openAt(a, 'generate')">未绑定</span>
             </td>
             <td>
               <div class="stages" @click.stop>
@@ -415,6 +425,7 @@ onMounted(async () => {
 .badge.pipe.paused { background: #1e88e533; color: var(--accent-hover); }
 .badge.pipe.error { background: #ef535033; color: var(--err); }
 .tpl { font-size: 12px; color: var(--text-dim); }
+.tpl-none { font-size: 12px; color: var(--warn); border-bottom: 1px dashed var(--warn); }
 
 .stages { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .stage {

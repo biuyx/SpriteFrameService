@@ -66,6 +66,38 @@ async function loadTemplates() {
   } catch { /* ignore */ }
 }
 
+// 把下拉里选中的模板绑定到本动作。
+// 下拉本身只决定「本次生成用哪个参考视频」，不写回动作；抽帧规则的沿用与
+// 保存却认动作上的绑定，所以要有个显式的落库入口，否则只能手调接口。
+const boundTplId = computed(() => store.currentAction?.template_id || '')
+const canBindTpl = computed(() =>
+  !!tplSelected.value && tplSelected.value !== boundTplId.value)
+const bindBusy = ref(false)
+
+async function bindTplToAction() {
+  const t = tplAll.value.find((x) => x.id === tplSelected.value)
+  if (!t || !store.currentSprite || !store.currentAction) return
+  const name = t.variant || t.key
+  const cur = tplAll.value.find((x) => x.id === boundTplId.value)
+  const replace = cur ? `
+将替换当前绑定「${cur.variant || cur.key}」。` : ''
+  if (!(await askConfirm(
+    `把模板「${name}」绑定到动作「${store.currentAction.name}」？
+` +
+    `绑定后该动作可沿用/保存抽帧规则，批量生成也会用它作参考视频。${replace}`))) return
+  bindBusy.value = true
+  try {
+    const a = await api.patchAction(store.currentSprite.id, store.currentAction.id,
+                                    { template_id: t.id })
+    store.currentAction.template_id = a.template_id
+    toast(`已绑定模板「${name}」`)
+  } catch (e) {
+    toast(`绑定失败: ${e.message}`)
+  } finally {
+    bindBusy.value = false
+  }
+}
+
 function applyTplDuration() {
   const t = tplAll.value.find((x) => x.id === tplSelected.value)
   if (t?.duration_hint && gen.value?.params?.duration?.includes(t.duration_hint)) genDuration.value = t.duration_hint
@@ -441,6 +473,11 @@ onMounted(async () => {
               <option value="">（不使用 / 本地上传）</option>
             </select>
             <button v-if="tplSelected" class="small" @click="tplPreview = true">预览模板</button>
+            <button v-if="canBindTpl" class="small" :disabled="bindBusy"
+                    title="下拉只决定本次生成用哪个参考视频；绑定后抽帧规则才能沿用/保存"
+                    @click="bindTplToAction">{{ bindBusy ? '绑定中…' : '绑定到此动作' }}</button>
+            <span v-else-if="boundTplId && tplSelected === boundTplId" class="bound-chip"
+                  title="该动作已绑定此模板，抽帧规则可沿用/保存">✓ 已绑定此动作</span>
           </template>
           <template v-if="rvAvailable && !tplSelected">
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">
@@ -604,4 +641,5 @@ onMounted(async () => {
 .cmp-cell video { width: 100%; max-height: 56vh; background: #000; display: block; border-radius: 4px; }
 .cmp-missing { display: flex; align-items: center; justify-content: center; min-height: 200px; color: var(--text-dim); font-size: 12px; background: var(--bg-input); border-radius: 4px; }
 .danger { border-color: var(--err); color: var(--err); }
+.bound-chip { font-size: 12px; color: var(--ok); background: #4caf5018; padding: 2px 9px; border-radius: 10px; }
 </style>

@@ -4,8 +4,11 @@ import { useStore, refreshFrames, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
 import SaveRuleButton from '../components/SaveRuleButton.vue'
+import { useRuleTemplate } from '../useRuleTemplate'
 
 const store = useStore()
+// 与抽帧页共用同一份模板解析，避免两处判断不一致
+const { tpl: ruleTpl } = useRuleTemplate()
 const mode = ref('pose')
 const threshold = ref(0.9)
 const weights = ref({ u: 0.2, m: 0.3, l: 0.5 })
@@ -166,7 +169,7 @@ function overlayUrl(idx, m) {
           <button @click="removeSimilar">去相似帧</button>
           <button :disabled="loopPending" @click="findLoop">{{ loopPending ? '查找中...' : '找循环帧' }}</button>
           <span class="spacer" style="flex:1"></span>
-          <SaveRuleButton />
+          <SaveRuleButton :template="ruleTpl" />
         </div>
         <div class="row" style="align-items:center">
           <div class="field inline"><label>起始帧</label>

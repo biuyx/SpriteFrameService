@@ -5,6 +5,7 @@ import { startJob } from '../jobs'
 import { currentTab } from '../nav'
 import api from '../api'
 import SaveRuleButton from '../components/SaveRuleButton.vue'
+import { useRuleTemplate } from '../useRuleTemplate'
 
 // 工序 3：抽帧——当前素材视频 → 帧序列；参数可沿用/保存为模板规则
 const store = useStore()
@@ -12,7 +13,6 @@ const startTime = ref(0)
 const endTime = ref(10)
 const fps = ref(10)
 const videoErr = ref('')
-const tplAll = ref([])
 
 const videoUrl = computed(() =>
   store.sessionId ? `/api/sessions/${store.sessionId}/video?v=${store.videoVersion}` : '')
@@ -35,12 +35,10 @@ const estimate = computed(() => {
 })
 
 // ---- 参考抽帧规则：存于模板，同模板生成的视频节奏一致 ----
+// 模板解析统一走 useRuleTemplate，抽帧页与动作分析页共用同一份判断
+const { tpl: ruleTpl, unbound: tplUnbound, failed: tplFailed,
+        reload: reloadTpls } = useRuleTemplate()
 const ruleApplied = ref(false)
-const ruleTpl = computed(() => {
-  const cur = (store.takes.takes || []).find((t) => t.id === store.takes.current)
-  const tid = cur?.template_id || store.currentAction?.template_id
-  return tplAll.value.find((x) => x.id === tid) || null
-})
 const activeRule = computed(() => ruleTpl.value?.extract_rule || null)
 
 function applyExtractRule() {
@@ -53,10 +51,8 @@ function applyExtractRule() {
 }
 
 async function refreshTplsAfterRuleSave() {
-  try {
-    tplAll.value = (await api.templates()).templates
-    ruleApplied.value = true
-  } catch { /* ignore */ }
+  await reloadTpls()
+  ruleApplied.value = true
 }
 
 function initParamsFromVideo() {
@@ -88,7 +84,6 @@ watch(() => store.videoVersion, () => {
 onMounted(async () => {
   await refreshSession()
   initParamsFromVideo()
-  try { tplAll.value = (await api.templates()).templates } catch { /* ignore */ }
   await loadTakes()
   if (store.videoInfo && !store.frameCount) applyExtractRule()
 })
@@ -148,7 +143,17 @@ onMounted(async () => {
               v-if="activeRule.keep">· 自动保留 {{ activeRule.keep.length }}/{{ activeRule.total }} 帧</template></span>
           <button v-else-if="activeRule" class="small" @click="applyExtractRule">
             沿用模板规则（{{ activeRule.start }}–{{ activeRule.end }}s @{{ activeRule.fps }}{{ activeRule.keep ? ` · 留${activeRule.keep.length}帧` : '' }}）</button>
-          <SaveRuleButton @saved="refreshTplsAfterRuleSave" />
+          <SaveRuleButton :template="ruleTpl" @saved="refreshTplsAfterRuleSave" />
+        </template>
+        <!-- 取不到 / 没绑定 都要说清楚，不能整块消失让人猜 -->
+        <template v-else-if="tplFailed">
+          <span class="rule-none warn-text">模板信息没取到（服务可能刚重启）</span>
+          <button class="small" @click="reloadTpls">重试</button>
+        </template>
+        <template v-else-if="tplUnbound">
+          <span class="rule-none">该动作未绑定参考视频模板，不能沿用或保存抽帧规则</span>
+          <button class="small" title="到「视频生成」选模板并绑定到本动作"
+                  @click="currentTab = 'generate'">去绑定</button>
         </template>
         <span class="spacer" style="flex:1"></span>
         <button v-if="store.frameCount" class="small" @click="currentTab = 'background'">下一步：背景抠图 →</button>
@@ -163,6 +168,7 @@ onMounted(async () => {
   border-radius: 5px; font-size: 13px; background: var(--bg-input); border: 1px solid var(--border);
 }
 .ready-bar.warn { border-color: #ff980066; color: var(--warn); }
+.rule-none { font-size: 12px; color: var(--text-dim); }
 .rule-chip { font-size: 12px; color: var(--ok); background: #4caf5018; padding: 3px 10px; border-radius: 10px; }
 .video-unsupported {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
