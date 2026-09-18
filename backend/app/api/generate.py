@@ -152,10 +152,15 @@ class BatchGenerateRequest(BaseModel):
     model: Optional[str] = None
     resolution: str = Field(default="480p")
     ratio: str = Field(default="adaptive")
+    # 覆盖解析出来的提示词（素材速览里改一句就地重生成用）。
+    # 只有单个动作时才该给——一句词套给一批动作基本没意义。
+    prompt: Optional[str] = Field(default=None)
+    remember: bool = Field(default=False, description="把该提示词记为动作设定")
 
 
 def _default_generate_payload(session, action: dict, template: dict,
-                              model: str, resolution: str, ratio: str) -> dict:
+                              model: str, resolution: str, ratio: str,
+                              prompt: Optional[str] = None) -> dict:
     """按动作的默认配置构造生成请求（与前端单动作面板的默认逻辑一致）。
 
     提示词按提示词库解析（动作记忆 > 模板 > key > 分组 > 全局 > 内置）；
@@ -165,10 +170,13 @@ def _default_generate_payload(session, action: dict, template: dict,
     r = resolve_for_action("video_ref", action)
     mem = (action.get("gen_prefs") or {}).get("video") or {}
     duration = mem.get("duration") or template.get("duration_hint") or 4
+    # 显式给了提示词就用它，并断开与库条目的追溯（那已不是库里那一版）
+    text = (prompt or "").strip()
     return {
-        "prompt": r["text"],
-        "prompt_id": r["prompt_id"], "prompt_version": r["version"],
-        "prompt_name": r["name"],
+        "prompt": text or r["text"],
+        "prompt_id": None if text else r["prompt_id"],
+        "prompt_version": None if text else r["version"],
+        "prompt_name": "速览改写" if text else r["name"],
         "model": model,
         "params": {"resolution": resolution, "ratio": ratio, "duration": duration},
         "first_frame": {"kind": "action"},
@@ -221,8 +229,18 @@ def batch_generate(sprite_id: str, req: BatchGenerateRequest):
                             "reason": "未关联动作模板（请进入动作手动生成）"})
             continue
 
+        # 提示词覆盖只在单动作时生效：一句词套给一批动作没有意义
+        one = len(req.action_ids) == 1
         payload = _default_generate_payload(session, action, template,
-                                            model, req.resolution, req.ratio)
+                                            model, req.resolution, req.ratio,
+                                            prompt=req.prompt if one else None)
+        if one and req.prompt and req.remember:
+            prefs = dict(action.get("gen_prefs") or {})
+            prefs["video"] = {**(prefs.get("video") or {}), "scope": "video_ref",
+                              "prompt_text": req.prompt.strip(),
+                              "prompt_id": None, "prompt_version": None,
+                              "prompt_name": "速览改写"}
+            sprite_store.update_action(sprite_id, aid, {"gen_prefs": prefs})
 
         def _job(ctx, _session=session, _payload=payload):
             from app.core.video_generator import run_generate

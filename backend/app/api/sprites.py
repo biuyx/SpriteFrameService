@@ -149,23 +149,38 @@ def copy_sprite(sprite_id: str, req: SpriteCopy):
     return {"job_id": job.id, "source": sp.get("name", sprite_id)}
 
 
-@router.get("/{sprite_id}/videos")
-def sprite_videos(sprite_id: str):
-    """全角色各动作「当前使用」的素材视频概况，供人工过一遍。
+@router.get("/{sprite_id}/review")
+def sprite_review(sprite_id: str, kind: str = "video"):
+    """素材速览数据：各动作的当前素材 + 会用到的提示词。
 
-    一次拿齐，免得前端为 20 个动作发 20 次请求。直接读 take 索引文件：
-    构造 SessionStorage 会顺手建目录，只读接口不该有这种副作用。
+    提示词由服务端按生成时的同一套规则解析后给出（记忆 > 模板 > key > 分组 >
+    全局 > 内置），前端不必自己猜作用域，看到的就是重生成时真正会用的那条。
+
+    直接读 take 索引文件而不构造 SessionStorage：后者会顺手建目录，
+    只读接口不该有这种副作用。
     """
     import json as _json
 
+    from app.services.prompt_store import resolve_for_action
+
     sprite = _wrap(lambda: sprite_store.get_sprite(sprite_id))
+    scope = "first_frame" if kind == "frame" else "video_ref"
     items = []
     for action in sprite_store.list_actions(sprite_id):
         aid = action["id"]
+        summary = action.get("summary") or {}
         rec = {"action_id": aid, "name": action.get("name"),
                "status": action.get("status"),
-               "has_first_frame": bool((action.get("summary") or {}).get("has_first_frame")),
+               "template_id": action.get("template_id"),
+               "has_first_frame": bool(summary.get("has_first_frame")),
                "take_id": None, "takes": 0, "generating": 0, "video": None}
+        try:
+            r = resolve_for_action(scope, action)
+            rec["prompt"] = {"text": r["text"], "name": r["name"],
+                             "version": r["version"], "source": r["source"]}
+        except Exception:
+            rec["prompt"] = None
+
         tj = sprite_store.action_dir(sprite_id, aid) / "video" / "takes.json"
         if tj.is_file():
             try:
@@ -188,7 +203,7 @@ def sprite_videos(sprite_id: str):
             except (ValueError, OSError):
                 rec["error"] = "素材索引读不出来"
         items.append(rec)
-    return {"sprite": sprite.get("name"), "items": items}
+    return {"sprite": sprite.get("name"), "kind": kind, "items": items}
 
 
 @router.get("/legacy-sessions")
@@ -650,7 +665,8 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
 
 # ---------- 首帧生成（立绘 + 参考首帧集 → Seedream 生图） ----------
 class FfGenRequest(BaseModel):
-    set_id: str = Field(..., description="参考首帧集 id")
+    # 缺省自动挑：速览里逐个重生成时不该强迫先选集合
+    set_id: Optional[str] = Field(default=None, description="参考首帧集 id，留空自动匹配")
     prompt: Optional[str] = Field(default=None, description="留空按提示词库解析")
     prompt_id: Optional[str] = None       # 提示词来自库时的追溯信息
     prompt_version: Optional[int] = None
@@ -671,14 +687,23 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
     from app.services.job_manager import job_manager
 
     action = _wrap(lambda: sprite_store.get_action(sprite_id, action_id))
+    set_id = req.set_id
+    if not set_id:
+        from app.core.first_frame_generator import action_key
+        from app.core.pipeline import _pick_ffset
+        fs = _pick_ffset(action, action_key(action), None)
+        if fs is None:
+            raise HTTPException(status_code=400,
+                                detail="没有含该动作的参考首帧集，请先建集或指定一个")
+        set_id = fs["id"]
     try:
-        resolve_refs(sprite_id, action, req.set_id)   # 预检，让错误同步返回
+        resolve_refs(sprite_id, action, set_id)   # 预检，让错误同步返回
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     job = job_manager.submit(
         "gen_first_frame",
-        lambda ctx: run_gen_first_frame(sprite_id, action_id, req.set_id,
+        lambda ctx: run_gen_first_frame(sprite_id, action_id, set_id,
                                         req.prompt, ctx,
                                         prompt_meta=_prompt_meta(req),
                                         remember=req.remember),

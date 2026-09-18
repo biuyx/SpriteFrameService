@@ -151,7 +151,7 @@ def test_视频速览列出全部动作(client, sprite):
     names = ["走路", "待机", "睡觉"]
     for n in names:
         client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": n})
-    r = client.get(f"/api/sprites/{sprite['id']}/videos")
+    r = client.get(f"/api/sprites/{sprite['id']}/review")
     assert r.status_code == 200, r.text
     d = r.json()
     assert d["sprite"] == sprite["name"]
@@ -161,7 +161,7 @@ def test_视频速览列出全部动作(client, sprite):
 def test_没有素材时字段仍然齐全(client, sprite):
     """前端按固定字段渲染，缺素材不能少字段。"""
     client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "空动作"})
-    item = client.get(f"/api/sprites/{sprite['id']}/videos").json()["items"][0]
+    item = client.get(f"/api/sprites/{sprite['id']}/review").json()["items"][0]
     for k in ("action_id", "name", "status", "has_first_frame",
               "take_id", "takes", "generating", "video"):
         assert k in item, f"缺字段 {k}"
@@ -187,7 +187,7 @@ def test_只统计成功的版本并取当前使用的那个(client, sprite):
              "bytes": 2048, "actual_duration": 5, "source": "generate"},
         ]}), encoding="utf-8")
 
-    item = next(i for i in client.get(f"/api/sprites/{sprite['id']}/videos").json()["items"]
+    item = next(i for i in client.get(f"/api/sprites/{sprite['id']}/review").json()["items"]
                 if i["action_id"] == a["id"])
     assert item["takes"] == 2, "只数成功的版本"
     assert item["generating"] == 1, "进行中的单独计数"
@@ -204,7 +204,7 @@ def test_索引损坏不影响整体列表(client, sprite):
     vd.mkdir(parents=True, exist_ok=True)
     (vd / "takes.json").write_text("{ 这不是 json", encoding="utf-8")
 
-    items = client.get(f"/api/sprites/{sprite['id']}/videos").json()["items"]
+    items = client.get(f"/api/sprites/{sprite['id']}/review").json()["items"]
     assert len(items) == 2, "一个动作读不出来不该让整个列表挂掉"
     assert next(i for i in items if i["action_id"] == bad["id"])["error"]
     assert "error" not in next(i for i in items if i["action_id"] == good["id"])
@@ -217,8 +217,28 @@ def test_速览不会为动作创建目录(client, sprite):
     a = client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "别建目录"}).json()
     vd = sprite_store.action_dir(sprite["id"], a["id"]) / "video"
     assert not vd.exists()
-    client.get(f"/api/sprites/{sprite['id']}/videos")
+    client.get(f"/api/sprites/{sprite['id']}/review")
     assert not vd.exists(), "速览接口不该创建 video 目录"
+
+
+def test_速览返回会用到的提示词(client, sprite):
+    """提示词由服务端按生成时同一套规则解析，前端不必自己猜作用域。"""
+    client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "走路"})
+    for kind in ("video", "frame"):
+        d = client.get(f"/api/sprites/{sprite['id']}/review", params={"kind": kind}).json()
+        assert d["kind"] == kind
+        p = d["items"][0]["prompt"]
+        assert p and p["text"], f"{kind} 没解析出提示词"
+        assert "source" in p and "name" in p
+
+
+def test_视频与首帧的提示词作用域不同(client, sprite):
+    client.post(f"/api/sprites/{sprite['id']}/actions", json={"name": "待机"})
+    v = client.get(f"/api/sprites/{sprite['id']}/review",
+                   params={"kind": "video"}).json()["items"][0]["prompt"]["text"]
+    f = client.get(f"/api/sprites/{sprite['id']}/review",
+                   params={"kind": "frame"}).json()["items"][0]["prompt"]["text"]
+    assert v != f, "视频与首帧应解析到各自作用域的提示词"
 
 
 # ------------------------------------------------------- Spine 产物
