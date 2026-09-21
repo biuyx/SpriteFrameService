@@ -28,6 +28,9 @@ const loading = ref(true)
 const items = ref([])
 const conflicts = ref([])
 const checked = ref({})
+// 逐动作的动画名：默认是后端推断值，可在表里改；勾上「记住」就落到动作上
+const names = ref({})
+const remember = ref(true)
 const running = ref(false)
 const result = ref(null)
 
@@ -111,11 +114,20 @@ async function runImport() {
   }
 }
 
+function animOf(i) { return (names.value[i.action_id] ?? i.anim).trim() }
+function defaultOf(i) { return i.suggest || i.anim }   // 不看自定义时的推断值
+function resetName(i) { names.value[i.action_id] = defaultOf(i) }
+// 用模板导时，名字对不上模板里的动画就等于新加一个动画——标出来让人确认
+function offTemplate(i) {
+  const t = activeTemplate.value
+  return !!t && !(t.animation_names || []).includes(animOf(i))
+}
+
 // 模板里有、但这次导不出来的动画——换模板时最该看的就是这个
 const coverage = computed(() => {
   const t = activeTemplate.value
   if (!t) return null
-  const mine = new Set(selected.value.map(i => i.anim))
+  const mine = new Set(selected.value.map(animOf))
   const theirs = t.animation_names || []
   return {
     missing: theirs.filter(n => !mine.has(n)),
@@ -124,15 +136,22 @@ const coverage = computed(() => {
   }
 })
 
+async function loadPreview(keepChecked = false) {
+  const r = await api.spinePreview(store.currentSprite.id)
+  items.value = r.items
+  conflicts.value = r.conflicts || []
+  for (const it of items.value) {
+    names.value[it.action_id] = it.anim
+    if (!keepChecked) checked.value[it.action_id] = it.frames > 0
+  }
+}
+
 onMounted(async () => {
   name.value = store.currentSprite?.name || ''
   outlineOn.value = !!outlinePreset.value?.enabled
   await Promise.all([loadTemplates(), loadExports()])
   try {
-    const r = await api.spinePreview(store.currentSprite.id)
-    items.value = r.items
-    conflicts.value = r.conflicts || []
-    for (const it of items.value) checked.value[it.action_id] = it.frames > 0
+    await loadPreview()
   } catch (e) {
     toast(`读取动作失败: ${e.message}`)
   } finally {
@@ -147,22 +166,32 @@ const unprocessed = computed(() =>
   selected.value.filter(i => i.processed < i.frames))
 const dupSelected = computed(() => {
   const seen = {}
-  for (const i of selected.value) seen[i.anim] = (seen[i.anim] || 0) + 1
+  for (const i of selected.value) {
+    const n = animOf(i)
+    seen[n] = (seen[n] || 0) + 1
+  }
   return Object.keys(seen).filter(k => seen[k] > 1)
 })
+const blankNames = computed(() => selected.value.filter(i => !animOf(i)))
+const renamed = computed(() => items.value.filter(i => animOf(i) !== defaultOf(i)))
 
 function selectAll() { for (const i of items.value) checked.value[i.action_id] = i.frames > 0 }
 function selectNone() { for (const i of items.value) checked.value[i.action_id] = false }
 
 async function run() {
   if (!selected.value.length) return toast('请至少勾选一个动作')
+  if (blankNames.value.length)
+    return toast(`这些动作还没填动画名：${blankNames.value.map(i => i.name).join('、')}`)
   if (dupSelected.value.length)
-    return toast(`动画名重复：${dupSelected.value.join('、')}——请在参考视频库里改 Spine 动画名`)
+    return toast(`动画名重复：${dupSelected.value.join('、')}——同名会互相覆盖，请改掉其中一个`)
   running.value = true
   result.value = null
   const payload = {
     name: name.value.trim() || undefined,
     action_ids: selected.value.map(i => i.action_id),
+    // 逐动作的名字都带上：后端跟推断值一致的会自动不记，只留真改过的
+    anim_names: Object.fromEntries(selected.value.map(i => [i.action_id, animOf(i)])),
+    remember_names: remember.value,
     fps: fps.value,
     canvas: canvas.value || null,
     frame_pattern: pattern.value.trim() || '{anim}_{i:04d}',
@@ -184,7 +213,13 @@ async function run() {
   try {
     await startJob(() => api.spineExport(store.currentSprite.id, payload), {
       title: 'Spine 导出',
-      onDone: (r) => { result.value = r; running.value = false; loadExports() },
+      onDone: (r) => {
+        result.value = r
+        running.value = false
+        loadExports()
+        // 记住改名后「自定义」标记要跟着变，重拉一次预览（保留勾选）
+        if (remember.value) loadPreview(true).catch(() => {})
+      },
       onError: () => { running.value = false },
     })
   } catch {
@@ -209,6 +244,8 @@ function download() {
       <p class="hint" style="margin:0 0 10px">
         产出骨架 JSON + 图集（.atlas/.png）+ images/ 序列帧。
         美术在 Spine 里 <b>Import Data</b> 选该 JSON 即可打开为工程，另存为 .spine。
+        动画名默认按参考视频库里的设定推断，可在下表逐个改；选了导出模板时，
+        输入框会列出模板里已有的动画名，挑一个就对上去了。
       </p>
 
       <div v-if="loading" class="hint" style="padding:26px;text-align:center">加载动作中...</div>
@@ -294,28 +331,54 @@ function download() {
           <b style="font-size:13px">动作 {{ selected.length }}/{{ items.length }} · {{ selectedFrames }} 帧</b>
           <button class="small" @click="selectAll">全选</button>
           <button class="small" @click="selectNone">全不选</button>
+          <span class="spacer" style="flex:1"></span>
+          <label class="chk" title="记到动作上：下次导出与一键流水线自动导出都用这个名字">
+            <input type="checkbox" v-model="remember" />
+            记住改名<span v-if="renamed.length" class="dim">（改了 {{ renamed.length }} 个）</span>
+          </label>
         </div>
 
-        <p v-if="conflicts.length" class="warn-box">
-          ⚠ 动画名重复：{{ conflicts.join('、') }}——同名会互相覆盖，请到「参考视频库」给对应模板改 Spine 动画名。
+        <p v-if="dupSelected.length" class="warn-box">
+          ⚠ 动画名重复：{{ dupSelected.join('、') }}——同名会互相覆盖，在下表里改掉其中一个。
+        </p>
+        <p v-else-if="conflicts.length" class="warn-box">
+          ⚠ 未勾选的动作里有重名：{{ conflicts.join('、') }}——一起导时要先改掉。
         </p>
         <p v-if="unprocessed.length" class="warn-box">
           ⚠ {{ unprocessed.length }} 个动作还有未抠图的帧（{{ unprocessed.map(i => i.name).join('、') }}），
           导出后在 Spine 里会带背景。
         </p>
 
+        <datalist id="spine-anim-options">
+          <option v-for="n in (activeTemplate?.animation_names || [])" :key="n" :value="n" />
+        </datalist>
+
         <div class="tbl-scroll">
           <table class="tpl-tbl">
             <thead><tr>
               <th style="width:34px"></th><th>动作</th>
-              <th style="width:120px">Spine 动画名</th>
+              <th style="width:210px">Spine 动画名（可改）</th>
               <th style="width:110px">帧 / 已抠图</th>
             </tr></thead>
             <tbody>
               <tr v-for="i in items" :key="i.action_id" :class="{ dimrow: !i.frames }">
                 <td><input type="checkbox" v-model="checked[i.action_id]" :disabled="!i.frames" /></td>
                 <td>{{ i.name }}</td>
-                <td class="mono-cell" :class="{ dup: i.duplicate }">{{ i.anim }}</td>
+                <td class="anim-cell">
+                  <input class="anim-in" v-model="names[i.action_id]"
+                         list="spine-anim-options" spellcheck="false"
+                         :class="{ dup: dupSelected.includes(animOf(i)),
+                                   off: offTemplate(i) }"
+                         :placeholder="i.suggest"
+                         :title="offTemplate(i)
+                           ? '模板里没有这个动画名，会当成新动画导出'
+                           : '导出后在 Spine 里显示的动画名'" />
+                  <span v-if="i.custom && animOf(i) === i.custom" class="tag"
+                        title="这个名字已记在动作上，流水线自动导出也用它">记</span>
+                  <button v-if="animOf(i) !== defaultOf(i)" class="mini"
+                          :title="`恢复默认：${defaultOf(i)}`"
+                          @click="resetName(i)">↺</button>
+                </td>
                 <td>
                   <span v-if="!i.frames" class="dim">无帧</span>
                   <span v-else :class="i.processed === i.frames ? 'ok-text' : 'dim'">
@@ -404,6 +467,23 @@ function download() {
 .dimrow { opacity: .5; }
 .mono-cell { font-family: Consolas, monospace; font-size: 12px; }
 .mono-cell.dup { color: var(--err); }
+.anim-cell { display: flex; align-items: center; gap: 4px; }
+.anim-in {
+  flex: 1; min-width: 0; font-family: Consolas, monospace; font-size: 12px;
+  padding: 2px 6px;
+}
+.anim-in.dup { border-color: var(--err); color: var(--err); }
+.anim-in.off { border-color: var(--warn); }
+.mini {
+  padding: 1px 5px; font-size: 12px; line-height: 1.3;
+  background: none; border: 1px solid var(--border); border-radius: 3px;
+  color: var(--text-dim); cursor: pointer;
+}
+.mini:hover { color: var(--text); }
+.tag {
+  font-size: 11px; color: var(--ok); border: 1px solid var(--ok);
+  border-radius: 3px; padding: 0 3px; opacity: .8;
+}
 .dim { color: var(--text-dim); font-size: 12px; }
 .ok-text { color: var(--ok); font-size: 12px; }
 .warn-text { color: var(--warn); font-size: 12px; }

@@ -8,7 +8,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -36,6 +36,11 @@ class SpineExportRequest(BaseModel):
     # 参考工程反解出来的导出约定：版本/帧名格式/画布/渲染尺寸/逐动画对齐偏移。
     # 指定后，下面同名的字段以模板为准（请求里显式给的仍然优先）。
     template_id: Optional[str] = Field(default=None, description="Spine 导出模板")
+    anim_names: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="逐动作改动画名：action_id → 名字（缺省用推断值；空串＝取消自定义）")
+    remember_names: bool = Field(
+        True, description="把改过的名字记到动作上，下次导出与流水线自动导出都用它")
     fps: float = Field(12, gt=0, le=60, description="未记录抽帧帧率时的默认值")
     # 尺寸只由画布决定：帧等比压进画布，结果与源帧分辨率无关。
     # 不再提供额外缩放系数——它会和画布的兜底缩放叠乘，角色越缩越小。
@@ -50,15 +55,28 @@ class SpineExportRequest(BaseModel):
     use_processed: bool = Field(True, description="优先用抠图/描边后的帧")
 
 
-def anim_name_of(action: dict) -> str:
-    """动作 → Spine 动画名：模板设定 > 变体名推断 > 动作名。"""
+def clean_anim(name: str) -> str:
+    """动画名会拿去当帧文件名和图集区域名，路径字符与多余空白都得去掉。"""
+    # 制表/换行换成空格再折叠，别把前后两个词粘成一个
+    s = "".join(" " if c < " " else c
+                for c in (name or "") if c not in _BAD_CHARS)
+    return " ".join(s.split())
+
+
+def derived_anim(action: dict) -> str:
+    """没在动作上改过名时的推断值：模板设定 > 变体名推断 > 动作名。"""
     tpl = template_store.get(action.get("template_id") or "") or {}
     if (tpl.get("spine_anim") or "").strip():
-        return tpl["spine_anim"].strip()
+        return clean_anim(tpl["spine_anim"])
     variant = (tpl.get("variant") or "").strip()
     name = (action.get("name") or "").strip()
-    return (DEFAULT_ANIM_MAP.get(variant) or DEFAULT_ANIM_MAP.get(name)
-            or name or "anim")
+    return clean_anim(DEFAULT_ANIM_MAP.get(variant) or DEFAULT_ANIM_MAP.get(name)
+                      or name) or "anim"
+
+
+def anim_name_of(action: dict) -> str:
+    """动作 → Spine 动画名：动作上单独取的名字最大，其次才是推断值。"""
+    return clean_anim(action.get("spine_anim") or "") or derived_anim(action)
 
 
 def _export_dir(sprite_id: str, name: str) -> Path:
@@ -90,11 +108,14 @@ def preview_spine(sprite_id: str):
         raise HTTPException(status_code=404, detail=str(e))
     items, used = [], {}
     for action in sprite_store.list_actions(sprite_id):
-        anim = anim_name_of(action)
+        custom = clean_anim(action.get("spine_anim") or "")
+        suggest = derived_anim(action)
+        anim = custom or suggest
         used[anim] = used.get(anim, 0) + 1
         summary = action.get("summary") or {}
         items.append({
             "action_id": action["id"], "name": action.get("name"), "anim": anim,
+            "custom": custom, "suggest": suggest,
             "frames": int(summary.get("frame_count") or 0),
             "processed": int(summary.get("processed_count") or 0),
             "status": action.get("status"),
@@ -147,6 +168,9 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
     outline_cfg = ExportOutlineConfig(**{k: v for k, v in ocfg.items()
                                          if k in ExportOutlineConfig.model_fields})
 
+    # 这次导出单独取的名字（界面上逐行改的）；没给的动作仍按动作/模板的设定
+    overrides = {k: clean_anim(v) for k, v in (req.anim_names or {}).items()}
+
     anims, atlas_items, skipped = [], [], []
     total = len(action_ids)
     for n, aid in enumerate(action_ids):
@@ -158,7 +182,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
         except Exception as e:
             skipped.append({"action_id": aid, "reason": "无法打开: %s" % e})
             continue
-        anim = anim_name_of(action)
+        anim = overrides.get(aid) or anim_name_of(action)
         ctx.report(n / total * 80, "[%d/%d] %s" % (n + 1, total, anim))
 
         frames = session.frame_manager.frames
@@ -259,6 +283,56 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
     }
 
 
+def _resolve_names(sprite_id: str, ids: List[str],
+                   req: SpineExportRequest) -> None:
+    """定下这次导出每个动作用的动画名：清洗、查重，改过的按需记到动作上。
+
+    同名的两个动作会写同一批帧文件、在骨架里互相覆盖，所以这里直接拦掉，
+    不让它跑完了才发现少了一个动画。
+    """
+    given = {k: clean_anim(v) for k, v in (req.anim_names or {}).items()
+             if k in set(ids)}
+    for aid, nm in given.items():
+        if not nm and (req.anim_names or {}).get(aid, "").strip():
+            raise HTTPException(status_code=400,
+                                detail="动画名里只剩下不能用的字符了：%s" %
+                                       req.anim_names[aid])
+
+    used, final = {}, {}
+    for aid in ids:
+        try:
+            action = sprite_store.get_action(sprite_id, aid)
+        except Exception:
+            continue
+        if aid in given:
+            # 传了空串＝要取消自定义，这一趟就直接按推断值导
+            nm = given[aid] or derived_anim(action)
+        else:
+            nm = anim_name_of(action)
+        final[aid] = (action, nm)
+        used.setdefault(nm, []).append(action.get("name") or aid)
+    dup = {k: v for k, v in used.items() if len(v) > 1}
+    if dup:
+        detail = "；".join("%s ← %s" % (k, "、".join(v)) for k, v in dup.items())
+        raise HTTPException(
+            status_code=400,
+            detail="动画名重复，同名会互相覆盖，请改掉其中一个：" + detail)
+
+    # 定下来的名字回填进请求，任务体照着导（省得两处各算一遍还可能不一样）
+    req.anim_names = {aid: nm for aid, (_, nm) in final.items()}
+
+    if not req.remember_names:
+        return
+    for aid, nm in given.items():
+        action = (final.get(aid) or (None, ""))[0]
+        if action is None:
+            continue
+        # 改回推断值就把自定义清掉——让模板继续说了算，而不是把当前值冻在动作上
+        keep = "" if not nm or nm == derived_anim(action) else nm
+        if clean_anim(action.get("spine_anim") or "") != keep:
+            sprite_store.update_action(sprite_id, aid, {"spine_anim": keep})
+
+
 @router.post("/export")
 def export_spine(sprite_id: str, req: SpineExportRequest):
     """导出 Spine 资源包（后台任务）：images/ + .json + .atlas + .png。"""
@@ -274,6 +348,8 @@ def export_spine(sprite_id: str, req: SpineExportRequest):
         ids = [i for i in ids if i in want]
     if not ids:
         raise HTTPException(status_code=400, detail="没有可导出的动作")
+
+    _resolve_names(sprite_id, ids, req)
 
     job = job_manager.submit(
         "spine_export",

@@ -278,6 +278,112 @@ def test_没有动作时导出报错(client, sprite):
     assert "没有可导出的动作" in r.json()["detail"]
 
 
+# ------------------------------------------------------- Spine 动画名
+@pytest.fixture
+def 走路动作(client, sprite, two_templates):
+    own, _ = two_templates
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "走路"}).json()
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"template_id": own["id"]})
+    return a
+
+
+def _preview_of(client, sprite_id, action_id):
+    items = client.get(f"/api/sprites/{sprite_id}/spine/preview").json()["items"]
+    return next(i for i in items if i["action_id"] == action_id)
+
+
+def test_没改名时预检报推断值(client, sprite, 走路动作):
+    it = _preview_of(client, sprite["id"], 走路动作["id"])
+    assert it["anim"] == "walk1", "变体「走路」应推断成 walk1"
+    assert it["suggest"] == "walk1"
+    assert it["custom"] == "", "没改过名就不该有自定义值"
+
+
+def test_动作上另取的名字压过推断值(client, sprite, 走路动作):
+    r = client.patch(f"/api/sprites/{sprite['id']}/actions/{走路动作['id']}",
+                     json={"spine_anim": "run_fast1"})
+    assert r.status_code == 200, r.text
+    it = _preview_of(client, sprite["id"], 走路动作["id"])
+    assert it["anim"] == "run_fast1"
+    assert it["custom"] == "run_fast1"
+    assert it["suggest"] == "walk1", "推断值要照报，界面才能给「恢复默认」"
+
+
+def test_空串取消自定义(client, sprite, 走路动作):
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{走路动作['id']}",
+                 json={"spine_anim": "run_fast1"})
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{走路动作['id']}",
+                 json={"spine_anim": ""})
+    it = _preview_of(client, sprite["id"], 走路动作["id"])
+    assert it["custom"] == ""
+    assert it["anim"] == "walk1", "取消后要落回推断值"
+
+
+def test_导出时重名直接拦掉(client, sprite, 走路动作):
+    b = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "工作"}).json()
+    r = client.post(f"/api/sprites/{sprite['id']}/spine/export",
+                    json={"anim_names": {走路动作["id"]: "same1", b["id"]: "same1"}})
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert "重复" in detail and "same1" in detail
+    assert "走路" in detail and "工作" in detail, "要指出是哪两个动作撞了"
+    # 拦下来的这一次不该把名字写到动作上
+    assert _preview_of(client, sprite["id"], 走路动作["id"])["custom"] == ""
+
+
+def test_改名落到动作上_跟推断值一样则不记(sprite):
+    """导出端点里的定名逻辑：改过的记住，改回推断值的清掉。"""
+    from app.api.spine_api import SpineExportRequest, _resolve_names
+    from app.services.sprite_store import sprite_store
+
+    sid = sprite["id"]
+    a = sprite_store.create_action(sid, "待机")
+    req = SpineExportRequest(anim_names={a["id"]: "idle_special1"})
+    _resolve_names(sid, [a["id"]], req)
+    assert sprite_store.get_action(sid, a["id"])["spine_anim"] == "idle_special1"
+    assert req.anim_names[a["id"]] == "idle_special1", "定下的名字要回填给任务体"
+
+    req = SpineExportRequest(anim_names={a["id"]: "wait1"})     # 就是推断值
+    _resolve_names(sid, [a["id"]], req)
+    assert "spine_anim" not in sprite_store.get_action(sid, a["id"]),         "填回推断值应清掉自定义，让模板继续说了算"
+
+
+def test_不勾记住就只影响这一次(sprite):
+    from app.api.spine_api import SpineExportRequest, _resolve_names
+    from app.services.sprite_store import sprite_store
+
+    sid = sprite["id"]
+    a = sprite_store.create_action(sid, "睡觉")
+    req = SpineExportRequest(anim_names={a["id"]: "nap1"}, remember_names=False)
+    _resolve_names(sid, [a["id"]], req)
+    assert req.anim_names[a["id"]] == "nap1", "这一次仍按改过的名字导"
+    assert "spine_anim" not in sprite_store.get_action(sid, a["id"])
+
+
+@pytest.mark.parametrize("bad,want", [
+    ("  walk 1  ", "walk 1"), ("a/b:c", "abc"), ("x	y", "x y"),
+])
+def test_动画名清洗掉路径字符与多余空白(bad, want):
+    from app.api.spine_api import clean_anim
+    assert clean_anim(bad) == want
+
+
+def test_名字只剩非法字符时报错(sprite):
+    from app.api.spine_api import SpineExportRequest, _resolve_names
+    from app.services.sprite_store import sprite_store
+    from fastapi import HTTPException
+
+    sid = sprite["id"]
+    a = sprite_store.create_action(sid, "洗澡")
+    req = SpineExportRequest(anim_names={a["id"]: "///"})
+    with pytest.raises(HTTPException) as e:
+        _resolve_names(sid, [a["id"]], req)
+    assert e.value.status_code == 400
+
+
 # ------------------------------------------------------- Spine 模板库
 def test_导入不存在的路径报错(client):
     r = client.post("/api/spine-templates/import", json={"path": "D:/不存在的目录"})

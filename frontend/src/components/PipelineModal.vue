@@ -209,6 +209,7 @@ async function resume(list) {
           </div>
           <p v-if="spineOn" class="hint" style="margin:6px 0 0">
             收口按整个角色导出（不只这一批），帧统一压进 128 画布，描边按精灵预设在压进画布后应用。
+            动画名用各动作记下的名字（在「导出 Spine」弹窗里改并勾「记住改名」即可）。
             全部动作跑完才会触发；中途有失败的就不导，补跑完成后自动接上。
           </p>
         </div>
