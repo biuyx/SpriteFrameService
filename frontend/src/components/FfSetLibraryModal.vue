@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue'
 import { toast, askConfirm } from '../stores'
 import api from '../api'
+import FolderPick from './FolderPick.vue'
+import { IMAGE_EXTS } from '../fileTypes'
 
 // 参考首帧库：完成角色的全套动作首帧集合，供新角色首帧生图作姿势参考
 const emit = defineEmits(['close'])
@@ -38,11 +40,13 @@ function fmtTime(ts) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
 }
 
-async function runImport() {
-  if (!impDir.value.trim()) return toast('请填写首帧图片目录')
+// dir 不传就用输入框里的服务器目录；网页选文件夹上传时传的是暂存目录，
+// 这时名称缺省取所选文件夹名（暂存目录的名字对用户没意义）
+async function runImport(dir = impDir.value.trim(), label = '') {
+  if (!dir) return toast('请选择首帧图片文件夹，或填写服务器上的目录')
   importing.value = true
   try {
-    const r = await api.ffsetImportDir(impDir.value.trim(), impName.value.trim(), impGroup.value.trim())
+    const r = await api.ffsetImportDir(dir, impName.value.trim() || label, impGroup.value.trim())
     toast(`已导入参考集「${r.name}」（${r.frames.length} 个动作首帧）`)
     impDir.value = ''
     impName.value = ''
@@ -92,10 +96,15 @@ onMounted(load)
 
       <div class="ops-box">
         <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
-          <input v-model="impDir" placeholder="目录导入：如 D:\素材\deliverable\artisan" style="flex:1;min-width:220px" />
-          <input v-model="impName" placeholder="名称（可空）" style="width:110px" />
+          <input v-model="impName" placeholder="名称（可空，默认用文件夹名）" style="width:170px" />
           <input v-model="impGroup" placeholder="分组（可空）" style="width:100px" />
-          <button class="small" :disabled="importing" @click="runImport">
+          <FolderPick label="选择首帧文件夹" :accept="IMAGE_EXTS" :disabled="importing"
+                      @done="r => runImport(r.dir, r.label)" />
+        </div>
+        <div class="row" style="align-items:center;gap:8px;margin-top:6px">
+          <input v-model="impDir" placeholder="或填服务器上的目录" style="flex:1;min-width:200px"
+                 title="图片已经在服务器上时用（管理员）；在自己电脑上就点「选择首帧文件夹」" />
+          <button class="small" :disabled="importing" @click="runImport()">
             {{ importing ? '导入中…' : '目录导入' }}</button>
         </div>
         <div class="row" style="align-items:center;gap:8px;margin-top:6px">

@@ -37,7 +37,40 @@ async function request(method, path, { json, form, blob } = {}) {
   return res
 }
 
+// 上传一个文件夹（或一个 zip）到服务器暂存区，返回服务器上的目录。
+// 走 XHR 而不是 fetch：一批模板视频动辄几百 MB，要有上传进度。
+function uploadStaging(files, onProgress) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData()
+    for (const f of files) {
+      form.append('files', f)
+      // 选目录时浏览器只给末段文件名，相对路径（含所选文件夹名）要单独带上
+      form.append('paths', f.webkitRelativePath || f.name)
+    }
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', BASE + '/api/uploads/staging')
+    xhr.withCredentials = true
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total) }
+    }
+    xhr.onload = () => {
+      let data = null
+      try { data = JSON.parse(xhr.responseText) } catch { /* ignore */ }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(data)
+      const detail = data?.detail || xhr.statusText || `HTTP ${xhr.status}`
+      if (xhr.status === 401 && onUnauthorized) onUnauthorized(detail)
+      const err = new Error(detail)
+      err.status = xhr.status
+      reject(err)
+    }
+    xhr.onerror = () => reject(new Error('网络中断，上传未完成'))
+    xhr.send(form)
+  })
+}
+
 const api = {
+  uploadStaging,
+
   // 认证
   authStatus: () => request('GET', '/api/auth/status'),
   login: (token) => request('POST', '/api/auth/login', { json: { token } }),

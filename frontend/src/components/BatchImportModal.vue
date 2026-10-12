@@ -3,10 +3,15 @@ import { ref, onMounted } from 'vue'
 import { toast } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
+import FolderPick from './FolderPick.vue'
+import { IMAGE_EXTS, VIDEO_EXTS } from '../fileTypes'
 
 const emit = defineEmits(['close', 'done'])
 
 const framesDir = ref('')
+// 网页上传的文件夹：输入框里填的是服务器暂存目录，旁边显示用户认得的文件夹名
+const framesUp = ref(null)         // { dir, label, files }
+const tplUp = ref(null)
 const project = ref('')            // 项目名称 → 精灵分类标签
 const tplSource = ref('dir')       // 'library' 参考视频库分组 | 'dir' 本地目录 | 'none'
 const tplGroup = ref('')           // 选中的分组（'' = 未分组）
@@ -46,8 +51,20 @@ function scanPayload() {
   return p
 }
 
+function onFramesUploaded(r) {
+  framesDir.value = r.dir
+  framesUp.value = r
+  scan()                           // 传完直接出预览，少点一下
+}
+
+function onTplUploaded(r) {
+  templatesDir.value = r.dir
+  tplUp.value = r
+  if (framesDir.value.trim()) scan()
+}
+
 async function scan() {
-  if (!framesDir.value.trim()) return toast('请填写角色首帧根目录')
+  if (!framesDir.value.trim()) return toast('请先选择角色首帧文件夹，或填写服务器上的目录')
   scanning.value = true
   result.value = null
   try {
@@ -123,8 +140,15 @@ async function runImport() {
 
       <div class="set-group">
         <label class="set-label">角色首帧根目录（每个子目录 = 一个角色，图片名 = 动作）</label>
-        <input v-model="framesDir" style="width:100%"
-               placeholder="例如 D:\JAVA\kozy\art\批量动作\角色动作首帧\deliverable" />
+        <div class="dir-row">
+          <FolderPick label="选择文件夹" :accept="IMAGE_EXTS" :disabled="scanning"
+                      @done="onFramesUploaded" />
+          <input v-model="framesDir" style="flex:1"
+                 placeholder="或填服务器上的目录"
+                 title="选的是根目录：里面每个子文件夹是一个角色，子文件夹里的图片名就是动作 key" />
+        </div>
+        <p v-if="framesUp && framesUp.dir === framesDir" class="hint up-hint">
+          已上传「{{ framesUp.label }}」：{{ framesUp.files }} 个文件</p>
       </div>
 
       <div class="set-group">
@@ -137,14 +161,23 @@ async function runImport() {
             <option v-for="g in libGroups" :key="g.name" :value="g.name">
               {{ g.ungrouped ? '（未分组）' : g.name }}（{{ g.count }} 个模板）</option>
           </select>
-          <label class="radio"><input type="radio" value="dir" v-model="tplSource" /> 本地目录</label>
+          <label class="radio"><input type="radio" value="dir" v-model="tplSource" /> 视频文件夹</label>
           <label class="radio"><input type="radio" value="none" v-model="tplSource" /> 不使用</label>
         </div>
         <p v-if="tplSource === 'library'" class="hint" style="margin:6px 0 0">
           分组内每个模板对应一个动作（变体名即动作名，同 key 变体共用一张首帧图），并精确绑定各自模板；
           首帧图按文件名匹配，缺图的动作之后可从「首帧图库」补。</p>
-        <input v-if="tplSource === 'dir'" v-model="templatesDir" style="width:100%;margin-top:6px"
-               placeholder="模板视频目录，导入为全局模板并按动作名自动关联（可空）" />
+        <template v-if="tplSource === 'dir'">
+          <div class="dir-row" style="margin-top:6px">
+            <FolderPick label="选择视频文件夹" :accept="VIDEO_EXTS" :disabled="scanning"
+                        @done="onTplUploaded" />
+            <input v-model="templatesDir" style="flex:1"
+                   placeholder="或填服务器上的目录（可空）"
+                   title="模板视频导入为全局模板，并按动作名自动关联" />
+          </div>
+          <p v-if="tplUp && tplUp.dir === templatesDir" class="hint up-hint">
+            已上传「{{ tplUp.label }}」：{{ tplUp.files }} 个视频</p>
+        </template>
       </div>
 
       <div class="set-row">
@@ -196,6 +229,8 @@ async function runImport() {
 </template>
 
 <style scoped>
+.dir-row { display: flex; gap: 6px; align-items: center; }
+.up-hint { margin: 4px 0 0; color: var(--ok); }
 .modal-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 90;
   display: flex; align-items: center; justify-content: center;

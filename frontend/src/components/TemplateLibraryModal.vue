@@ -2,6 +2,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { toast, askConfirm } from '../stores'
 import api from '../api'
+import FolderPick from './FolderPick.vue'
+import { VIDEO_EXTS } from '../fileTypes'
 
 const emit = defineEmits(['close', 'changed'])
 
@@ -95,15 +97,16 @@ async function onFiles(files) {
   toast(fails.length ? `导入 ${ok} 个，失败 ${fails.length} 个：${fails[0]}` : `已导入 ${ok} 个模板`)
 }
 
-async function runScan() {
-  const dir = scanDir.value.trim()
-  if (!dir) return toast('请填写模板视频所在目录')
+// dir 不传就用输入框里的服务器目录；网页选文件夹上传时传的是暂存目录
+async function runScan(dir = scanDir.value.trim(), label = '') {
+  if (!dir) return toast('请选择文件夹，或填写服务器上的目录')
   scanning.value = true
   try {
     const r = await api.scanTemplates(dir, uploadGroup.value.trim())
     changed.value = true
     await load()
-    toast(`目录导入完成：新增 ${r.imported_count} 个，跳过 ${r.skipped.length} 个（已存在）`)
+    toast(`${label ? `「${label}」` : '目录'}导入完成：新增 ${r.imported_count} 个，`
+          + `跳过 ${r.skipped.length} 个（已存在）`)
   } catch (e) {
     toast(`导入失败: ${e.message}`)
   } finally {
@@ -203,8 +206,11 @@ onMounted(load)
           {{ uploading ? '导入中…' : '上传视频（可多选）' }}</button>
         <input ref="fileInput" type="file" accept="video/*" multiple style="display:none"
                @change="e => onFiles([...e.target.files])" />
-        <input v-model="scanDir" placeholder="或填目录路径批量导入，如 D:\素材\动作模板" style="flex:1;min-width:170px" />
-        <button class="small" :disabled="scanning" @click="runScan">{{ scanning ? '扫描中…' : '目录导入' }}</button>
+        <FolderPick label="选择文件夹导入" :accept="VIDEO_EXTS" :disabled="scanning"
+                    @done="r => runScan(r.dir, r.label)" />
+        <input v-model="scanDir" placeholder="或填服务器上的目录" style="flex:1;min-width:140px"
+               title="视频已经在服务器上时用（管理员）；在自己电脑上就点左边「选择文件夹导入」" />
+        <button class="small" :disabled="scanning" @click="runScan()">{{ scanning ? '扫描中…' : '目录导入' }}</button>
         <input v-model="uploadGroup" list="tpl-groups" placeholder="导入到分组（可空）" style="width:140px"
                title="上传/目录导入 归入的分组名" />
         <datalist id="tpl-groups"><option v-for="g in groups" :key="g" :value="g" /></datalist>
