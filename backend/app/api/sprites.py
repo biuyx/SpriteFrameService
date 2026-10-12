@@ -58,6 +58,7 @@ class ActionPatch(BaseModel):
     template_id: Optional[str] = None
     gen_prefs: Optional[dict] = None       # 生成设定记忆（提示词/参数/参考集）
     spine_anim: Optional[str] = None       # 导出 Spine 时的动画名（空串＝取消自定义）
+    export_alias: Optional[str] = None     # 导出文件名别名（空串＝取消，落回动作名）
 
 
 class ClaimRequest(BaseModel):

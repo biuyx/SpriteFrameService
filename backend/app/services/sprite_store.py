@@ -389,7 +389,7 @@ class SpriteStore:
 
     def update_action(self, sprite_id: str, action_id: str, patch: dict) -> dict:
         allowed = {"name", "status", "first_frame", "preset_override", "template_id",
-                   "gen_prefs", "pipeline", "spine_anim"}
+                   "gen_prefs", "pipeline", "spine_anim", "export_alias"}
         with self._lock:
             data = self._read_json(self.action_json(sprite_id, action_id))
             for k in allowed & set(patch.keys()):
@@ -397,13 +397,13 @@ class SpriteStore:
                     data["name"] = _clean_name(str(patch["name"]), data["name"])
                 elif k == "status" and patch[k] in ("new", "active", "final"):
                     data["status"] = patch[k]
-                elif k == "spine_anim":
-                    # 空串＝取消自定义，落回模板/变体名推断，别留个空字符串挡住
+                elif k in ("spine_anim", "export_alias"):
+                    # 空串＝取消，落回推断值/动作名，别留个空字符串挡住
                     v = str(patch[k] or "").strip()
                     if v:
-                        data["spine_anim"] = v
+                        data[k] = v
                     else:
-                        data.pop("spine_anim", None)
+                        data.pop(k, None)
                 else:
                     data[k] = patch[k]
             self._write_json(self.action_json(sprite_id, action_id), data)

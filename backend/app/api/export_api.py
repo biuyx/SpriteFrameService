@@ -5,6 +5,7 @@ import io
 import re
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -20,6 +21,45 @@ router = APIRouter(prefix="/sessions/{session_id}/export", tags=["export"])
 
 def _sanitize_name(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-一-鿿]", "_", name) or "export"
+
+
+# 默认就叫动作名：一个角色下每个动作各自一个名字，导出后放一起也分得清
+DEFAULT_NAME_PATTERN = "{action}"
+
+
+def _sprite_action_names(session_id: str) -> tuple:
+    """会话 → (角色名, 动作名, Spine 动画名, 该动作存的导出别名)。
+
+    旧会话没建过档就都是空的。
+    """
+    from app.services.sprite_store import sprite_store
+    try:
+        sprite_id = sprite_store.sprite_of_action(session_id)
+        if sprite_id:
+            action = sprite_store.get_action(sprite_id, session_id)
+            from app.api.spine_api import anim_name_of
+            return ((sprite_store.get_sprite(sprite_id).get("name") or "").strip(),
+                    (action.get("name") or "").strip(),
+                    anim_name_of(action),
+                    (action.get("export_alias") or "").strip())
+    except Exception:
+        pass
+    return "", "", "", ""
+
+
+def _resolve_name(session_id: str, raw: str) -> str:
+    """定下导出名：支持 {sprite} {action} {anim} 占位，留空即动作名。
+
+    优先级：这次填的 > 该动作存的导出别名 > 默认（动作名）。
+    别名挂在动作上：动作名是固定的，导出时对外叫什么可以随时改，改了不动数据。
+    """
+    sprite_name, action_name, anim, alias = _sprite_action_names(session_id)
+    text = (raw or "").strip() or alias or DEFAULT_NAME_PATTERN
+    name = (text.replace("{sprite}", sprite_name)
+                .replace("{action}", action_name)
+                .replace("{anim}", anim)).strip(" _")
+    # 旧会话没建过档，{action} 展开成空，退到角色名、再退到通用名
+    return _sanitize_name(name or sprite_name or "sprite")
 
 
 def _safe_child(base: Path, *parts: str) -> Path:
@@ -149,6 +189,9 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
 
     cfg = config.model_copy()
     cfg.output_path = export_dir
+    # 文件名跟目录名用同一个已清洗的值：既跟着「角色_动作」走，
+    # 也不让 ../ 之类的输入顺着 f"{output_name}.png" 跑出导出目录
+    cfg.output_name = export_name
 
     # 循环过渡：非破坏性应用到导出帧（使首尾无缝衔接）
     lt = cfg.loop_transition
@@ -188,7 +231,7 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
 def create_export(session_id: str, req: ExportRequest):
     session = get_session(session_id)
     indices = require_indices(session, req.indices)
-    export_name = _sanitize_name(req.config.output_name)
+    export_name = _resolve_name(session_id, req.config.output_name)
 
     job = job_manager.submit(
         "export", lambda ctx: run_export(session, req.config, indices, export_name, ctx),
@@ -196,10 +239,45 @@ def create_export(session_id: str, req: ExportRequest):
     return {"job_id": job.id, "export_name": export_name}
 
 
+@router.get("/name-parts")
+def export_name_parts(session_id: str):
+    """文件名占位符各自会展开成什么——界面上照着显示「这次会导成什么名字」。"""
+    sprite_name, action_name, anim, alias = _sprite_action_names(session_id)
+    return {"sprite": sprite_name, "action": action_name, "anim": anim,
+            "alias": alias, "default": DEFAULT_NAME_PATTERN}
+
+
 @router.get("/list")
 def list_exports(session_id: str):
     session = get_session(session_id)
     return session.storage.list_exports()
+
+
+def _attachment(filename: str) -> dict:
+    """下载响应头。
+
+    中文名直接塞进 Content-Disposition 会炸——响应头只吃 latin-1，
+    非 ASCII 的按 RFC 5987 走 filename*（FileResponse 内部也是这么干的）。
+    """
+    quoted = quote(filename)
+    if quoted == filename:
+        return {"Content-Disposition": 'attachment; filename="%s"' % filename}
+    return {"Content-Disposition": "attachment; filename*=utf-8''%s" % quoted}
+
+
+def _download_names(session_id: str, export_name: str) -> tuple:
+    """下载时的 (单文件前缀, zip 文件名, zip 内目录)——都带上角色名。
+
+    盘上的产物本来就按角色/动作分开存，但下载下来会挤进同一个下载目录：
+    动作名在不同角色之间是会重复的（谁都有「走路」），不分开就会互相盖。
+    """
+    raw = _sprite_action_names(session_id)[0]
+    sprite_name = _sanitize_name(raw) if raw else ""
+    if not sprite_name:
+        return "", export_name + ".zip", export_name
+    return (sprite_name + "_",
+            "%s_%s.zip" % (sprite_name, export_name),
+            "%s/%s" % (sprite_name, export_name))
 
 
 @router.get("/{name}/download")
@@ -214,20 +292,21 @@ def download_export(session_id: str, name: str):
     if not files:
         raise HTTPException(status_code=404, detail="导出为空")
 
+    # 用解析后的目录名，避免请求参数直接进响应头
+    prefix, zip_name, arc_root = _download_names(session_id, export_dir.name)
+
     if len(files) == 1:
-        return FileResponse(str(files[0]), filename=files[0].name)
+        # 单个文件不套目录，改在文件名上分开（GIF 这类直接拿走的场景不想再解一层 zip）
+        return FileResponse(str(files[0]), filename=prefix + files[0].name)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
-            zf.write(f, arcname=f.name)
+            # 解到哪都自带「角色/动作」两层，几个角色的产物不会混进同一个文件夹
+            zf.write(f, arcname="%s/%s" % (arc_root, f.name))
     buf.seek(0)
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        # 用解析后的目录名，避免请求参数直接进响应头
-        headers={"Content-Disposition": f'attachment; filename="{export_dir.name}.zip"'},
-    )
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers=_attachment(zip_name))
 
 
 @router.get("/{name}/files/{filename}")

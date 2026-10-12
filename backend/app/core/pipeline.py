@@ -53,7 +53,6 @@ DEFAULT_OUTPUT_PRESET = {          # 精灵导出预设缺省：序列帧 PNG
     "format": "frames",
     "pngquant_config": {"enabled": False, "quality_min": 60, "quality_max": 80},
     "loop_transition": {"enabled": False, "count": 5, "mode": "blend"},
-    "name_pattern": "{sprite}_{action}",
 }
 
 
@@ -433,9 +432,14 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 check_export(sprite_id, action, opts, session)
                 sp = sprite_store.get_sprite(sprite_id)
                 out = dict((sp.get("preset") or {}).get("output") or DEFAULT_OUTPUT_PRESET)
-                pattern = out.pop("name_pattern", None) or "{sprite}_{action}"
+                # 导出名只看动作：存过导出名就用它，否则就是动作名。
+                # 角色预设只管格式与参数——那是所有动作共用的，不该决定文件名。
+                out.pop("name_pattern", None)        # 老预设里可能还留着，忽略
+                pattern = (action.get("export_alias") or "").strip() or "{action}"
+                from app.api.spine_api import anim_name_of
                 name = _sanitize(pattern.replace("{sprite}", sp.get("name", "sprite"))
-                                 .replace("{action}", action.get("name", "action")))
+                                 .replace("{action}", action.get("name", "action"))
+                                 .replace("{anim}", anim_name_of(action)))
                 cfg = ExportConfig(**{k: v for k, v in out.items()
                                       if k not in ("output_path", "output_name",
                                                    "frame_indices", "scale", "outline")},

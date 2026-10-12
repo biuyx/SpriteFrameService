@@ -241,6 +241,180 @@ def test_视频与首帧的提示词作用域不同(client, sprite):
     assert v != f, "视频与首帧应解析到各自作用域的提示词"
 
 
+# ------------------------------------------------------- 导出文件名
+@pytest.fixture
+def 走路会话(client, sprite):
+    return client.post(f"/api/sprites/{sprite['id']}/actions",
+                       json={"name": "走路"}).json()
+
+
+def test_没填文件名时就用动作名(走路会话):
+    from app.api.export_api import _resolve_name
+    assert _resolve_name(走路会话["id"], "") == "走路"
+
+
+def test_同一角色下每个动作各自一个名字(client, sprite):
+    """导出目录与文件名都取这个值，几个动作导到一起不能互相盖。"""
+    from app.api.export_api import _resolve_name
+    names = []
+    for n in ("待机", "走路", "睡觉"):
+        a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                        json={"name": n}).json()
+        names.append(_resolve_name(a["id"], ""))
+    assert names == ["待机", "走路", "睡觉"]
+    assert len(set(names)) == 3
+
+
+@pytest.mark.parametrize("pattern,want", [
+    ("{sprite}_{action}", "测试角色_走路"),
+    ("{action}", "走路"),
+    ("{sprite}-{action}-v2", "测试角色-走路-v2"),
+    ("固定名", "固定名"),
+])
+def test_文件名支持占位符(走路会话, pattern, want):
+    """和精灵导出预设里存的名称格式是同一套写法。"""
+    from app.api.export_api import _resolve_name
+    assert _resolve_name(走路会话["id"], pattern) == want
+
+
+def test_文件名可以用spine动画名(client, sprite):
+    """美术那边按动画名收文件，{anim} 就是导出弹窗里那个名字。"""
+    from app.api.export_api import _resolve_name
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "待机"}).json()
+    assert _resolve_name(a["id"], "{anim}") == "wait1"
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"spine_anim": "idle_v2"})
+    assert _resolve_name(a["id"], "{anim}") == "idle_v2", "跟着动作上改的名字走"
+
+
+def test_动作上存的导出别名说了算(client, sprite):
+    """动作名是固定的，对外叫什么挂在动作上，随时可改且不动数据。"""
+    from app.api.export_api import _resolve_name
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "待机"}).json()
+    r = client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                     json={"export_alias": "idle_loop"})
+    assert r.status_code == 200, r.text
+    assert _resolve_name(a["id"], "") == "idle_loop"
+    # 这次显式填的仍然优先
+    assert _resolve_name(a["id"], "{action}") == "待机"
+    # 别名里也能用占位符
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"export_alias": "{anim}_v2"})
+    assert _resolve_name(a["id"], "") == "wait1_v2"
+
+
+def test_清掉别名落回动作名(client, sprite):
+    from app.api.export_api import _resolve_name
+    from app.services.sprite_store import sprite_store
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "走路"}).json()
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"export_alias": "walk_loop"})
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"export_alias": ""})
+    assert "export_alias" not in sprite_store.get_action(sprite["id"], a["id"])
+    assert _resolve_name(a["id"], "") == "走路"
+
+
+def test_别名只影响这一个动作(client, sprite):
+    """跟角色预设的区别就在这儿：别名是挂在单个动作上的。"""
+    from app.api.export_api import _resolve_name
+    ids = {}
+    for n in ("洗澡", "睡觉"):
+        ids[n] = client.post(f"/api/sprites/{sprite['id']}/actions",
+                             json={"name": n}).json()["id"]
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{ids['洗澡']}",
+                 json={"export_alias": "bath_special"})
+    assert _resolve_name(ids["洗澡"], "") == "bath_special"
+    assert _resolve_name(ids["睡觉"], "") == "睡觉", "别的动作不受影响"
+
+
+def test_不带占位符就是固定名(client, sprite):
+    """每个动作都导成同一个名字——界面上会拦一下，行为本身钉在这里。"""
+    from app.api.export_api import _resolve_name
+    got = []
+    for n in ("待机", "走路"):
+        a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                        json={"name": n}).json()
+        got.append(_resolve_name(a["id"], "wait1"))
+    assert got == ["wait1", "wait1"]
+
+
+def test_占位符展开值给界面预览(client, sprite):
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "待机"}).json()
+    r = client.get(f"/api/sessions/{a['id']}/export/name-parts")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"sprite": "测试角色", "action": "待机", "anim": "wait1",
+                        "alias": "", "default": "{action}"}
+
+
+def test_旧会话没建档时退回通用名():
+    from app.api.export_api import _resolve_name
+    assert _resolve_name("不存在的会话id", "") == "sprite"
+    assert _resolve_name("不存在的会话id", "{sprite}_{action}") == "sprite"
+
+
+def test_名字里的路径字符导不出目录外(client):
+    """文件名会拼进 f"{name}.png"，不清洗就能顺着 ../ 跑出导出目录。"""
+    from app.api.export_api import _resolve_name
+    sp = client.post("/api/sprites", json={"name": "../坏 角色"}).json()
+    a = client.post(f"/api/sprites/{sp['id']}/actions",
+                    json={"name": "走路"}).json()
+    name = _resolve_name(a["id"], "")
+    assert "/" not in name and ".." not in name and " " not in name
+    assert _resolve_name(a["id"], "../../逃") == "______逃"
+
+
+def _make_export(client, sprite_id, action_name, export_name, filenames):
+    """造一份导出产物：建动作、开会话、往 exports/<名字>/ 里塞文件。"""
+    from app.api.deps import get_session
+    a = client.post(f"/api/sprites/{sprite_id}/actions",
+                    json={"name": action_name}).json()
+    client.post(f"/api/sprites/{sprite_id}/actions/{a['id']}/open")
+    d = get_session(a["id"]).storage.export_dir(export_name)
+    for f in filenames:
+        (d / f).write_bytes(b"x")
+    return a["id"]
+
+
+def test_下载的产物按角色分开(client, sprite):
+    """动作名跨角色会重复，下载下来不带角色名就会互相盖。"""
+    import io, zipfile
+    aid = _make_export(client, sprite["id"], "走路", "走路",
+                       ["走路_0001.png", "走路_0002.png"])
+    r = client.get(f"/api/sessions/{aid}/export/走路/download")
+    assert r.status_code == 200, r.text
+    # 中文名在响应头里是 RFC 5987 编码的（直接塞会炸）
+    from urllib.parse import unquote
+    assert "测试角色_走路.zip" in unquote(r.headers["content-disposition"])
+    names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
+    assert names == ["测试角色/走路/走路_0001.png", "测试角色/走路/走路_0002.png"], names
+
+
+def test_两个角色的同名动作解到一起不会撞(client):
+    import io, zipfile
+    roots = []
+    for sp_name in ("角色甲", "角色乙"):
+        sp = client.post("/api/sprites", json={"name": sp_name}).json()
+        aid = _make_export(client, sp["id"], "走路", "走路",
+                           ["走路_0001.png", "走路_0002.png"])
+        r = client.get(f"/api/sessions/{aid}/export/走路/download")
+        roots.append(zipfile.ZipFile(io.BytesIO(r.content)).namelist()[0])
+    assert roots == ["角色甲/走路/走路_0001.png", "角色乙/走路/走路_0001.png"]
+
+
+def test_单个文件下载带上角色名(client, sprite):
+    """GIF 这类只有一个文件的不套目录，改在文件名上分开。"""
+    aid = _make_export(client, sprite["id"], "待机", "待机", ["待机.gif"])
+    r = client.get(f"/api/sessions/{aid}/export/待机/download")
+    assert r.status_code == 200
+    from urllib.parse import unquote
+    assert "测试角色_待机.gif" in unquote(r.headers["content-disposition"])
+
+
 # ------------------------------------------------------- Spine 产物
 def test_产物列表初始为空(client, sprite):
     r = client.get(f"/api/sprites/{sprite['id']}/spine/exports")

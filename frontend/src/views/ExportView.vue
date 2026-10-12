@@ -6,8 +6,30 @@ import api from '../api'
 
 const store = useStore()
 const format = ref('sprite_sheet')
-const outputName = ref('sprite')
-
+// 文件名只有两层：这个动作存过导出名就用它，没有就是动作名。
+// 可以写 {action} {anim} {sprite} 占位，比如存 {anim} 就跟着 Spine 动画名走。
+const DEFAULT_PATTERN = '{action}'
+const outputName = ref('')
+// 占位符各自展开成什么由后端给（{anim} 要按动作/模板推 Spine 动画名）
+const nameParts = ref({ sprite: '', action: '', anim: '', alias: '' })
+// 该动作存下来的导出别名：动作名是固定的，对外叫什么挂在动作上，随时可改
+const alias = ref('')
+// 当前这个名字是哪来的
+const nameFrom = computed(() => {
+  const v = outputName.value.trim()
+  if (!v) return { key: 'default', text: '默认（动作名）' }
+  if (alias.value && v === alias.value) return { key: 'action', text: '该动作的导出名' }
+  return { key: 'dirty', text: '未保存' }
+})
+const resolvedName = computed(() => {
+  const p = nameParts.value
+  const out = (outputName.value.trim() || DEFAULT_PATTERN)
+    .replace(/\{sprite\}/g, p.sprite || '').replace(/\{action\}/g, p.action || '')
+    .replace(/\{anim\}/g, p.anim || '')
+    .replace(/^[_\s]+|[_\s]+$/g, '')
+  // 和后端同一套兜底：动作名取不到就退到角色名
+  return (out || p.sprite || 'sprite').replace(/[^a-zA-Z0-9_\-一-鿿]/g, '_')
+})
 // 精灵预设里启用的尺寸/描边处理，导出时按此顺序非破坏性应用
 const sizeOps = computed(() => {
   const p = store.currentSprite?.preset || {}
@@ -54,7 +76,7 @@ function hexToRgba(hex) {
 
 function buildConfig() {
   const common = {
-    output_name: outputName.value,
+    output_name: outputName.value.trim(),
     pngquant_config: { enabled: pngquant.enabled, quality_min: pngquant.quality_min, quality_max: pngquant.quality_max },
     loop_transition: {
       enabled: store.loopTransition.enabled,
@@ -137,11 +159,9 @@ async function refreshExports() {
 }
 
 // ---- 精灵导出预设（自动流水线的导出参数；默认序列帧 PNG）----
-const namePattern = ref('{sprite}_{action}')
 function applyPreset(p) {
   if (!p || !p.format) return
   format.value = p.format
-  if (p.name_pattern) namePattern.value = p.name_pattern
   if (p.pngquant_config) Object.assign(pngquant, p.pngquant_config)
   if (p.sprite_config) {
     const s = p.sprite_config
@@ -161,13 +181,36 @@ async function savePreset() {
   // 缩放/描边单独存在 preset.scale / preset.outline，不在导出预设里留副本
   delete cfg.scale
   delete cfg.outline
-  const output = { ...cfg, name_pattern: namePattern.value.trim() || '{sprite}_{action}' }
+  // 预设只管格式与参数：文件名是逐动作的，不进预设
+  const output = { ...cfg }
   const sp = await api.patchSprite(store.currentSprite.id, {
     preset: { ...(store.currentSprite.preset || {}), output } })
   store.currentSprite.preset = sp.preset
-  toast(`已保存为「${store.currentSprite.name}」的导出预设，自动流水线导出时使用`)
+  toast(`已保存「${store.currentSprite.name}」的导出预设：格式与参数，`
+        + `该角色所有动作共用（文件名各自按动作走）`)
 }
-onMounted(() => applyPreset(store.currentSprite?.preset?.output))
+async function saveAlias() {
+  const v = outputName.value.trim()
+  if (!store.currentAction) return
+  await api.patchAction(store.currentSprite.id, store.currentAction.id,
+                        { export_alias: v })
+  alias.value = v
+  store.currentAction.export_alias = v
+  nameParts.value = { ...nameParts.value, alias: v }
+  toast(v ? `「${nameParts.value.action}」以后导出就叫 ${resolvedName.value}`
+          : `已清除「${nameParts.value.action}」的导出名，落回动作名`)
+}
+
+onMounted(async () => {
+  applyPreset(store.currentSprite?.preset?.output)
+  try {
+    const p = await api.exportNameParts(store.sessionId)
+    nameParts.value = p
+    alias.value = (p.alias || '').trim()
+    // 动作上存过别名就以它为准——比角色级的名称格式更具体
+    if (alias.value) outputName.value = alias.value
+  } catch { /* ignore */ }
+})
 
 function fmtSize(b) {
   if (b < 1024) return b + ' B'
@@ -193,16 +236,25 @@ onMounted(refreshExports)
               <option v-for="f in formats" :key="f.key" :value="f.key">{{ f.name }}</option>
             </select>
           </div>
-          <div class="field inline"><label>文件名</label><input v-model="outputName" /></div>
+          <div class="field inline"><label>文件名</label>
+            <input v-model="outputName" :placeholder="DEFAULT_PATTERN" style="width:170px"
+                   title="占位符：{action} 动作名、{anim} Spine 动画名、{sprite} 角色名；留空即动作名" /></div>
+          <span class="mono" title="这次导出实际会用的名字">→ {{ resolvedName }}</span>
+          <span class="hint" :style="nameFrom.key === 'dirty' ? 'color:var(--warn)' : ''">
+            {{ nameFrom.text }}</span>
+          <button class="small" :disabled="nameFrom.key === 'action'"
+                  :title="`把这个名字存到动作「${nameParts.action}」上：动作名不变，`
+                          + '以后这个动作导出就用它（一键流水线也用）'"
+                  @click="saveAlias">存为该动作的导出名</button>
+          <button v-if="alias" class="small" title="清除后落回动作名"
+                  @click="outputName = ''; saveAlias()">清除</button>
           <span class="hint">将导出 {{ selected.length || store.frameCount }} 帧（选中帧）</span>
         </div>
         <div class="row" style="align-items:center;gap:8px">
-          <div class="field inline"><label>预设命名</label>
-            <input v-model="namePattern" style="width:170px" title="自动流水线导出的文件名，支持 {sprite} {action}" /></div>
-          <button class="small" title="把当前格式与参数保存为本精灵的导出预设（自动流水线导出时使用）"
+          <button class="small" title="把导出格式与参数存为本精灵的导出预设，该角色所有动作共用；文件名不进预设，各自按动作走"
                   @click="savePreset">保存为精灵导出预设</button>
           <span v-if="store.currentSprite?.preset?.output?.format" class="hint">
-            当前预设：{{ store.currentSprite.preset.output.format }}</span>
+            当前预设：{{ store.currentSprite.preset.output.format }}（文件名按动作）</span>
           <span v-else class="hint">未设预设时流水线默认导出序列帧 PNG</span>
         </div>
 

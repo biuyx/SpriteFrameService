@@ -230,6 +230,7 @@ const api = {
   // 导出
   export: (sid, params) => request('POST', `/api/sessions/${sid}/export`, { json: params }),
   exports: (sid) => request('GET', `/api/sessions/${sid}/export/list`),
+  exportNameParts: (sid) => request('GET', `/api/sessions/${sid}/export/name-parts`),
   exportDownload: (sid, name) => `${BASE}/api/sessions/${sid}/export/${name}/download`,
 
   // Spine 导出模板（从既有工程反解出的导出约定）
