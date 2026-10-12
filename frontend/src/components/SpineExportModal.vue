@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useStore, toast, askConfirm } from '../stores'
 import { startJob } from '../jobs'
 import api from '../api'
@@ -28,9 +28,10 @@ const loading = ref(true)
 const items = ref([])
 const conflicts = ref([])
 const checked = ref({})
-// 逐动作的动画名：默认是后端推断值，可在表里改；勾上「记住」就落到动作上
+// 逐动作的动画名：默认是后端推断值，可在表里改
 const names = ref({})
-const remember = ref(true)
+const remember = ref(true)      // 记到动作上（只影响这个角色）
+const rememberMap = ref(true)   // 存为 Spine 模板的动作关联（同名动作通用）
 const running = ref(false)
 const result = ref(null)
 
@@ -94,6 +95,15 @@ function fmtTime(ts) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
+function afterImport(r) {
+  templateId.value = r.template.id
+  importPath.value = ''
+  const t = r.template
+  toast(`已导入模板「${t.name}」：${t.animations.length} 个动画 · `
+        + `Spine ${t.spine_version} · 画布 ${t.canvas || '未知'}`
+        + (r.warnings.length ? `（${r.warnings[0]}）` : ''))
+}
+
 async function runImport() {
   const p = importPath.value.trim()
   if (!p) return toast('填一下参考工程的目录，或 .json / .skel 文件路径')
@@ -101,12 +111,26 @@ async function runImport() {
   try {
     const r = await api.importSpineTemplate({ path: p })
     await loadTemplates()
-    templateId.value = r.template.id
-    importPath.value = ''
-    const t = r.template
-    toast(`已导入模板「${t.name}」：${t.animations.length} 个动画 · `
-          + `Spine ${t.spine_version} · 画布 ${t.canvas || '未知'}`
-          + (r.warnings.length ? `（${r.warnings[0]}）` : ''))
+    afterImport(r)
+  } catch (e) {
+    toast(`导入失败: ${e.message}`)
+  } finally {
+    importing.value = false
+  }
+}
+
+// 服务跑在别的机器上时填不了本地路径，走上传
+const fileInput = ref(null)
+
+async function uploadRef(ev) {
+  const f = ev.target.files?.[0]
+  ev.target.value = ''            // 同一个文件选第二次也要触发
+  if (!f) return
+  importing.value = true
+  try {
+    const r = await api.uploadSpineTemplate(f)
+    await loadTemplates()
+    afterImport(r)
   } catch (e) {
     toast(`导入失败: ${e.message}`)
   } finally {
@@ -115,7 +139,8 @@ async function runImport() {
 }
 
 function animOf(i) { return (names.value[i.action_id] ?? i.anim).trim() }
-function defaultOf(i) { return i.suggest || i.anim }   // 不看自定义时的推断值
+// 不看动作自定义时的值：模板里关联过就是它，否则才是推断值
+function defaultOf(i) { return i.mapped || i.suggest || i.anim }
 function resetName(i) { names.value[i.action_id] = defaultOf(i) }
 // 用模板导时，名字对不上模板里的动画就等于新加一个动画——标出来让人确认
 function offTemplate(i) {
@@ -136,8 +161,21 @@ const coverage = computed(() => {
   }
 })
 
+// 还没对上、但按名字能猜出模板里哪个动画的动作
+const guessable = computed(() =>
+  items.value.filter(i => i.guess && animOf(i) !== i.guess))
+
+function autoMatch() {
+  const list = guessable.value
+  if (!list.length) return toast('没有可自动匹配的动作了')
+  for (const i of list) names.value[i.action_id] = i.guess
+  toast(`按名字匹配上 ${list.length} 个：`
+        + list.slice(0, 3).map(i => `${i.name}→${i.guess}`).join('、')
+        + (list.length > 3 ? ' …' : '') + '，请核对后导出')
+}
+
 async function loadPreview(keepChecked = false) {
-  const r = await api.spinePreview(store.currentSprite.id)
+  const r = await api.spinePreview(store.currentSprite.id, templateId.value)
   items.value = r.items
   conflicts.value = r.conflicts || []
   for (const it of items.value) {
@@ -145,6 +183,9 @@ async function loadPreview(keepChecked = false) {
     if (!keepChecked) checked.value[it.action_id] = it.frames > 0
   }
 }
+
+// 换模板要重算：模板里存的动作关联和自动匹配的建议都跟着模板走
+watch(templateId, () => { loadPreview(true).catch(() => {}) })
 
 onMounted(async () => {
   name.value = store.currentSprite?.name || ''
@@ -192,6 +233,7 @@ async function run() {
     // 逐动作的名字都带上：后端跟推断值一致的会自动不记，只留真改过的
     anim_names: Object.fromEntries(selected.value.map(i => [i.action_id, animOf(i)])),
     remember_names: remember.value,
+    remember_map: rememberMap.value && !!templateId.value,
     fps: fps.value,
     canvas: canvas.value || null,
     frame_pattern: pattern.value.trim() || '{anim}_{i:04d}',
@@ -217,8 +259,8 @@ async function run() {
         result.value = r
         running.value = false
         loadExports()
-        // 记住改名后「自定义」标记要跟着变，重拉一次预览（保留勾选）
-        if (remember.value) loadPreview(true).catch(() => {})
+        // 记住之后各行的来源标记要跟着变，重拉一次预览（保留勾选）
+        if (remember.value || rememberMap.value) loadPreview(true).catch(() => {})
       },
       onError: () => { running.value = false },
     })
@@ -261,11 +303,16 @@ function download() {
               </option>
             </select>
           </div>
-          <input v-model="importPath" style="flex:1;min-width:160px"
-                 placeholder="导入参考工程：目录 或 .json / .skel 路径"
+          <input v-model="importPath" style="flex:1;min-width:140px"
+                 placeholder="导入参考工程：服务器上的目录 或 .json / .skel 路径"
                  @keyup.enter="runImport" />
           <button class="small" :disabled="importing" @click="runImport">
             {{ importing ? '解析中…' : '导入' }}</button>
+          <input ref="fileInput" type="file" accept=".zip,.json,.skel"
+                 style="display:none" @change="uploadRef" />
+          <button class="small" :disabled="importing"
+                  title="把参考工程整个打成 zip 上传（只取里面的 .json/.skel/.atlas），也可以直接传单个 .json / .skel"
+                  @click="fileInput.click()">上传 zip</button>
         </div>
 
         <div v-if="activeTemplate" class="tpl-info">
@@ -278,6 +325,9 @@ function download() {
           </template>
           <div class="dim" style="margin-top:3px">
             版本、帧名格式、画布、每个动画的对齐偏移与帧率都按模板走，下面的同名参数不再生效。
+            <template v-if="activeTemplate.mapped_count">
+              已存 {{ activeTemplate.mapped_count }} 条动作关联。
+            </template>
           </div>
           <div v-if="coverage && coverage.missing.length" class="warn-text" style="margin-top:3px">
             模板里有 {{ coverage.total }} 个动画，这次缺 {{ coverage.missing.length }} 个：
@@ -331,10 +381,21 @@ function download() {
           <b style="font-size:13px">动作 {{ selected.length }}/{{ items.length }} · {{ selectedFrames }} 帧</b>
           <button class="small" @click="selectAll">全选</button>
           <button class="small" @click="selectNone">全不选</button>
+          <button v-if="templateId" class="small" :disabled="!guessable.length"
+                  :title="guessable.length
+                    ? '按动作名去模板里找对应的动画（03_walk_checkin_front → checkin_walk1），填好后可再手改'
+                    : '没有能自动对上的动作了'"
+                  @click="autoMatch">
+            自动匹配<span v-if="guessable.length"> {{ guessable.length }}</span>
+          </button>
           <span class="spacer" style="flex:1"></span>
-          <label class="chk" title="记到动作上：下次导出与一键流水线自动导出都用这个名字">
+          <label class="chk" title="记到动作上：只影响这个角色，下次导出与一键流水线都用它">
             <input type="checkbox" v-model="remember" />
-            记住改名<span v-if="renamed.length" class="dim">（改了 {{ renamed.length }} 个）</span>
+            记到动作<span v-if="renamed.length" class="dim">（改了 {{ renamed.length }} 个）</span>
+          </label>
+          <label v-if="templateId" class="chk"
+                 :title="`存进模板「${activeTemplate?.name}」：换个角色、同样的动作名就不用再对一遍`">
+            <input type="checkbox" v-model="rememberMap" /> 存为模板关联
           </label>
         </div>
 
@@ -375,6 +436,10 @@ function download() {
                            : '导出后在 Spine 里显示的动画名'" />
                   <span v-if="i.custom && animOf(i) === i.custom" class="tag"
                         title="这个名字已记在动作上，流水线自动导出也用它">记</span>
+                  <span v-else-if="i.mapped && animOf(i) === i.mapped" class="tag tpl"
+                        title="来自该 Spine 模板里存的动作关联">模</span>
+                  <span v-else-if="i.guess && animOf(i) !== i.guess" class="tag guess"
+                        :title="`模板里的「${i.guess}」像是对应这个动作，点「自动匹配」填上`">?</span>
                   <button v-if="animOf(i) !== defaultOf(i)" class="mini"
                           :title="`恢复默认：${defaultOf(i)}`"
                           @click="resetName(i)">↺</button>
@@ -396,7 +461,8 @@ function download() {
           <template v-if="result.canvas">· 画布 {{ result.canvas }}</template>
           <template v-if="result.outline">· 描边 {{ result.outline.width }}px</template>
           <template v-if="result.atlas">· 图集 {{ result.atlas.size }}（{{ result.atlas.regions }} 区域）</template>
-          <div class="dim" style="margin-top:4px">{{ result.dir }}</div>
+          <div class="dim" style="margin-top:4px" :title="result.dir">
+            已存在服务器上，点右下「下载 zip」取走；下方「已导出的产物」里也能随时再下</div>
           <div v-if="result.skipped?.length" class="warn-text" style="margin-top:4px">
             跳过 {{ result.skipped.length }} 个：{{ result.skipped.map(s => s.name || s.action_id).join('、') }}
           </div>
@@ -484,6 +550,8 @@ function download() {
   font-size: 11px; color: var(--ok); border: 1px solid var(--ok);
   border-radius: 3px; padding: 0 3px; opacity: .8;
 }
+.tag.tpl { color: var(--accent, #64b5f6); border-color: var(--accent, #64b5f6); }
+.tag.guess { color: var(--warn); border-color: var(--warn); cursor: help; }
 .dim { color: var(--text-dim); font-size: 12px; }
 .ok-text { color: var(--ok); font-size: 12px; }
 .warn-text { color: var(--warn); font-size: 12px; }

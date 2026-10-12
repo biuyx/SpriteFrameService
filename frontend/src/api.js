@@ -236,6 +236,12 @@ const api = {
   // Spine 导出模板（从既有工程反解出的导出约定）
   spineTemplates: () => request('GET', '/api/spine-templates'),
   spineTemplate: (tid) => request('GET', `/api/spine-templates/${tid}`),
+  uploadSpineTemplate: (file, name = '') => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('name', name)
+    return request('POST', '/api/spine-templates/upload', { form })
+  },
   importSpineTemplate: (payload) =>
     request('POST', '/api/spine-templates/import', { json: payload }),
   renameSpineTemplate: (tid, name) =>
@@ -243,7 +249,11 @@ const api = {
   deleteSpineTemplate: (tid) => request('DELETE', `/api/spine-templates/${tid}`),
 
   // Spine 资源导出（精灵级：全动作 → 骨架 JSON + 图集）
-  spinePreview: (sid) => request('GET', `/api/sprites/${sid}/spine/preview`),
+  spinePreview: (sid, templateId) => request(
+    'GET', `/api/sprites/${sid}/spine/preview`
+           + (templateId ? `?template_id=${encodeURIComponent(templateId)}` : '')),
+  setSpineAnimMap: (tid, map, replace = false) => request(
+    'PUT', `/api/spine-templates/${tid}/anim-map`, { json: { map, replace } }),
   spineExport: (sid, payload) => request('POST', `/api/sprites/${sid}/spine/export`, { json: payload }),
   spineDownload: (sid, name) =>
     `${BASE}/api/sprites/${sid}/spine/download?name=${encodeURIComponent(name)}`,

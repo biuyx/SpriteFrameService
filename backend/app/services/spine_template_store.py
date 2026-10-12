@@ -81,6 +81,33 @@ class SpineTemplateStore:
             self._save(items)
             return t
 
+    def set_anim_map(self, template_id: str, mapping: dict,
+                     replace: bool = False) -> dict:
+        """存「动作名 → 动画名」的对应关系。
+
+        键统一小写：同一套命名在不同角色之间是复用的，存在模板上换个角色就还认得。
+        值为空表示删掉这一条。
+        """
+        with self._lock:
+            items = self._load()
+            t = next((x for x in items if x["id"] == template_id), None)
+            if t is None:
+                raise FileNotFoundError(f"模板不存在: {template_id}")
+            cur = {} if replace else dict(t.get("anim_map") or {})
+            for k, v in (mapping or {}).items():
+                key = str(k or "").strip().lower()
+                if not key:
+                    continue
+                val = str(v or "").strip()
+                if val:
+                    cur[key] = val
+                else:
+                    cur.pop(key, None)
+            t["anim_map"] = cur
+            t["updated_at"] = time.time()
+            self._save(items)
+            return t
+
     def delete(self, template_id: str) -> bool:
         with self._lock:
             items = self._load()

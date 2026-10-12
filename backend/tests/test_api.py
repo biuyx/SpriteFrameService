@@ -558,6 +558,211 @@ def test_名字只剩非法字符时报错(sprite):
     assert e.value.status_code == 400
 
 
+# ------------------------------------------------------- Spine 模板上传导入
+def _skeleton_json():
+    """一份能过解析的最小骨架（与 test_spine_import 里那份同形）。"""
+    return {
+        "skeleton": {"hash": "h", "spine": "3.8.99", "images": "./images/"},
+        "bones": [{"name": "root"}, {"name": "walk1", "parent": "root"}],
+        "slots": [{"name": "walk1_0006", "bone": "walk1"}],
+        "skins": [{"name": "default", "attachments": {"walk1_0006": {
+            "walk1_0000": {"width": 320, "height": 320},
+            "walk1_0001": {"width": 320, "height": 320}}}}],
+        "animations": {"walk1": {"slots": {"walk1_0006": {"attachment": [
+            {"time": 0, "name": "walk1_0000"},
+            {"time": 0.1, "name": "walk1_0001"}]}}}},
+    }
+
+
+def _zip_bytes(members):
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for n, data in members.items():
+            z.writestr(n, data)
+    return buf.getvalue()
+
+
+def test_上传zip导入模板(client):
+    """服务跑在别的机器上时填不了本地路径，走上传。"""
+    body = _zip_bytes({
+        "工程/角色.json": json.dumps(_skeleton_json()),
+        "工程/images/walk1_0000.png": bytes([0x89]) + b"PNG",     # 图片不该影响解析
+    })
+    r = client.post("/api/spine-templates/upload",
+                    files={"file": ("参考工程.zip", body, "application/zip")},
+                    data={"name": "上传来的"})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["saved"] is True
+    assert d["template"]["spine_version"] == "3.8.99"
+    assert [a["name"] for a in d["template"]["animations"]] == ["walk1"]
+
+    from app.services.spine_template_store import spine_template_store
+    assert any(t["name"] == "上传来的" for t in spine_template_store.list())
+    spine_template_store.delete(d["template"]["id"])
+
+
+def test_上传单个json也认(client):
+    r = client.post("/api/spine-templates/upload",
+                    files={"file": ("骨架.json",
+                                    json.dumps(_skeleton_json()).encode("utf-8"),
+                                    "application/json")})
+    assert r.status_code == 200, r.text
+    from app.services.spine_template_store import spine_template_store
+    spine_template_store.delete(r.json()["template"]["id"])
+
+
+def test_包里没有骨架时报清楚(client):
+    body = _zip_bytes({"readme.txt": "什么都没有", "a/b.png": bytes([0x89]) + b"PNG"})
+    r = client.post("/api/spine-templates/upload",
+                    files={"file": ("空包.zip", body, "application/zip")})
+    assert r.status_code == 400
+    assert "骨架" in r.json()["detail"]
+
+
+def test_不是zip时报清楚(client):
+    r = client.post("/api/spine-templates/upload",
+                    files={"file": ("假的.zip", b"not a zip at all",
+                                    "application/zip")})
+    assert r.status_code == 400
+    assert "zip" in r.json()["detail"]
+
+
+def test_上传不试运行时不落库(client):
+    body = _zip_bytes({"角色.json": json.dumps(_skeleton_json())})
+    before = client.get("/api/spine-templates").json()["templates"]
+    r = client.post("/api/spine-templates/upload",
+                    files={"file": ("参考.zip", body, "application/zip")},
+                    data={"dry_run": "true"})
+    assert r.status_code == 200, r.text
+    assert r.json()["saved"] is False
+    after = client.get("/api/spine-templates").json()["templates"]
+    assert len(after) == len(before)
+
+
+def test_包里的路径穿越成员不落地(client, tmp_path):
+    """成员名带 ../ 的直接跳过，不能写到解压目录外面去。"""
+    from app.config import get_settings
+    body = _zip_bytes({"../逃出去.json": json.dumps(_skeleton_json())})
+    r = client.post("/api/spine-templates/upload",
+                    files={"file": ("坏包.zip", body, "application/zip")})
+    assert r.status_code == 400, "跳过之后就没有骨架数据了"
+    tmp_root = get_settings().resolved_data_dir / "tmp"
+    assert not list(tmp_root.glob("**/逃出去.json"))
+    assert not (tmp_root.parent / "逃出去.json").exists()
+
+
+# ------------------------------------------------------- Spine 动作关联
+ANIMS = ["wait1", "wait2", "walk1", "walk2", "checkin_walk1", "checkin_walk2",
+         "sleep1", "soak1", "sit_work1", "sit_work2", "sit_eat1"]
+
+
+@pytest.fixture
+def spine_tpl():
+    from app.services.spine_template_store import spine_template_store
+    return spine_template_store.add(
+        {"name": "参考工程", "spine_version": "3.8.99",
+         "animations": [{"name": n} for n in ANIMS]})
+
+
+@pytest.mark.parametrize("action_name,want", [
+    ("03_walk_checkin_front", "checkin_walk1"),   # 正面 → 编号 1
+    ("03_walk_checkin_back", "checkin_walk2"),    # 背面 → 编号 2
+    ("12_sleep", "sleep1"),                       # 去掉序号前缀
+    ("15_soak", "soak1"),
+    ("07_work_back", "sit_work2"),                # 模板名里多个词也认
+    ("walk1", "walk1"),                           # 完全同名
+])
+def test_按名字猜出对应的模板动画(action_name, want):
+    from app.api.spine_api import suggest_mapping
+    assert suggest_mapping([action_name], ANIMS).get(action_name) == want
+
+
+def test_猜不出来的就不猜():
+    from app.api.spine_api import suggest_mapping
+    # idle 和 wait 是两套词，没有依据就别乱配
+    assert suggest_mapping(["01_idle_front"], ANIMS) == {}
+
+
+def test_一个模板动画只配给一个动作():
+    from app.api.spine_api import suggest_mapping
+    got = suggest_mapping(["12_sleep", "sleep"], ANIMS)
+    assert sorted(got.values()) == ["sleep1"], got
+
+
+def test_模板里存的关联在预览里生效(client, sprite, spine_tpl):
+    from app.services.spine_template_store import spine_template_store
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "03_walk_checkin_front"}).json()
+    r = client.put(f"/api/spine-templates/{spine_tpl['id']}/anim-map",
+                   json={"map": {"03_walk_checkin_front": "checkin_walk1"}})
+    assert r.status_code == 200, r.text
+
+    items = client.get(f"/api/sprites/{sprite['id']}/spine/preview",
+                       params={"template_id": spine_tpl["id"]}).json()["items"]
+    it = next(i for i in items if i["action_id"] == a["id"])
+    assert it["anim"] == "checkin_walk1"
+    assert it["mapped"] == "checkin_walk1"
+    assert it["suggest"] == "03_walk_checkin_front", "没关联时的推断值要照报"
+
+    # 不带模板就回到推断值——关联是挂在模板上的
+    items = client.get(f"/api/sprites/{sprite['id']}/spine/preview").json()["items"]
+    assert next(i for i in items
+                if i["action_id"] == a["id"])["anim"] == "03_walk_checkin_front"
+    spine_template_store.set_anim_map(spine_tpl["id"], {}, replace=True)
+
+
+def test_动作上自己取的名字压过模板关联(client, sprite, spine_tpl):
+    from app.services.spine_template_store import spine_template_store
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "12_sleep"}).json()
+    client.put(f"/api/spine-templates/{spine_tpl['id']}/anim-map",
+               json={"map": {"12_sleep": "sleep1"}})
+    client.patch(f"/api/sprites/{sprite['id']}/actions/{a['id']}",
+                 json={"spine_anim": "nap_special1"})
+    items = client.get(f"/api/sprites/{sprite['id']}/spine/preview",
+                       params={"template_id": spine_tpl["id"]}).json()["items"]
+    it = next(i for i in items if i["action_id"] == a["id"])
+    assert it["anim"] == "nap_special1"
+    assert it["mapped"] == "sleep1", "模板关联仍要报出来，好让人知道能退回什么"
+    spine_template_store.set_anim_map(spine_tpl["id"], {}, replace=True)
+
+
+def test_导出时把关联存进模板(client, sprite, spine_tpl):
+    """存的是动作名，换个角色同样的动作名就不用再对一遍。"""
+    from app.api.spine_api import SpineExportRequest, _resolve_names
+    from app.services.spine_template_store import spine_template_store
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "15_soak"}).json()
+    req = SpineExportRequest(template_id=spine_tpl["id"], remember_map=True,
+                             remember_names=False,
+                             anim_names={a["id"]: "soak1"})
+    _resolve_names(sprite["id"], [a["id"]], req)
+    saved = spine_template_store.get(spine_tpl["id"])["anim_map"]
+    assert saved["15_soak"] == "soak1"
+
+    # 另一个角色、同名动作：不用再对一遍
+    sp2 = client.post("/api/sprites", json={"name": "另一个角色"}).json()
+    b = client.post(f"/api/sprites/{sp2['id']}/actions",
+                    json={"name": "15_soak"}).json()
+    items = client.get(f"/api/sprites/{sp2['id']}/spine/preview",
+                       params={"template_id": spine_tpl["id"]}).json()["items"]
+    assert next(i for i in items if i["action_id"] == b["id"])["anim"] == "soak1"
+    spine_template_store.set_anim_map(spine_tpl["id"], {}, replace=True)
+
+
+def test_不勾存模板就不写(client, sprite, spine_tpl):
+    from app.api.spine_api import SpineExportRequest, _resolve_names
+    from app.services.spine_template_store import spine_template_store
+    a = client.post(f"/api/sprites/{sprite['id']}/actions",
+                    json={"name": "09_eat"}).json()
+    req = SpineExportRequest(template_id=spine_tpl["id"], remember_map=False,
+                             anim_names={a["id"]: "sit_eat1"})
+    _resolve_names(sprite["id"], [a["id"]], req)
+    assert not (spine_template_store.get(spine_tpl["id"]).get("anim_map") or {})
+
+
 # ------------------------------------------------------- Spine 模板库
 def test_导入不存在的路径报错(client):
     r = client.post("/api/spine-templates/import", json={"path": "D:/不存在的目录"})

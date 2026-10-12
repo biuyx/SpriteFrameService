@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -41,6 +42,8 @@ class SpineExportRequest(BaseModel):
         description="逐动作改动画名：action_id → 名字（缺省用推断值；空串＝取消自定义）")
     remember_names: bool = Field(
         True, description="把改过的名字记到动作上，下次导出与流水线自动导出都用它")
+    remember_map: bool = Field(
+        False, description="把「动作名 → 动画名」存为该 Spine 模板的动作关联（换角色可复用）")
     fps: float = Field(12, gt=0, le=60, description="未记录抽帧帧率时的默认值")
     # 尺寸只由画布决定：帧等比压进画布，结果与源帧分辨率无关。
     # 不再提供额外缩放系数——它会和画布的兜底缩放叠乘，角色越缩越小。
@@ -74,9 +77,90 @@ def derived_anim(action: dict) -> str:
                       or name) or "anim"
 
 
-def anim_name_of(action: dict) -> str:
-    """动作 → Spine 动画名：动作上单独取的名字最大，其次才是推断值。"""
-    return clean_anim(action.get("spine_anim") or "") or derived_anim(action)
+def anim_name_of(action: dict, tpl_map: Optional[dict] = None) -> str:
+    """动作 → Spine 动画名。
+
+    优先级：动作上单独取的名字 > 该 Spine 模板里存的动作关联 > 推断值。
+    """
+    own = clean_anim(action.get("spine_anim") or "")
+    if own:
+        return own
+    key = (action.get("name") or "").strip().lower()
+    mapped = clean_anim((tpl_map or {}).get(key) or "")
+    return mapped or derived_anim(action)
+
+
+def anim_map_of(template_id: Optional[str]) -> dict:
+    """Spine 模板里存的「动作名 → 动画名」对应关系（键统一小写）。"""
+    if not template_id:
+        return {}
+    from app.services.spine_template_store import spine_template_store
+    tpl = spine_template_store.get(template_id) or {}
+    return {str(k).strip().lower(): v
+            for k, v in (tpl.get("anim_map") or {}).items() if v}
+
+
+_SIDE = {"front": "1", "back": "2", "f": "1", "b": "2", "正面": "1", "背面": "2"}
+
+
+def _tokens(name: str) -> list:
+    return [t for t in re.split(r"[^a-zA-Z0-9一-鿿]+", (name or "").lower()) if t]
+
+
+def _shape(name: str) -> tuple:
+    """把名字拆成 (词集合, 末尾编号)：03_walk_checkin_front → ({walk,checkin}, '1')。
+
+    命名两边的规矩不一样但信息是一样的：这边是序号前缀 + 正背面后缀，
+    模板那边是词序不同 + 末尾编号（front/正面＝1，back/背面＝2）。
+    """
+    toks = _tokens(name)
+    while toks and toks[0].isdigit():      # 去掉 03_ / 12_ 这类序号
+        toks.pop(0)
+    num = ""
+    if toks and toks[-1] in _SIDE:         # 正背面后缀
+        num = _SIDE[toks.pop()]
+    elif toks and toks[-1].isdigit():      # 名字本身以编号结尾
+        num = toks.pop()[-1]
+    elif toks and toks[-1][-1:].isdigit():  # walk1 这种黏在词尾的编号
+        num = toks[-1][-1]
+        toks[-1] = toks[-1][:-1]
+    return frozenset(t for t in toks if t), num
+
+
+def suggest_mapping(action_names: List[str], anim_names: List[str]) -> dict:
+    """猜「动作名 → 模板动画名」：先认完全同名的，再按词集合＋编号配。"""
+    left = [n for n in action_names if n]
+    taken, out = set(), {}
+    pool = {a.lower(): a for a in anim_names}
+    for n in list(left):
+        hit = pool.get(n.strip().lower())
+        if hit and hit not in taken:
+            out[n], _ = hit, taken.add(hit)
+            left.remove(n)
+    shapes = [(a, _shape(a)) for a in anim_names if a not in taken]
+    for n in left:
+        want, side = _shape(n)
+        if not want:
+            continue
+        same = [(a, num) for a, (words, num) in shapes
+                if words == want and a not in taken]
+        if not same:
+            # 词没对齐时退一步：模板名里多几个词也认（work → sit_work），
+            # 多出来的词越少越靠谱
+            near = sorted(((a, num, len(words - want)) for a, (words, num) in shapes
+                           if want < words and a not in taken),
+                          key=lambda x: x[2])
+            same = [(a, num) for a, num, _ in near[:2]]
+        if not same:
+            continue
+        # 有正背面之分时按编号挑，没有就挑编号最小的那个
+        pick = next((a for a, num in same if side and num == side), None)
+        if pick is None and not side:
+            pick = sorted(same, key=lambda x: x[1] or "0")[0][0]
+        if pick:
+            out[n] = pick
+            taken.add(pick)
+    return out
 
 
 def _export_dir(sprite_id: str, name: str) -> Path:
@@ -100,22 +184,43 @@ def _action_fps(session, fallback: float) -> float:
 
 
 @router.get("/preview")
-def preview_spine(sprite_id: str):
-    """导出前预览：每个动作将用的动画名、帧数、抠图进度。"""
+def preview_spine(sprite_id: str, template_id: Optional[str] = None):
+    """导出前预览：每个动作将用的动画名、帧数、抠图进度。
+
+    给了 Spine 模板就把模板里存的动作关联一并算进去，并对还没对上的动作
+    给出按名字猜的建议（界面上「自动匹配」用的就是它）。
+    """
     try:
         sprite = sprite_store.get_sprite(sprite_id)
     except SpriteStoreError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    tpl_map = anim_map_of(template_id)
+    tpl_anims = []
+    if template_id:
+        from app.services.spine_template_store import spine_template_store
+        tpl = spine_template_store.get(template_id) or {}
+        tpl_anims = [a["name"] for a in (tpl.get("animations") or [])]
+
+    actions = sprite_store.list_actions(sprite_id)
+    # 建议只给还没对上的：已经关联过或自己取过名字的不去动它
+    unresolved = [a.get("name") or "" for a in actions
+                  if not clean_anim(a.get("spine_anim") or "")
+                  and (a.get("name") or "").strip().lower() not in tpl_map]
+    guesses = suggest_mapping(unresolved, tpl_anims) if tpl_anims else {}
+
     items, used = [], {}
-    for action in sprite_store.list_actions(sprite_id):
+    for action in actions:
+        name = action.get("name") or ""
         custom = clean_anim(action.get("spine_anim") or "")
+        mapped = clean_anim(tpl_map.get(name.strip().lower()) or "")
         suggest = derived_anim(action)
-        anim = custom or suggest
+        anim = custom or mapped or suggest
         used[anim] = used.get(anim, 0) + 1
         summary = action.get("summary") or {}
         items.append({
-            "action_id": action["id"], "name": action.get("name"), "anim": anim,
-            "custom": custom, "suggest": suggest,
+            "action_id": action["id"], "name": name, "anim": anim,
+            "custom": custom, "mapped": mapped, "suggest": suggest,
+            "guess": guesses.get(name, ""),
             "frames": int(summary.get("frame_count") or 0),
             "processed": int(summary.get("processed_count") or 0),
             "status": action.get("status"),
@@ -123,6 +228,8 @@ def preview_spine(sprite_id: str):
     for it in items:
         it["duplicate"] = used[it["anim"]] > 1
     return {"sprite": sprite.get("name"), "items": items,
+            "template_anims": tpl_anims,
+            "unmatched": sorted(set(tpl_anims) - {i["anim"] for i in items}),
             "conflicts": sorted(k for k, v in used.items() if v > 1)}
 
 
@@ -170,6 +277,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
 
     # 这次导出单独取的名字（界面上逐行改的）；没给的动作仍按动作/模板的设定
     overrides = {k: clean_anim(v) for k, v in (req.anim_names or {}).items()}
+    tpl_map = anim_map_of(req.template_id)
 
     anims, atlas_items, skipped = [], [], []
     total = len(action_ids)
@@ -182,7 +290,7 @@ def run_spine_export(sprite_id: str, name: str, action_ids: List[str],
         except Exception as e:
             skipped.append({"action_id": aid, "reason": "无法打开: %s" % e})
             continue
-        anim = overrides.get(aid) or anim_name_of(action)
+        anim = overrides.get(aid) or anim_name_of(action, tpl_map)
         ctx.report(n / total * 80, "[%d/%d] %s" % (n + 1, total, anim))
 
         frames = session.frame_manager.frames
@@ -292,6 +400,7 @@ def _resolve_names(sprite_id: str, ids: List[str],
     """
     given = {k: clean_anim(v) for k, v in (req.anim_names or {}).items()
              if k in set(ids)}
+    tpl_map = anim_map_of(req.template_id)
     for aid, nm in given.items():
         if not nm and (req.anim_names or {}).get(aid, "").strip():
             raise HTTPException(status_code=400,
@@ -306,9 +415,9 @@ def _resolve_names(sprite_id: str, ids: List[str],
             continue
         if aid in given:
             # 传了空串＝要取消自定义，这一趟就直接按推断值导
-            nm = given[aid] or derived_anim(action)
+            nm = given[aid] or anim_name_of({**action, "spine_anim": ""}, tpl_map)
         else:
-            nm = anim_name_of(action)
+            nm = anim_name_of(action, tpl_map)
         final[aid] = (action, nm)
         used.setdefault(nm, []).append(action.get("name") or aid)
     dup = {k: v for k, v in used.items() if len(v) > 1}
@@ -321,6 +430,16 @@ def _resolve_names(sprite_id: str, ids: List[str],
     # 定下来的名字回填进请求，任务体照着导（省得两处各算一遍还可能不一样）
     req.anim_names = {aid: nm for aid, (_, nm) in final.items()}
 
+    # 存为该 Spine 模板的动作关联：按动作名存，换个角色同名动作就自动对上
+    if req.remember_map and req.template_id:
+        from app.services.spine_template_store import spine_template_store
+        mapping = {(a.get("name") or "").strip(): nm
+                   for a, nm in final.values() if (a.get("name") or "").strip()}
+        try:
+            spine_template_store.set_anim_map(req.template_id, mapping)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
     if not req.remember_names:
         return
     for aid, nm in given.items():
@@ -328,7 +447,8 @@ def _resolve_names(sprite_id: str, ids: List[str],
         if action is None:
             continue
         # 改回推断值就把自定义清掉——让模板继续说了算，而不是把当前值冻在动作上
-        keep = "" if not nm or nm == derived_anim(action) else nm
+        plain = anim_name_of({**action, "spine_anim": ""}, tpl_map)
+        keep = "" if not nm or nm == plain else nm
         if clean_anim(action.get("spine_anim") or "") != keep:
             sprite_store.update_action(sprite_id, aid, {"spine_anim": keep})
 
