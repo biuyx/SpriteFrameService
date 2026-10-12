@@ -143,6 +143,26 @@ def test_记录皮肤数量供导入端提示():
     assert tpl["skin_count"] == 1 and tpl["skin_names"] == ["default"]
 
 
+def test_目录里有多套时挑哪套不随文件系统变(tmp_path):
+    """Windows 按字母遍历、Linux 顺序不定——以前同一个工程在两边可能挑中不同的骨架和图集。"""
+    from app.core.spine_import import load_reference
+    deeper = _json_skeleton()
+    deeper["skeleton"]["spine"] = "3.8.10"
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "zz.json").write_text(json.dumps(deeper), encoding="utf-8")
+    (tmp_path / "a" / "zz.atlas").write_text(ATLAS_TEXT, encoding="utf-8")
+    (tmp_path / "main.json").write_text(json.dumps(_json_skeleton()), encoding="utf-8")
+    # 同目录还有一份不配套的图集，名字排在前面
+    (tmp_path / "aaa.atlas").write_text(ATLAS_TEXT.replace("orig: 128, 128", "orig: 320, 320"),
+                                        encoding="utf-8")
+    (tmp_path / "Main.ATLAS").write_text(ATLAS_TEXT, encoding="utf-8")   # 后缀大写也要认
+
+    tpl = load_reference(tmp_path)
+    assert Path(tpl["source"]).name == "main.json", "应取最浅一层的骨架"
+    assert tpl["spine_version"] == "3.8.99"
+    assert tpl["atlas"]["scale"] == pytest.approx(0.4), "应取骨架旁边同名的图集"
+
+
 # ---------------------------------------------------------------- skel 二进制
 def test_拒绝不支持的二进制版本():
     # hash(长度前缀字符串) + version "4.1.00"

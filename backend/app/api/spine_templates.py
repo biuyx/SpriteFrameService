@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.core.spine_import import SpineImportError, load_reference
 from app.services.spine_template_store import spine_template_store
+from app.utils.zipnames import member_name
 
 router = APIRouter(prefix="/spine-templates", tags=["spine-templates"])
 
@@ -80,14 +81,14 @@ def _extract_reference(src: Path, dest: Path) -> None:
     with z:
         members = [i for i in z.infolist()
                    if not i.is_dir()
-                   and Path(i.filename).suffix.lower() in WANTED_SUFFIX]
+                   and Path(member_name(i)).suffix.lower() in WANTED_SUFFIX]
         if len(members) > MAX_MEMBERS:
             raise HTTPException(status_code=400, detail="包内文件过多")
         if sum(i.file_size for i in members) > MAX_BYTES:
             raise HTTPException(status_code=400, detail="解压后体积过大（上限 200 MB）")
         got = 0
         for info in members:
-            rel = _safe_member(info.filename)
+            rel = _safe_member(member_name(info))
             if rel is None:
                 continue
             out = dest / rel

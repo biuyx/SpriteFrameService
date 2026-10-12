@@ -574,31 +574,39 @@ def load_reference(path: Path, name: str = "") -> dict:
     path = Path(path)
     skel_file = json_file = atlas_file = None
     if path.is_dir():
-        cands = list(path.rglob("*.json")) + list(path.rglob("*.skel")) + \
-            list(path.rglob("*.atlas"))
+        # 目录遍历顺序随文件系统而变（NTFS 按字母，ext4 不定）：先浅后深、再按名字排，
+        # 同一个工程在 Windows 和 Linux 上挑中的是同一套。后缀不分大小写，Linux 上 *.json 不认 .JSON
+        cands = sorted((f for f in path.rglob("*") if f.is_file()
+                        and f.suffix.lower() in (".json", ".skel", ".atlas")),
+                       key=lambda f: (len(f.parts), str(f).lower()))
+        atlases = []
         for f in cands:
-            if f.suffix == ".skel" and skel_file is None:
+            suffix = f.suffix.lower()
+            if suffix == ".skel" and skel_file is None:
                 skel_file = f
-            elif f.suffix == ".atlas" and atlas_file is None:
-                atlas_file = f
-            elif f.suffix == ".json" and json_file is None:
+            elif suffix == ".atlas":
+                atlases.append(f)
+            elif suffix == ".json" and json_file is None:
                 try:
                     d = json.loads(f.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError, UnicodeDecodeError):
                     continue
                 if isinstance(d, dict) and "skeleton" in d and "bones" in d:
                     json_file = f
-    elif path.suffix == ".json":
+        main = json_file or skel_file
+        if main is not None and atlases:
+            # 图集可选；有多份时挑骨架旁边、同名的那份——那才是配套的
+            atlas_file = min(atlases, key=lambda a: (a.parent != main.parent,
+                                                    a.stem.lower() != main.stem.lower()))
+    elif path.suffix.lower() == ".json":
         json_file = path
-    elif path.suffix == ".skel":
+    elif path.suffix.lower() == ".skel":
         skel_file = path
     else:
         raise SpineImportError("请指向 Spine 工程目录，或 .json / .skel 文件")
 
     if json_file is None and skel_file is None:
         raise SpineImportError("目录里没找到 .json 或 .skel 骨架数据")
-    if atlas_file is None and path.is_dir():
-        pass                                          # 图集可选
 
     if json_file is not None:
         skeleton = parse_json(json.loads(json_file.read_text(encoding="utf-8")))
@@ -613,5 +621,5 @@ def load_reference(path: Path, name: str = "") -> dict:
 
     tpl = build_template(skeleton, atlas, name or source.stem)
     tpl["source"] = str(source)
-    tpl["source_kind"] = source.suffix.lstrip(".")
+    tpl["source_kind"] = source.suffix.lstrip(".").lower()
     return tpl

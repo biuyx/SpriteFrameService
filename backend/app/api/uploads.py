@@ -19,6 +19,7 @@ from typing import List, Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from app.config import get_settings
+from app.utils.zipnames import member_name
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -95,7 +96,7 @@ def _extract_zip(src: Path, dest: Path, budget: int) -> tuple:
         for info in z.infolist():
             if info.is_dir():
                 continue
-            rel = safe_rel(info.filename)
+            rel = safe_rel(member_name(info))
             # macOS 打的包里带 __MACOSX 资源叉，不是用户的文件
             if rel is None or rel.parts[0] == "__MACOSX" \
                     or rel.suffix.lower() not in ALLOWED_EXTS:

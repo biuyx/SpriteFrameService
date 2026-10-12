@@ -56,5 +56,16 @@ if [ ! -f "models/u2net.onnx" ] && [ -z "$SPRITE_MODELS_DIR" ]; then
   echo "      或在 backend/.env 中设置 SPRITE_MODELS_DIR。"
 fi
 
+# 时区：下载包文件名里的时间戳按服务器本地时间生成，云镜像默认 UTC 会差 8 小时。
+# 只在当前是 UTC 时改；SPRITE_TZ=keep 跳过，或用 SPRITE_TZ 指定别的时区
+TZ_WANT="${SPRITE_TZ:-Asia/Shanghai}"
+if [ "$TZ_WANT" != "keep" ] && command -v timedatectl >/dev/null; then
+  TZ_NOW=$(timedatectl show -p Timezone --value 2>/dev/null)
+  if [ "$TZ_NOW" = "Etc/UTC" ] || [ "$TZ_NOW" = "UTC" ]; then
+    echo "      时区 $TZ_NOW → $TZ_WANT（改完需重启服务才生效）"
+    sudo timedatectl set-timezone "$TZ_WANT"
+  fi
+fi
+
 echo ""
 echo "初始化完成。运行 scripts/run_linux.sh 启动服务。"

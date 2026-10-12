@@ -40,6 +40,23 @@ def _zip(files: dict) -> bytes:
     return buf.getvalue()
 
 
+class _RawNameInfo(zipfile.ZipInfo):
+    """按指定编码写文件名、不打 UTF-8 标记：Windows 自带压缩（GBK）、macOS 压缩（UTF-8）就是这样。"""
+    encoding = "gbk"
+
+    def _encodeFilenameFlags(self):
+        return self.filename.encode(self.encoding), self.flag_bits & ~0x800
+
+
+def _zip_raw(files: dict, encoding: str) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for n, d in files.items():
+            info = _RawNameInfo(n)
+            info.encoding = encoding
+            z.writestr(info, d)
+    return buf.getvalue()
+
 
 # ---------------------------------------------------------------- 选文件夹
 def test_选文件夹上传保留目录结构(client):
@@ -138,6 +155,35 @@ def test_假zip报清楚(client):
     r = client.post("/api/uploads/staging",
                     files=[("files", ("x.zip", b"not a zip", "application/zip"))])
     assert r.status_code == 400 and "zip" in r.json()["detail"]
+
+
+# 「淺」的 GBK 编码是 9C 5C，第二个字节正是反斜杠
+@pytest.mark.parametrize("encoding", ["gbk", "utf-8"])
+def test_zip里没打UTF8标记的中文名能还原(client, encoding):
+    body = _zip_raw({"参考视频/04_待机_入住_7s.mp4": b"x",
+                     "参考视频/淺色/走路.png": _png()}, encoding)
+    d = client.post("/api/uploads/staging",
+                    files=[("files", ("x.zip", body, "application/zip"))]).json()
+    assert d["files"] == 2 and d["skipped"] == 0
+    picked = Path(d["dir"])
+    assert picked.name == "参考视频"
+    assert (picked / "04_待机_入住_7s.mp4").is_file()
+    assert (picked / "淺色" / "走路.png").is_file()
+
+
+def _read_back(body: bytes) -> list:
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        return z.infolist()
+
+
+def test_member_name():
+    from app.utils.zipnames import member_name
+    # 正常打了标记的 UTF-8 / 纯英文：原样
+    assert [member_name(i) for i in _read_back(_zip({"a/走路.png": b"", "b.png": b""}))] \
+        == ["a/走路.png", "b.png"]
+    # 既不是 UTF-8 也不是 GBK 的字节：保留 cp437 解出来的样子，不抛错
+    junk = _zip_raw({"\xff.png": b""}, "latin-1")       # 文件名字节 FF 2E 70 6E 67
+    assert member_name(_read_back(junk)[0]) == "\xa0.png"   # cp437 的 FF 是不换行空格
 
 
 # ---------------------------------------------------------------- 接上原来的导入
