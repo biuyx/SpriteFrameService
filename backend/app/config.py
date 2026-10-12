@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     ark_model: str = "doubao-seedance-2-0-mini-260615"   # 默认模型
     # 生图模型（首帧生成用；需在方舟控制台开通）。SPRITE_ARK_IMAGE_MODEL 可覆盖
     ark_image_model: str = "doubao-seedream-5-0-pro-260628"
+    # 生图结果的取回方式：默认拿 URL 再下载；机器连不上结果服务器（对象存储/CDN）
+    # 时置 1，改成让接口直接回 base64，省掉那一跳
+    ark_image_b64: bool = False
     ark_timeout_seconds: int = 900   # 单次生成总超时
     generate_max_concurrent: int = 5  # 同时进行中的生成任务数上限（1~10）
     first_frame_max_concurrent: int = 3  # 同时进行中的首帧生图数上限（1~10）
