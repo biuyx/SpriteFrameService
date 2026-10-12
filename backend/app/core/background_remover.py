@@ -4,6 +4,9 @@
 """
 from __future__ import annotations
 
+import logging
+import threading
+from collections import OrderedDict
 from typing import Optional, Tuple, Callable, Dict
 from enum import Enum
 from pathlib import Path
@@ -168,7 +171,14 @@ class U2NetLocalSession:
 class BackgroundRemover:
     """背景去除器"""
 
-    _model_cache: Dict[str, U2NetLocalSession] = {}
+    # 跨任务复用推理会话：bria 加载一次十几秒，常驻后每个任务只付推理时间。
+    # 限个数是给显存留余量——Tesla P4 只有 7.6G，几个模型都常驻时 bria 1024² 的
+    # 激活内存会不够。淘汰最久没用的；正被某个任务用着的会话由那个任务继续持有，
+    # 跑完才真正释放，不会半路被抽走。
+    MAX_CACHED = 2
+    _model_cache: "OrderedDict[str, U2NetLocalSession]" = OrderedDict()
+    _cache_lock = threading.Lock()
+    _load_locks: Dict[str, threading.Lock] = {}
 
     def __init__(self, progress_callback: Optional[Callable[[str], None]] = None):
         self._current_model: Optional[str] = None
@@ -223,15 +233,35 @@ class BackgroundRemover:
             })
         return available
 
+    def _from_cache(self, cache_key: str, model_name: str) -> bool:
+        cls = BackgroundRemover
+        with cls._cache_lock:
+            session = cls._model_cache.get(cache_key)
+            if session is None:
+                return False
+            cls._model_cache.move_to_end(cache_key)
+        self._rembg_session = session
+        self._current_model = model_name
+        return True
+
     def _init_rembg(self, model_name: str = "u2net", force_cpu: bool = False):
         """初始化rembg会话(懒加载)"""
+        cls = BackgroundRemover
         cache_key = f"{model_name}_{'cpu' if force_cpu else 'gpu'}"
-
-        if cache_key in BackgroundRemover._model_cache:
-            self._rembg_session = BackgroundRemover._model_cache[cache_key]
-            self._current_model = model_name
+        if self._from_cache(cache_key, model_name):
             return
+        # 同一个模型只让一个任务去加载：两个任务同时开跑时，后到的等前一个加载完
+        # 直接复用，而不是并发再加载一份（bria 一份就是 1G 显存 + 十几秒）。
+        # 锁按模型分开，等 bria 加载时，用已缓存模型的任务照常跑。
+        with cls._cache_lock:
+            load_lock = cls._load_locks.setdefault(cache_key, threading.Lock())
+        with load_lock:
+            if self._from_cache(cache_key, model_name):
+                return
+            self._load_session(model_name, force_cpu, cache_key)
 
+    def _load_session(self, model_name: str, force_cpu: bool, cache_key: str):
+        cls = BackgroundRemover
         model_path = self.get_model_path(model_name)
 
         if model_path is None:
@@ -252,9 +282,32 @@ class BackgroundRemover:
             progress_callback=self._report_progress
         )
 
-        BackgroundRemover._model_cache[cache_key] = session
+        with cls._cache_lock:
+            cls._model_cache[cache_key] = session
+            while len(cls._model_cache) > cls.MAX_CACHED:
+                cls._model_cache.popitem(last=False)
         self._rembg_session = session
         self._current_model = model_name
+
+    @classmethod
+    def warmup(cls, model_name: Optional[str] = None) -> None:
+        """预加载默认模型（服务启动时在后台线程调用）。
+
+        否则每次重启/部署后，第一个点抠图的人要先干等十几秒加载 bria。
+        失败只记日志：预热只是提速，不能因为它拖垮启动。
+        """
+        name = model_name or cls.default_model()
+        try:
+            force_cpu = bool(get_settings().force_cpu)
+            if cls.get_model_path(name) is None:
+                return
+            t0 = __import__("time").time()
+            cls()._init_rembg(name, force_cpu=force_cpu)
+            # 用 print：根日志器默认 WARNING，info 进不了 journald，看不到预热有没有成功
+            print(f"[INFO] 抠图模型已预热: {name}（{__import__('time').time() - t0:.1f}s）",
+                  flush=True)
+        except Exception:
+            logging.getLogger(__name__).exception("抠图模型预热失败（不影响使用）: %s", name)
 
     def remove_background(
         self,
@@ -278,7 +331,12 @@ class BackgroundRemover:
         alpha_threshold = params.get('alpha_threshold', 0)
         erode = params.get('erode', 0)
         feather = params.get('feather', 0)
-        force_cpu = params.get('force_cpu', get_settings().force_cpu)
+        # 请求里没指定时是 None——get(key, 默认值) 在键存在、值为 None 时不会回落，
+        # 以前 SPRITE_FORCE_CPU 因此从没生效过
+        force_cpu = params.get('force_cpu')
+        if force_cpu is None:
+            force_cpu = get_settings().force_cpu
+        force_cpu = bool(force_cpu)
 
         self._init_rembg(model_name, force_cpu=force_cpu)
 

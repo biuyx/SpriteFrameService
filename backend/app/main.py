@@ -34,6 +34,12 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
     _warn_if_exposed(settings)
+    # 后台预热默认抠图模型：不阻塞启动，也省得第一个点抠图的人干等十几秒
+    if settings.warmup_model:
+        import threading
+        from app.core.background_remover import BackgroundRemover
+        threading.Thread(target=BackgroundRemover.warmup, name="model-warmup",
+                         daemon=True).start()
     yield
     # 优雅关闭：仅释放内存与文件句柄，磁盘数据保留（重启后按需恢复）
     from app.services.session import session_manager

@@ -22,6 +22,7 @@ def _isolated_data_dir(tmp_path_factory):
     old = os.environ.get("SPRITE_DATA_DIR")
     os.environ["SPRITE_DATA_DIR"] = str(d)
     os.environ.setdefault("SPRITE_AUTH_TOKEN", "")      # 测试不走认证
+    os.environ["SPRITE_WARMUP_MODEL"] = "false"         # 别在后台加载 1G 的模型
 
     from app.config import get_settings
     get_settings.cache_clear()
