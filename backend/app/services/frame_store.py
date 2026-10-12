@@ -13,6 +13,25 @@ from app.services.storage import SessionStorage
 from app.utils.image_utils import read_image, save_image
 
 
+def resolve_frame_file(stored: Optional[str], canonical: Path) -> Optional[Path]:
+    """帧文件实际在哪。
+
+    帧一向按 id 存在会话目录里（frames/raw|proc/<id>.png），frames.json 里那个绝对路径
+    只是顺手记下的冗余。整个 data/ 换了机器或换了系统（D:\\... → /data/...）之后它就失效了，
+    以前会让所有帧都显示成「未抠图」、流水线把抠图重跑一遍。所以以按 id 推出来的位置为准，
+    旧路径只在那里没有时兜底。
+
+    元数据里本来就没有路径时保持没有：历史回滚正是靠把 processed_path 置空来标记
+    「未处理」的（磁盘上的旧文件稍后才删），不能从盘上把它捞回来。
+    """
+    if not stored:
+        return None
+    if canonical.exists():
+        return canonical
+    p = Path(stored)
+    return p if p.exists() else canonical
+
+
 def _frame_to_dict(frame: FrameData) -> dict:
     return {
         "id": frame.id,
@@ -90,13 +109,23 @@ class FrameStore:
             return
 
         for d in payload:
+            fid = d.get("id")
+            if fid:
+                image_path = resolve_frame_file(d.get("image_path"),
+                                                self._storage.raw_path(fid))
+                processed_path = resolve_frame_file(d.get("processed_path"),
+                                                    self._storage.proc_path(fid))
+            else:                     # 极老的数据没有 id，只能信存下来的路径
+                image_path = Path(d["image_path"]) if d.get("image_path") else None
+                processed_path = (Path(d["processed_path"])
+                                  if d.get("processed_path") else None)
             kwargs = {
                 "index": d["index"],
                 "timestamp": d["timestamp"],
                 "status": FrameStatus(d.get("status", "raw")),
                 "is_selected": d.get("is_selected", False),
-                "image_path": Path(d["image_path"]) if d.get("image_path") else None,
-                "processed_path": Path(d["processed_path"]) if d.get("processed_path") else None,
+                "image_path": image_path,
+                "processed_path": processed_path,
                 "pose_id": d.get("pose_id"),
                 "contour_id": d.get("contour_id"),
                 "image_feature_id": d.get("image_feature_id"),

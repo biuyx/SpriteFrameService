@@ -564,12 +564,16 @@ class SpriteStore:
             frames = json.loads(fj.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return None
+        from app.services.frame_store import resolve_frame_file
         for f in frames:
             if f.get("index") == frame_index:
-                for key in ("processed_path", "image_path"):
-                    p = f.get(key)
-                    if p and Path(p).is_file():
-                        return Path(p)
+                fid = f.get("id")
+                # 存的是绝对路径，搬过机器就失效；有 id 时按会话目录里的约定位置找
+                for key, sub in (("processed_path", "proc"), ("image_path", "raw")):
+                    p = (resolve_frame_file(f.get(key), d / "frames" / sub / f"{fid}.png")
+                         if fid else (Path(f[key]) if f.get(key) else None))
+                    if p and p.is_file():
+                        return p
         return None
 
     def materialize_first_frame(self, sprite_id: str, action_id: str,
