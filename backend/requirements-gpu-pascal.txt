@@ -1,0 +1,11 @@
+# Pascal 架构 GPU（Tesla P4/P40、GTX 10 系，计算能力 6.x）实测可用的组合——不要随手升级
+#
+# 在 Tesla P4 上逐个试出来的（2026-10）：
+#   · 所有 CUDA 12 版 onnxruntime-gpu（含 1.18.1）都绑 cuDNN 9，退 cuDNN 8 会直接起不来
+#   · cuDNN 9 较新的小版本已砍掉 Pascal 的卷积内核：9.27 上第一个 Conv 就报
+#     CUDNN_BACKEND_API_FAILED；9.1 正常
+#   · onnxruntime-gpu 1.20 起改用 cuDNN 新 graph 前端，Pascal 上同样失败
+#
+# 实测：bria-rmbg-2.0（1024×1024）2.0 秒/帧，同机 CPU（E5-2670）23 秒/帧
+onnxruntime-gpu==1.18.1
+nvidia-cudnn-cu12==9.1.0.70

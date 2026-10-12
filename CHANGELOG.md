@@ -21,6 +21,14 @@
 - 修掉 `SPRITE_FORCE_CPU` 从没生效的问题:请求里 `force_cpu` 缺省是 None,
   `get(key, 默认值)` 在键存在、值为 None 时不会回落到配置
 
+### Linux GPU(Pascal 卡)
+
+- `scripts/setup_linux.sh` 新增 `SPRITE_GPU=pascal`:Tesla P4/P40、GTX 10 系必须用钉死的
+  `onnxruntime-gpu 1.18.1 + cuDNN 9.1`(见 `backend/requirements-gpu-pascal.txt`),
+  装最新版会在第一个卷积上直接失败
+- 脚本会把 venv 里的 CUDA 运行库登记到 `ld.so.conf.d`,否则会静默回落 CPU
+- Tesla P4 实测 bria-rmbg-2.0 2 秒/帧,同机 CPU 23 秒/帧
+
 ## 2026-09-21
 
 ### 生图结果取回

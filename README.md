@@ -328,13 +328,25 @@ SPRITE_ALLOW_MODEL_DOWNLOAD=false  # 允许 RTMPose 缺模型时联网下载
 
 ## GPU 加速（可选）
 
-后端默认使用 onnxruntime CPU。Linux 服务器如有 NVIDIA GPU：
+后端默认使用 onnxruntime CPU。Linux 服务器如有 NVIDIA GPU,先装驱动(Ubuntu:
+`apt install nvidia-driver-570-server` 后重启),再用安装脚本装 GPU 版:
 
 ```bash
-.venv/bin/python -m pip uninstall -y onnxruntime onnxruntime-gpu
-.venv/bin/python -m pip install onnxruntime-gpu
-# 设置 SPRITE_FORCE_CPU=false（默认）后，抠图模型将优先使用 CUDA provider
+SPRITE_GPU=1      scripts/setup_linux.sh     # Turing（RTX 20 系 / T4）及更新的卡
+SPRITE_GPU=pascal scripts/setup_linux.sh     # Tesla P4/P40、GTX 10 系等 Pascal 卡
 ```
+
+**Pascal 卡必须走 `pascal`**,装最新版会在第一个卷积上直接失败。原因与实测组合见
+`backend/requirements-gpu-pascal.txt`:所有 CUDA 12 版 onnxruntime-gpu 都绑 cuDNN 9,
+而 cuDNN 9 较新的小版本已砍掉 Pascal 的卷积内核,只有 `onnxruntime-gpu 1.18.1 +
+cuDNN 9.1` 这个组合能跑。Tesla P4 上 bria-rmbg-2.0 实测 2 秒/帧(同机 CPU 23 秒/帧)。
+
+CUDA 运行库是 pip 装进 venv 的,动态链接器默认找不到 —— 脚本会写
+`/etc/ld.so.conf.d/sprite-venv-cuda.conf` 并 `ldconfig`。手动装的话别漏这步,
+否则会报 `libcublasLt.so.12: cannot open shared object file` 然后**静默回落 CPU**。
+
+确认是否真的在用 GPU:「设置 → 能力」里 `gpu_available` 为 true,抠图任务的进度
+消息里会写「实际设备: GPU (CUDA)」。`SPRITE_FORCE_CPU=true` 可强制走 CPU。
 
 ---
 

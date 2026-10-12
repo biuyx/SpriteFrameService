@@ -20,11 +20,25 @@ echo "[2/4] 安装后端依赖 ..."
 .venv/bin/python -m pip install --upgrade pip -q
 .venv/bin/python -m pip install -r backend/requirements.txt
 
-# GPU 服务器可选：onnxruntime-gpu（需 CUDA/cuDNN，见 README）
+# GPU 服务器可选：onnxruntime-gpu（需先装 NVIDIA 驱动，见 README「Linux GPU」）
+#   SPRITE_GPU=1         新卡（Turing 及以上）：装最新版
+#   SPRITE_GPU=pascal    Tesla P4/P40、GTX 10 系等 Pascal 卡：必须用钉死的组合，
+#                        装最新版会在第一个卷积上直接失败（详见 requirements-gpu-pascal.txt）
 if [ -n "$SPRITE_GPU" ]; then
-  echo "      安装 onnxruntime-gpu ..."
+  echo "      安装 onnxruntime-gpu（$SPRITE_GPU）..."
   .venv/bin/python -m pip uninstall -y onnxruntime onnxruntime-gpu
-  .venv/bin/python -m pip install onnxruntime-gpu
+  if [ "$SPRITE_GPU" = "pascal" ]; then
+    .venv/bin/python -m pip install -r backend/requirements-gpu-pascal.txt
+  else
+    .venv/bin/python -m pip install onnxruntime-gpu "nvidia-cudnn-cu12==9.*"
+  fi
+  .venv/bin/python -m pip install nvidia-cuda-runtime-cu12 nvidia-cublas-cu12 \
+    nvidia-cufft-cu12 nvidia-curand-cu12
+  # CUDA 运行库是 pip 装进 venv 的，动态链接器默认找不到，登记一下
+  SP=$(.venv/bin/python -c "import site; print(site.getsitepackages()[0])")
+  ls -d "$SP"/nvidia/*/lib | sudo tee /etc/ld.so.conf.d/sprite-venv-cuda.conf >/dev/null
+  sudo ldconfig
+  .venv/bin/python -c "import onnxruntime as o; print('      providers:', o.get_available_providers())"
 fi
 
 # 3. 前端构建（需要 Node.js；如无则跳过，直接拷贝 dist）
