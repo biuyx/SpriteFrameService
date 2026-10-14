@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,18 @@ def _warn_if_exposed(settings) -> None:
         )
 
 
+def _load_mcp(settings):
+    """MCP 服务（/api/mcp）。没装 mcp 包就跳过，平台照常启动。"""
+    if not settings.mcp_enabled:
+        return None
+    try:
+        from app.mcp_server import server
+    except ImportError as e:
+        logger.warning("MCP 未启用：%s（pip install -r backend/requirements.txt 后重启）", e)
+        return None
+    return server
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -40,7 +52,11 @@ async def lifespan(app: FastAPI):
         from app.core.background_remover import BackgroundRemover
         threading.Thread(target=BackgroundRemover.warmup, name="model-warmup",
                          daemon=True).start()
-    yield
+    async with AsyncExitStack() as stack:
+        mcp = getattr(app.state, "mcp", None)
+        if mcp is not None:
+            await stack.enter_async_context(mcp.running())
+        yield
     # 优雅关闭：仅释放内存与文件句柄，磁盘数据保留（重启后按需恢复）
     from app.services.session import session_manager
     session_manager.release_all()
@@ -76,6 +92,13 @@ def create_app() -> FastAPI:
     @app.get("/api/health")
     def health():
         return {"status": "ok", "app": "SpriteFrameService"}
+
+    # 给 AI 客户端的 MCP 端点：要排在前端静态托管（挂在 /）之前
+    app.state.mcp = _load_mcp(settings)
+    if app.state.mcp is not None:
+        from starlette.routing import Route
+        from app.security import MCP_PATH
+        app.router.routes.append(Route(MCP_PATH, app.state.mcp.endpoint))
 
     # 托管前端构建产物（若存在）
     frontend_dir = settings.resolved_frontend_dir

@@ -20,6 +20,10 @@ onnxruntime>=1.18
 # Ark 视频生成（HTTP 客户端，运行时依赖）
 httpx>=0.27
 
+# MCP：/api/mcp 给 Claude Code 等 AI 客户端用（2.x 的 API 与 1.x 不兼容）。
+# 没装也能启动，只是没有 /api/mcp。会把 pydantic 带到 2.14+，全量测试已验证
+mcp>=2.3,<3
+
 # AI background removal (pulls onnxruntime CPU by default;
 # on a GPU server install onnxruntime-gpu instead, see README)
 rembg>=2.0

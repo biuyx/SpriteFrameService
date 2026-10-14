@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     # --- 处理 ---
     force_cpu: bool = False
     warmup_model: bool = True        # 启动时后台预加载默认抠图模型（测试里关掉）
+    mcp_enabled: bool = True         # /api/mcp：给 Claude Code 等 AI 客户端用（需装 mcp 包）
     realesrgan_tile: int = 0
     max_upload_mb: int = 2048        # 单个视频上传大小上限（MB）
     max_extract_frames: int = 2000   # 单次抽帧的帧数上限

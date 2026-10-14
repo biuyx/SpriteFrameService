@@ -74,6 +74,38 @@ def is_authenticated(request: Request) -> bool:
     return verify_cookie(request.cookies.get(COOKIE_NAME, ""))
 
 
+# MCP（给 AI 用的接口）：挂在 /api 下面，才会经过本中间件——挂到别处就等于不设防
+MCP_PATH = "/api/mcp"
+
+
+def is_mcp_path(path: str) -> bool:
+    return path == MCP_PATH or path.startswith(MCP_PATH + "/")
+
+
+def bearer_of(headers) -> str:
+    auth = headers.get("authorization", "")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+
+def agent_of(headers) -> dict | None:
+    """MCP 调用方身份：平台口令 = 管理员（全部权限）；AI 密钥 = 该密钥的权限。
+
+    只认 Bearer，不认 Cookie：浏览器自动带的 Cookie 不该能驱动 AI 接口。
+    认证关闭时（本机自用）谁都放行，记为匿名。
+    """
+    from app.services.agent_keys import SCOPES, agent_key_store
+    token = bearer_of(headers)
+    if token:
+        if verify_token(token):
+            return {"id": "admin", "name": "平台口令", "scopes": list(SCOPES)}
+        rec = agent_key_store.verify(token)
+        if rec:
+            return rec
+    if not get_settings().auth_enabled:
+        return {"id": "anonymous", "name": "匿名（未启用认证）", "scopes": list(SCOPES)}
+    return None
+
+
 def use_secure_cookie(request: Request) -> bool:
     """是否给 Cookie 加 Secure 标志。"""
     mode = (get_settings().auth_cookie_secure or "auto").strip().lower()
@@ -132,6 +164,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
         if not path.startswith("/api") or path in EXEMPT_PATHS:
+            return await call_next(request)
+
+        if is_mcp_path(path):
+            if agent_of(request.headers) is None:
+                return JSONResponse(
+                    {"detail": "MCP 需要 Bearer 密钥：平台访问口令，"
+                               "或 scripts/agent_keys.py 发的 AI 密钥"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
             return await call_next(request)
 
         if not is_authenticated(request):

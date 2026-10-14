@@ -1,5 +1,25 @@
 # 更新日志
 
+## 2026-10-13
+
+### 让 AI 接入：MCP 服务（一期，只读）
+
+- 新增 `/api/mcp`：Claude Code 等 AI 客户端用 `claude mcp add --transport http ...` 一行接入,
+  可以查进度、做量产前体检、看图审核。一期全部只读，不会启动任务、不会花钱
+- 工具按「先定型、再量产」组织,连接时把这套理念作为说明发给 AI:
+  - `check_readiness`:量产前体检。每个动作每一步 执行 / 跳过 / 阻塞;**根因和连带阻塞分开报**
+    (抽帧过不去,抠图、导出「没有输入」只是连带),根因注明涉及哪些模板——同一原因压在一大片
+    动作上,多半是模板没定型好;列出设定来自哪一层哪个版本,标出用内置兜底或偏离模板的提示词;
+    统计要花几次生成
+  - 看图:`view_first_frames`(立绘排第一格,比对首帧是不是同一个角色)、`view_frames`
+    (抠图后统一裁空白、透明处棋盘格看残边,顺带报出帧尺寸不一致)、`view_video`(生成视频抽帧)
+  - `get_sprite_overview` / `get_template_library` / `list_jobs` / `wait_job` / `get_platform_status`
+- **AI 专用密钥**(`scripts/agent_keys.py`):和平台口令分开,可发多把、可吊销、带权限范围
+  (read 已开放;operate / generate 留给后续阶段)。库里只存摘要;只能访问 `/api/mcp`,
+  调平台其他接口一律 401;`/api/mcp` 只认 Bearer,不认浏览器 Cookie
+- **审计**:每次工具调用一行 JSON(`data/logs/agent_audit.jsonl`):谁、调了什么、参数、成败、耗时
+- 依赖 `mcp` 2.x(会把 pydantic 带到 2.14+,全量测试已验证);没装时平台照常启动
+
 ## 2026-10-12
 
 ### 一键部署到 Linux 服务器

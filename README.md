@@ -226,6 +226,53 @@ curl -H "Authorization: Bearer $SPRITE_AUTH_TOKEN" http://127.0.0.1:8000/api/cap
 
 ---
 
+## 让 AI 接入（MCP）
+
+平台在 `/api/mcp` 提供 MCP 服务，Claude Code 等 AI 客户端连上后可以查进度、做量产前体检、
+看图审核。**目前全部是只读工具**，不会启动任务、不会花钱。
+
+**1. 给 AI 发一把专用密钥**（在服务器上，即发即用，不用重启）：
+
+```bash
+.venv/bin/python scripts/agent_keys.py add claude-code      # 默认只读；命令会打印接入方式
+.venv/bin/python scripts/agent_keys.py list
+.venv/bin/python scripts/agent_keys.py revoke <id>          # 立即失效
+```
+
+**2. 在 Claude Code 里接入**：
+
+```bash
+claude mcp add --transport http sprite http://<服务器地址>:8000/api/mcp --header "Authorization: Bearer <密钥>"
+```
+
+然后直接用中文交代就行，比如「看看 vendor 角色量产前还差什么」「检查 photographer 的首帧和立绘像不像」。
+
+**工具**（参数里的角色、动作都可以写名字）：
+
+| 工具 | 做什么 |
+|---|---|
+| `list_sprites` / `get_sprite_overview` | 每个角色、每个动作卡在哪一步；工艺预设；立绘是否标记 |
+| `get_template_library` | 定型资产：参考视频模板（时长、抽帧规则）、提示词库（绑定层级、版本）、参考首帧集、Spine 模板 |
+| `check_readiness` | 量产前体检：每个动作每一步 执行 / 跳过 / 阻塞，根因与连带分开报、注明涉及哪些模板；设定来自哪一层哪个版本；要花几次生成 |
+| `view_first_frames` | 立绘 + 各动作首帧拼一张图，比对是不是同一个角色 |
+| `view_frames` | 帧序列抽样拼图（抠图后统一裁空白、透明处棋盘格），顺带报帧尺寸不一致 |
+| `view_video` | 生成视频抽帧拼图 + 版本信息（模型、提示词版本、时长） |
+| `list_jobs` / `wait_job` / `get_platform_status` | 任务进度、等任务结束、平台能力 |
+
+连接时服务会把工作理念（先定型、再量产；个别问题重做、系统性问题改模板）作为说明发给 AI。
+
+**安全**：
+
+- AI 密钥库里只存摘要；**只能访问 `/api/mcp`**，拿它调平台其他接口一律 401
+- `/api/mcp` 只认 Bearer（平台口令或 AI 密钥），不认浏览器 Cookie
+- 每次工具调用记一行审计（`data/logs/agent_audit.jsonl`：谁、调了什么、参数、成败、耗时）
+- 密钥带权限范围：`read`（查询看图）已开放；`operate`（免费加工）、`generate`（花钱的生成）留给后续阶段
+
+依赖 `mcp` 包（2.x，已列入 `requirements.txt`）。没装时平台照常启动，只是没有 `/api/mcp`；
+`SPRITE_MCP_ENABLED=false` 可关闭。
+
+---
+
 ## 模型与外部依赖（跨平台注意）
 
 | 依赖 | 位置 | 说明 |
