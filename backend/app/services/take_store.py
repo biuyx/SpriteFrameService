@@ -22,6 +22,8 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
+from app.services.concurrency import dir_lock
+
 
 class TakeStore:
     def __init__(self, storage):
@@ -80,7 +82,9 @@ class TakeStore:
 
     # ------------------------------------------------------------ 查询
     def load(self) -> dict:
-        return self._migrate_legacy(self._load())
+        # 加锁：_migrate_legacy 可能顺手把旧 upload.* 登记进来并落盘
+        with dir_lock(self._dir):
+            return self._migrate_legacy(self._load())
 
     def list(self) -> dict:
         data = self.load()
@@ -108,47 +112,54 @@ class TakeStore:
                 if t.get("status") in ("pending", "running") and t.get("remote_task_id")]
 
     # ------------------------------------------------------------ 修改
+    # 这几个方法都是「读出来 - 改 - 写回去」，必须整体互斥：同一个动作可以有很多版本
+    # （抽卡就是这个意思），两个人同时生成同一动作是正常用法，但并发写会让后写的
+    # 盖掉先写的——花过钱的版本在界面上消失。锁按动作目录分片，不同动作互不影响。
     def add(self, source: str, **fields) -> dict:
         tid = f"t_{uuid.uuid4().hex[:8]}"
         take = {"id": tid, "source": source, "status": fields.pop("status", "pending"),
                 "created_at": time.time(), "file": f"{tid}.mp4", **fields}
-        data = self.load()
-        data["takes"].append(take)
-        self._save(data)
+        with dir_lock(self._dir):
+            data = self.load()
+            data["takes"].append(take)
+            self._save(data)
         return take
 
     def update(self, take_id: str, patch: dict) -> Optional[dict]:
-        data = self.load()
-        for t in data["takes"]:
-            if t["id"] == take_id:
-                t.update(patch)
-                self._save(data)
-                return t
+        with dir_lock(self._dir):
+            data = self.load()
+            for t in data["takes"]:
+                if t["id"] == take_id:
+                    t.update(patch)
+                    self._save(data)
+                    return t
         return None
 
     def set_current(self, take_id: str) -> bool:
-        data = self.load()
-        if not any(t["id"] == take_id and t.get("status") == "succeeded"
-                   for t in data["takes"]):
-            return False
-        data["current"] = take_id
-        self._save(data)
-        return True
+        with dir_lock(self._dir):
+            data = self.load()
+            if not any(t["id"] == take_id and t.get("status") == "succeeded"
+                       for t in data["takes"]):
+                return False
+            data["current"] = take_id
+            self._save(data)
+            return True
 
     def delete(self, take_id: str) -> bool:
-        data = self.load()
-        take = next((t for t in data["takes"] if t["id"] == take_id), None)
-        if take is None:
-            return False
-        p = self._dir / take.get("file", f"{take_id}.mp4")
-        try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            pass
-        data["takes"] = [t for t in data["takes"] if t["id"] != take_id]
-        if data["current"] == take_id:
-            # 退回最近一个成功的 take（可能为 None）
-            succ = [t for t in data["takes"] if t.get("status") == "succeeded"]
-            data["current"] = succ[-1]["id"] if succ else None
-        self._save(data)
-        return True
+        with dir_lock(self._dir):
+            data = self.load()
+            take = next((t for t in data["takes"] if t["id"] == take_id), None)
+            if take is None:
+                return False
+            p = self._dir / take.get("file", f"{take_id}.mp4")
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+            data["takes"] = [t for t in data["takes"] if t["id"] != take_id]
+            if data["current"] == take_id:
+                # 退回最近一个成功的 take（可能为 None）
+                succ = [t for t in data["takes"] if t.get("status") == "succeeded"]
+                data["current"] = succ[-1]["id"] if succ else None
+            self._save(data)
+            return True

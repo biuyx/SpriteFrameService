@@ -104,3 +104,20 @@ class ConcurrencyGate:
     def hold(self, ctx):
         """with gate.hold(ctx): ... —— 带排队上报与取消检查的 with 写法。"""
         return self._Held(self, ctx)
+
+
+# ---------------------------------------------------------------- 目录锁
+_STRIPES = 64
+_stripe_locks = [threading.RLock() for _ in range(_STRIPES)]
+
+
+def dir_lock(path) -> threading.RLock:
+    """按目录取一把可重入锁，给「读 - 改 - 写」的小 JSON 用（takes.json、.oss_cache.json）。
+
+    这类文件只有几 KB，写的时候虽然用 tmp+replace 保证不写坏，但「读出来、追加、
+    写回去」中间没有互斥，并发时后写的会盖掉先写的——实测 16 个并发只剩 1 个。
+
+    为什么用固定数量的锁分片而不是每个目录一把：目录数随动作数增长，长期运行的
+    服务不该为此攒下无上限的锁对象。不同目录偶尔撞到同一片只是多一点串行，不影响正确性。
+    """
+    return _stripe_locks[hash(str(path)) % _STRIPES]

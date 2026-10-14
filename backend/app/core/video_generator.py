@@ -21,6 +21,7 @@ import numpy as np
 from app.config import get_settings
 from app.core.ark_client import ArkClient, ArkError
 from app.services.take_store import TakeStore
+from app.services.concurrency import dir_lock
 
 
 class PollInterrupted(RuntimeError):
@@ -105,22 +106,33 @@ def _cached_upload(session, data: bytes, ext: str, content_type: str) -> str:
 
     digest = hashlib.md5(data).hexdigest()
     cache_path = session.storage.root / ".oss_cache.json"
-    cache = {}
-    if cache_path.is_file():
+    lock = dir_lock(session.storage.root)
+
+    def _read() -> dict:
+        if not cache_path.is_file():
+            return {}
         try:
-            cache = _json.loads(cache_path.read_text(encoding="utf-8"))
+            return _json.loads(cache_path.read_text(encoding="utf-8"))
         except (ValueError, OSError):
-            cache = {}
-    if cache.get(digest):
-        return cache[digest]
+            return {}
+
+    with lock:
+        hit = _read().get(digest)
+    if hit:
+        return hit
+
     url = upload_bytes(data, f"seedance/sprite-service/refs/{digest}.{ext}",
                        content_type)
-    cache[digest] = url
-    try:
-        cache_path.write_text(_json.dumps(cache, ensure_ascii=False, indent=1),
-                              encoding="utf-8")
-    except OSError:
-        pass
+    # 上传在锁外（可能要几秒），存缓存时重新读一次：这期间别的生成可能写进了别的哈希，
+    # 用早先那份内存里的副本回写会把它们抹掉
+    with lock:
+        cache = _read()
+        cache[digest] = url
+        try:
+            cache_path.write_text(_json.dumps(cache, ensure_ascii=False, indent=1),
+                                  encoding="utf-8")
+        except OSError:
+            pass
     return url
 
 
