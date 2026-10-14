@@ -54,7 +54,10 @@ class Settings(BaseSettings):
     # --- 服务 ---
     host: str = "127.0.0.1"
     port: int = 8000
-    max_workers: int = 2
+    # 本地处理的并发上限：cpu 池线程数，同时是 local_gate 的上限（两者取同一个值，
+    # 流水线里的抽帧/抠图/导出与直接提交的本地任务共用它）。调大前先压测显存——
+    # 抠图在 GPU 上跑，一台 P4（8G）同时几路会溢出。
+    max_workers: int = 4
     cors_origins: str = "*"          # 逗号分隔的允许来源，"*" 为不限制
     debug_errors: bool = False       # 任务失败时是否把完整 traceback 返回给前端
 

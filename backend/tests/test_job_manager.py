@@ -21,8 +21,10 @@ def _wait(pred, timeout=8.0, step=0.05):
     return False
 
 
-def test_无闸门时照常执行():
-    jm = JobManager(max_workers=2, io_workers=2)
+def test_不显式给闸门也能正常执行():
+    """cpu 池现在默认走 local_gate，正常执行不受影响。"""
+    jm = JobManager(max_workers=2, io_workers=2,
+                    local_gate=ConcurrencyGate(lambda: 2, "本地处理"))
     job = jm.submit("t", lambda ctx: 42)
     assert _wait(lambda: job.status == JobStatus.DONE), job.status
     assert job.result == 42

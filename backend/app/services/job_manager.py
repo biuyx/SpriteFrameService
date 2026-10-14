@@ -13,6 +13,7 @@ from enum import Enum
 from typing import Callable, Dict, List, Optional, Any
 
 from app.config import get_settings
+from app.services.concurrency import local_gate as _shared_local_gate
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +84,12 @@ class JobManager:
 
     MAX_JOBS = 200   # 任务表上限，超出后淘汰最早的已结束任务
 
-    def __init__(self, max_workers: Optional[int] = None, io_workers: int = 16):
+    def __init__(self, max_workers: Optional[int] = None, io_workers: int = 16,
+                 local_gate: Optional[Any] = None):
         self._jobs: Dict[str, Job] = {}
         self._jobs_lock = threading.Lock()
+        # 本地处理的准入闸门：cpu 池的任务默认取它，与流水线里的本地步骤共用同一个上限
+        self._local_gate = local_gate if local_gate is not None else _shared_local_gate
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers or get_settings().max_workers,
             thread_name_prefix="spriteframe-job",
@@ -158,6 +162,9 @@ class JobManager:
         lock: 可选的互斥锁（如会话锁）。在工作线程内获取，使同一会话的任务
         串行执行，避免并发改写帧数据；提交调用本身不会因此阻塞。
         pool: "cpu"（默认，本地处理）或 "io"（外部 API 等待，如视频生成）。
+            cpu 池不给 gate 时默认走 local_gate——本地重活统一限流，和流水线里的
+            抽帧/抠图/导出共用一个上限。池子大小与该上限取同一个设置，所以拿到
+            许可的任务总有线程可用，不会「占着许可等线程」把别人堵住。
         gate: 可选的并发闸门（ConcurrencyGate）。给了就走准入队列：拿到许可
         前任务留在队列里不占线程，排队期间取消可立即生效。
         """
@@ -165,6 +172,9 @@ class JobManager:
         with self._jobs_lock:
             self._jobs[job.id] = job
             self._evict_locked()
+
+        if gate is None and pool == "cpu":
+            gate = self._local_gate
 
         def _runner():
             ctx = JobContext(job)

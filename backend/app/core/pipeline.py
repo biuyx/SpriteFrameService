@@ -5,7 +5,7 @@
 - 步骤产物已存在则跳过（除非 force），因此"再次执行"天然从失败/未完成处续跑；
 - 首帧生成后可自动暂停等人工确认：状态记入动作档案（action.json["pipeline"]），
   任务结束不占线程，确认后 resume 起新任务续跑；
-- 视频生成走现有并发闸门；本地重活（抽帧/抠图/导出）用本地信号量限流；
+- 视频生成走现有并发闸门；本地重活（抽帧/抠图/导出）走 local_gate，与 cpu 池同一个上限；
 - 执行前 plan() 给出每步 run/skip/blocked 及原因，供界面预览与费用估算。
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import time
 from typing import List, Optional
 
 from app.api.deps import get_session
-from app.services.concurrency import ConcurrencyGate
+from app.services.concurrency import local_gate
 from app.services.sprite_store import sprite_store
 from app.services.template_store import template_store
 
@@ -44,10 +44,11 @@ DEFAULT_SCALE_PRESET = {            # 未配置时的缩放缺省（enabled=Fals
 }
 
 
-# 本地重活并发（与 cpu 池规模一致），避免十几个动作同时抠图打爆机器。
+# 本地重活统一走 services.concurrency.local_gate：它同时是 cpu 池的准入闸门，
+# 流水线里的抽帧/抠图/导出与直接提交的本地任务因此共用一个上限（SPRITE_MAX_WORKERS）。
 # 用带上报的闸门而非裸信号量：批量跑时排队的动作要显示「排队中」，
 # 否则会停在上一条消息上，看着像卡住。
-_local_gate = ConcurrencyGate(lambda: 2, "本地处理")
+_local_gate = local_gate
 
 DEFAULT_OUTPUT_PRESET = {          # 精灵导出预设缺省：序列帧 PNG
     "format": "frames",

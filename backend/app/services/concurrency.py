@@ -121,3 +121,15 @@ def dir_lock(path) -> threading.RLock:
     服务不该为此攒下无上限的锁对象。不同目录偶尔撞到同一片只是多一点串行，不影响正确性。
     """
     return _stripe_locks[hash(str(path)) % _STRIPES]
+
+
+# ---------------------------------------------------------------- 本地处理闸门
+def _local_limit() -> int:
+    from app.config import get_settings
+    return max(1, get_settings().max_workers)
+
+
+# 本地处理（抽帧、抠图、缩放、描边、导出、分析、Spine 导出……）统一走这一个闸门：
+# cpu 池的任务由 JobManager 默认取它，流水线里的本地步骤也取它。此前是「cpu 池 2 个线程」
+# 加「流水线自己的闸门 2」两套互不知情的限额，实际最多 4 个并发，谁也管不住谁。
+local_gate = ConcurrencyGate(_local_limit, "本地处理")
