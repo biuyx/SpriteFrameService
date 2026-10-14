@@ -74,6 +74,27 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now spriteframe
 ```
 
+**一键部署**（装好之后，从开发机更新服务器）：
+
+```bash
+cp scripts/deploy.env.example scripts/deploy.env   # 填上服务器地址，只需一次
+scripts/deploy_linux.sh              # 部署当前提交（Windows 上双击 scripts/deploy_linux.bat）
+scripts/deploy_linux.sh --status     # 线上是哪个版本、比本地落后几个提交
+scripts/deploy_linux.sh --dry-run    # 只看会改哪些文件、要不要重启，不动服务器
+scripts/deploy_linux.sh --rollback   # 回滚到上一次部署前的版本
+```
+
+本机构建前端、打包当前提交传上去替换；只有后端代码变了才重启服务，重启后等健康检查
+通过，起不来自动回滚。几条保护：
+
+- 有未提交的改动默认不让部署（`--allow-dirty` 放行）——线上跑的应该对得上某个提交
+- 有任务在跑或排队时不重启（重启会打断生成和抠图），等跑完再部署，或加 `--force`
+- 每次替换前在服务器上备份一份（`.deploy/backups/`，留最近 5 份），`--rollback` 逐次往回退
+- 只动代码和前端产物，不碰 `backend/.env`、数据目录、模型、`tools`、`.venv`；依赖清单变了
+  只提醒不自动装——GPU 版 onnxruntime 是钉死的组合，盲目 `pip install` 可能把它换掉
+
+前提：部署机能免密 SSH 登录服务器，服务器上这个用户能免密 sudo（重启服务要用）。
+
 **Nginx 反代示例**（可选）：
 
 ```nginx

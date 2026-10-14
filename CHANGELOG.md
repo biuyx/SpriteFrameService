@@ -2,6 +2,16 @@
 
 ## 2026-10-12
 
+### 一键部署到 Linux 服务器
+
+- 新增 `scripts/deploy_linux.sh`(Windows 上双击 `scripts/deploy_linux.bat`):本机构建前端、
+  打包当前提交传上去替换;只有后端代码变了才重启,重启后等健康检查通过,起不来自动回滚
+- `--status` 看线上是哪个版本、比本地落后几个提交;`--dry-run` 只看会改什么;
+  `--rollback` 回滚到上一次部署前(服务器上留最近 5 份备份)
+- 保护:有未提交的改动默认不让部署;有任务在跑时不重启(会打断生成和抠图),
+  `--force` 才强制;不碰 `backend/.env`、数据、模型、`.venv`;依赖清单变了只提醒不自动装
+- 目标服务器写在 `scripts/deploy.env`(不入库,照 `deploy.env.example` 写)
+
 ### 迁到 Linux 后的兼容修补
 
 - **zip 里的中文文件名不再乱码**:Windows 自带「发送到 → 压缩(zipped)文件夹」和不少国产

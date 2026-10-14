@@ -20,6 +20,8 @@ frontend/.vite/
 # 环境配置（.env.example 保留入库）
 .env
 backend/.env
+# 一键部署的目标服务器（每台部署机各自的，照 deploy.env.example 写）
+scripts/deploy.env
 
 # 模型与工具（仅根目录；体积大/二进制，不入库；部署时单独放置）
 # 注意：必须锚定根目录(/models/ /tools/)，否则会误伤 backend/app/models/（项目源码）
