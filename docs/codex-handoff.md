@@ -180,3 +180,9 @@ Windows 302 项通过，Linux 300 项通过、2 项缺参考工程跳过，前�
 17:40 确认 queued/running 为空，完整核验 220 源文件和构建快照、84 后端生产基线后，正常 --allow-dirty 更新。备份 /opt/sprite/.deploy/backups/20261019-174101.tar.gz。仅静态前端/README/导出脚本变化，无需重启，服务 PID 19585 不变。健康、前端、认证接口 200，未认证 401，MCP19工具；10 前端文件及7张手册图片的磁盘/HTTP哈希验证通过，后端、角色绑定/立绘标记、密钥及资源配置未变，无生成或加工调用。data/releases/manual-20261019/release.json 状态 deployed，详情 docs/manual-release.md。
 
 手册验收成功后 automation-2 已暂停，旧 m3 保持暂停，不再重复部署。
+
+## 精灵库第一阶段已开发、提交和上线（2026-10-19 20:05）
+
+用户要求先提交既有代码，再实现项目、精灵类型、多级分类、旧数据兼容和测试，空闲时上线。既有工作提交 37d7fdf；第一阶段提交 14a22a8。新增 library_catalog.json（读时不创建）、项目/目录/类型管理员 API、稳定 project_id/sprite_type_id 归属、项目选择与递归分类树、类型默认参考、批量归类预览及过期/冲突/失败保护。原 tags、素材路径、角色绑定和动作不自动改写；旧角色从待归类进入，导入按项目与类型复用同名角色。手册同步到19章6图，详见 docs/library-catalog.md。
+
+Windows327通过，Linux隔离325通过2缺参考工程跳过，Node导航5通过，前端构建与隔离浏览器完整流程通过。确认生产queued/running为空、原基线匹配后，以干净提交正常运行部署脚本，维护准入/二次空闲/备份和重启成功。备份 /opt/sprite/.deploy/backups/20261019-200535.tar.gz；20:05:38恢复，20:06:49验收通过：86 app文件、11前端文件匹配提交和构建，449生产元数据文件未变，空目录只读不落盘，HTTP/认证/MCP19/SQLite/owner锁/资源/启动日志正常，无真实生成加工。发布快照data/releases/catalog-phase1-20261019/release.json为deployed；git_blob_files是干净git archive使用的LF哈希，与测试工作目录仅行尾差异。无需新自动化，旧m3与automation-2继续暂停。

@@ -32,3 +32,11 @@ Windows：327 passed。Linux 隔离目录 `/tmp/sprite-catalog-phase1-20261019-q
 先核验完整发布快照与生产原基线；只在认证任务接口 queued/running 为空时运行现有部署脚本，不用 --force 或 --no-restart。保留 CPU/资源预算、权限及额度。生产只做查询验收，不创建演示分类、不归类真实角色、不提交生成或加工。
 
 验收健康/前端/认证角色任务和新目录查询 200、未认证 401、MCP19工具、后端及静态构建哈希、旧角色元数据与参考标记/绑定不变、SQLite 与任务 owner 锁、资源配置及启动日志。发布快照和备份记录见 data/releases/catalog-phase1-20261019/release.json。
+
+## 已上线（2026-10-19 20:05）
+
+先按用户要求将已有 MCP/多角色/图文手册代码提交为 `37d7fdf`，第一阶段功能提交为 `14a22a8`。确认认证任务接口 queued/running 为空后，229 源文件和 11 前端构建文件冻结，生产原手册版本 84 个 app 文件基线吻合，449 个生产角色、动作、立绘、参考集及密钥元数据留存上线前哈希。
+
+使用干净提交正常执行 `scripts/deploy_linux.sh`，未使用 --force、--no-restart 或 dirty 覆盖；维护准入和空闲复查通过，备份 `/opt/sprite/.deploy/backups/20261019-200535.tar.gz`，20:05:38 服务恢复。干净部署以 git archive 的 LF blob 为准，已确认与被测试工作目录文件仅有 CRLF 行尾差异；发布快照分别记录工作目录 hashes 和 git_blob_files。
+
+20:06:49 验收：service active，健康/前端/认证角色/任务/目录接口 200，未认证 401；86 个后端 app 文件与提交哈希一致，11 个前端文件磁盘及 HTTP 内容哈希一致。449 个生产元数据文件完全不变，未创建生产分类、未自动归类；GET /api/library 为空且未创建 catalog 文件。MCP 19 工具、只读密钥权限、CPU/并发/内存预算不变，两份 SQLite quick_check 正常、owner 锁已持有，启动无异常，队列为空。没有发起真实加工或付费测试。
