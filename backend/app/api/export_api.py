@@ -175,56 +175,70 @@ def _apply_to_frames(frames: list, cfg, ctx):
 
 def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
     """导出任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    from app.services.resources import resources, estimate_export_mb
+    resources.check_estimate(session.id, estimate_export_mb(session, indices, config))
     export_dir = session.storage.export_dir(export_name)
+    incomplete = export_dir / '.incomplete'
+    if incomplete.exists():
+        for partial in export_dir.iterdir():
+            if partial.is_file() and partial != incomplete:
+                partial.unlink()
+    incomplete.touch()  # 失败或进程中断后保留，不能把半成品误判成已完成。
 
-    frames = []
-    session.load_display_arrays(indices)
-    for idx in indices:
-        f = session.frame_manager.get_frame(idx)
-        if f is not None:
-            frames.append(f)
+    try:
+        frames = []
+        session.load_display_arrays(indices)
+        for idx in indices:
+            f = session.frame_manager.get_frame(idx)
+            if f is not None:
+                frames.append(f)
 
-    if not frames:
-        return {"error": "没有可导出的帧"}
+        if not frames:
+            raise ValueError('没有可导出的帧，请重新选择帧后导出')
 
-    cfg = config.model_copy()
-    cfg.output_path = export_dir
-    # 文件名跟目录名用同一个已清洗的值：既跟着「角色_动作」走，
-    # 也不让 ../ 之类的输入顺着 f"{output_name}.png" 跑出导出目录
-    cfg.output_name = export_name
+        cfg = config.model_copy()
+        cfg.output_path = export_dir
+        # 文件名跟目录名用同一个已清洗的值：既跟着「角色_动作」走，
+        # 也不让 ../ 之类的输入顺着 f"{output_name}.png" 跑出导出目录
+        cfg.output_name = export_name
 
-    # 循环过渡：非破坏性应用到导出帧（使首尾无缝衔接）
-    lt = cfg.loop_transition
-    if lt.enabled and len(frames) > 1:
-        frames = apply_transition_to_frame_data(frames, lt.count, lt.mode)
+        # 循环过渡：非破坏性应用到导出帧（使首尾无缝衔接）
+        lt = cfg.loop_transition
+        if lt.enabled and len(frames) > 1:
+            frames = apply_transition_to_frame_data(frames, lt.count, lt.mode)
 
-    # 缩放 / 描边：同样只作用于导出副本，帧文件保持原样
-    frames, size_notes = _apply_to_frames(frames, cfg, ctx)
+        # 缩放 / 描边：同样只作用于导出副本，帧文件保持原样
+        frames, size_notes = _apply_to_frames(frames, cfg, ctx)
 
-    ctx.report(30, "开始导出...")
-    exporter = Exporter()
-    main_path, info = exporter.export(frames, cfg)
+        ctx.report(30, "开始导出...")
+        exporter = Exporter()
+        main_path, info = exporter.export(frames, cfg)
 
-    session.clear_frame_arrays()
 
-    files = [f.name for f in sorted(Path(main_path).parent.iterdir()) if f.is_file()]
-    ctx.report(100, "导出完成")
-    from app.services import recipe
-    recipe.record_step(session, "export",
-                       {"format": config.format.value
-                        if hasattr(config.format, "value") else str(config.format),
-                        "name": export_name,
-                        "loop_transition": lt.enabled,
-                        "size_ops": size_notes,
-                        "frame_indices": indices[:50]},
-                       {"files": files})
-    return {
-        "name": export_name,
-        "main": Path(main_path).name,
-        "info": info,
-        "files": files,
-        "dir": str(export_dir),
-    }
+        output_dir = Path(main_path) if Path(main_path).is_dir() else Path(main_path).parent
+        files = [f.name for f in sorted(output_dir.iterdir()) if f.is_file() and not f.name.startswith('.')]
+        if not files:
+            raise ValueError('导出没有生成文件，请检查帧图像是否完整')
+        incomplete.unlink(missing_ok=True)
+        ctx.report(100, "导出完成")
+        from app.services import recipe
+        recipe.record_step(session, "export",
+                           {"format": config.format.value
+                            if hasattr(config.format, "value") else str(config.format),
+                            "name": export_name,
+                            "loop_transition": lt.enabled,
+                            "size_ops": size_notes,
+                            "frame_indices": indices[:50]},
+                           {"files": files})
+        return {
+            "name": export_name,
+            "main": Path(main_path).name,
+            "info": info,
+            "files": files,
+            "dir": str(export_dir),
+        }
+    finally:
+        session.clear_frame_arrays()
 
 
 @router.post("")
@@ -232,10 +246,13 @@ def create_export(session_id: str, req: ExportRequest):
     session = get_session(session_id)
     indices = require_indices(session, req.indices)
     export_name = _resolve_name(session_id, req.config.output_name)
+    from app.services.resources import estimate_export_mb
 
     job = job_manager.submit(
         "export", lambda ctx: run_export(session, req.config, indices, export_name, ctx),
-        lock=session.lock)
+        lock=session.lock, target=session.id, resource='export',
+        params={"config": req.config.model_dump(mode='json'), "indices": indices},
+        memory_mb=estimate_export_mb(session, indices, req.config))
     return {"job_id": job.id, "export_name": export_name}
 
 
@@ -287,6 +304,8 @@ def download_export(session_id: str, name: str):
     export_dir = _safe_child(session.storage.exports_dir, name)
     if not export_dir.is_dir():
         raise HTTPException(status_code=404, detail="导出不存在")
+    if (export_dir / '.incomplete').exists():
+        raise HTTPException(status_code=409, detail='该导出尚未完成或已中断，请完成后再下载')
 
     files = [f for f in sorted(export_dir.iterdir()) if f.is_file()]
     if not files:
@@ -313,6 +332,8 @@ def download_export(session_id: str, name: str):
 def download_export_file(session_id: str, name: str, filename: str):
     session = get_session(session_id)
     path = _safe_child(session.storage.exports_dir, name, filename)
+    if (path.parent / '.incomplete').exists():
+        raise HTTPException(status_code=409, detail='该导出尚未完成或已中断，请完成后再下载')
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(str(path), filename=path.name)

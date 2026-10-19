@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="380" viewBox="0 0 960 380" role="img" aria-label="角色制作流程示意图">
+<rect width="960" height="380" rx="16" fill="#f5f7fb"/><g font-family="Microsoft YaHei, sans-serif" fill="#172b4d">
+<text x="36" y="46" font-size="25" font-weight="bold">从新角色到导出成品</text><text x="36" y="77" font-size="16" fill="#52637b">示意图 · 配置先行，生成前预览，首帧满意再继续</text>
+<g font-size="21" text-anchor="middle"><rect x="36" y="112" width="258" height="82" rx="10" fill="#e2edff"/><text x="165" y="146">① 新建角色与模板绑定</text><text x="165" y="176" font-size="16">分组 / 固定集 / 共享授权</text>
+<text x="319" y="160">→</text><rect x="344" y="112" width="258" height="82" rx="10" fill="#e3f5ef"/><text x="473" y="146">② 标记自己的立绘</text><text x="473" y="176" font-size="16">正面 + 背面</text><text x="627" y="160">→</text>
+<rect x="652" y="112" width="272" height="82" rx="10" fill="#fff0d7"/><text x="788" y="146">③ 检查计划并生成首帧</text><text x="788" y="176" font-size="16">核对姿势与长相，人工确认</text>
+<text x="788" y="222">↓</text>
+<rect x="652" y="240" width="272" height="80" rx="10" fill="#fff0d7"/><text x="788" y="273">④ 生成视频</text><text x="788" y="302" font-size="16">选用已允许的参考动作</text><text x="627" y="286">←</text>
+<rect x="344" y="240" width="258" height="80" rx="10" fill="#e3f5ef"/><text x="473" y="273">⑤ 抽帧与抠图</text><text x="473" y="302" font-size="16">检查循环与透明边缘</text><text x="319" y="286">←</text>
+<rect x="36" y="240" width="258" height="80" rx="10" fill="#e2edff"/><text x="165" y="273">⑥ 导出并下载成品</text><text x="165" y="302" font-size="16">缩放 / 描边 / Spine</text></g>
+<text x="36" y="357" font-size="16" fill="#52637b">已有产物可跳过；强制重做会重新执行。标记立绘与计划预览本身不会发起生成。</text></g></svg>

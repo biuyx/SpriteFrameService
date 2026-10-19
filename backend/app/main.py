@@ -46,6 +46,8 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
     _warn_if_exposed(settings)
+    from app.services.job_manager import job_manager
+    job_manager.initialize()
     # 后台预热默认抠图模型：不阻塞启动，也省得第一个点抠图的人干等十几秒
     if settings.warmup_model:
         import threading
@@ -71,6 +73,16 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    from app.services.job_manager import JobSubmissionError
+    from starlette.responses import JSONResponse
+    @app.exception_handler(JobSubmissionError)
+    async def job_submission_error(request, exc):
+        return JSONResponse({'detail': str(exc)}, status_code=exc.status_code)
+
+    from app.services.template_bindings import TemplateBindingError
+    @app.exception_handler(TemplateBindingError)
+    async def template_binding_error(request, exc):
+        return JSONResponse({'detail': str(exc)}, status_code=400)
 
     # 中间件顺序：后添加的更靠外。先加认证、再加 CORS，
     # 这样 401 响应也能带上 CORS 头，跨域前端才能正确读到错误。

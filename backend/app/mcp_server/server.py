@@ -4,11 +4,13 @@
   · 无状态：每次请求自成一体，服务重启、多进程都不怕会话丢失
   · 挂在 /api 下：经过平台的认证中间件，只认 Bearer（平台口令或 AI 密钥）
 
-一期只开放只读工具。工具按「先定型、再量产」的思路组织，见 INSTRUCTIONS。
+二期开放模板驱动的免费加工，M3 开放审批和额度约束的付费生成。
+工具按「先定型、再量产」组织，见 INSTRUCTIONS。
 """
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import functools
 import json
 import time
@@ -21,7 +23,8 @@ from mcp_types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 from starlette.responses import JSONResponse
 
-from app.mcp_server import audit, queries, views
+from app.mcp_server import audit, queries, views, operations, generation
+from app.services.job_manager import JobSubmissionError
 from app.security import agent_of
 from app.services.sprite_store import sprite_store
 
@@ -37,18 +40,35 @@ INSTRUCTIONS = """\
 - 量产里出了问题分两类：个别动作没生成好 → 只重做这一个；多个角色的同一个动作都有问题
   → 是模板的问题，停下来报告给人去改模板，不要逐个改提示词绕过去。
 
-现在开放的都是只读工具，建议的用法：
+现已开放只读查询、需要 operate 权限的免费加工，以及需要 generate 权限和管理员审批的付费生成：
 1. list_sprites / get_sprite_overview：看每个角色、每个动作卡在哪一步；
 2. 量产前 check_readiness：每个动作每一步会执行 / 跳过 / 被什么阻塞，设定来自哪一层哪个
    版本，要花几次生成。阻塞要先补齐；「内置兜底」「动作单独设定」的提示词说明没定型或偏离了模板；
 3. 看图审核：view_first_frames（首帧和立绘像不像，编号 1/2 是立绘）、view_frames（帧序列是否
    连贯、抠图边缘是否干净，透明处是棋盘格）、view_video（生成的视频抽样）；
-4. 长任务用 wait_job 等，没完成就再调一次。任务记录在内存里，服务重启会丢，丢了先看动作进度，
-   不要重复提交。
+4. 免费加工先 plan_processing，再 submit_processing_batch，只能用模板与工艺预设执行
+   抽帧、抠图、导出，不会发起付费生成。每批最多 50 个动作。
+5. 提交必须带 request_id；网络重试沿用同一编号，返回原批次，不要重复提交。
+   get_processing_batch 查批次，wait_job 等进度，cancel_processing_job 取消免费任务。
+   任务与批次记录持久化。服务重启时未完成任务标记中断，不自动重放。
+   先查已有产物，确认重做后用新的 request_id；默认跳过已完成工序。
+
+6. 付费生成先 plan_generation（trial 每批一个动作，production 最多 50 个），把完整计划交给管理员。
+   管理员配置调用方额度并审批计划后，使用审批编号 submit_generation_batch；审批仅可用一次，
+   网络重试沿用 request_id。量产工艺必须有成功试产及人工定型记录；素材或提示词变动需重新审批。
+   get_generation_batch 查看进度，get_generation_costs 查额度和用量。金额以供应商账单为准。
+   超时或服务重启不自动重发付费调用，先检查远端任务与已有产物。
+
+7. 多角色使用明确模板绑定：角色主分组、固定参考首帧集，以及逐项授权的跨组共享参考。
+   get_sprite_overview 会返回 template_binding。缺少绑定或参考集缺少动作时，应由管理员
+   在角色看板「模板绑定」补齐；禁止从其他分组按同名动作兜底，不要重复提交生成绕过。
 
 角色和动作的参数都可以传 id 或名字。"""
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+OPERATE = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                          idempotentHint=True, openWorldHint=False)
+CALLER = contextvars.ContextVar('mcp_caller', default='local')
 
 # 每个工具要求的权限（AI 密钥的 scopes 里得有）
 TOOL_SCOPES = {}
@@ -100,11 +120,14 @@ class GuardAndAudit:
                    f"请管理员用 scripts/agent_keys.py 发一把带该权限的密钥")
             audit.record(agent, tool, args, False, 0, msg)
             return _error(msg)
+        token = CALLER.set(agent.get('id', '?'))
         try:
             result = await call_next(ctx)
         except Exception as e:
             audit.record(agent, tool, args, False, (time.perf_counter() - t0) * 1000, str(e))
             raise
+        finally:
+            CALLER.reset(token)
         err, text = _is_error(result)
         audit.record(agent, tool, args, not err, (time.perf_counter() - t0) * 1000,
                      text if err else "")
@@ -112,8 +135,8 @@ class GuardAndAudit:
 
 
 server = MCPServer(name="sprite-frame", title="帧动画生成平台",
-                   description="查询与审核帧动画生产进度", instructions=INSTRUCTIONS,
-                   version="1", middleware=[GuardAndAudit()])
+                   description="查询、审核、免费加工与已审批付费生成帧动画", instructions=INSTRUCTIONS,
+                   version="3", middleware=[GuardAndAudit()])
 
 
 async def _run(fn, *args, **kwargs):
@@ -127,7 +150,7 @@ def _wrap_errors(fn):
     async def inner(*a, **kw):
         try:
             return await fn(*a, **kw)
-        except queries.ToolInputError as e:
+        except (queries.ToolInputError, JobSubmissionError) as e:
             return _error(str(e))
     return inner
 
@@ -362,6 +385,89 @@ async def wait_job(
                 v["hint"] = "还没结束，可以再调一次 wait_job 继续等"
             return v
         await anyio.sleep(1)
+
+
+# ---------------------------------------------------------------- 免费加工与批次
+FreeStep = Literal['extract', 'matting', 'export']
+
+
+@server.tool(name=_scope('plan_processing'), title='免费加工计划', annotations=READ)
+@_wrap_errors
+async def plan_processing(sprite: SpriteRef,
+                          steps: Annotated[List[FreeStep], Field(min_length=1, max_length=3)],
+                          actions: Optional[List[str]] = None, force: bool = False) -> dict:
+    """按模板规则与角色预设预览免费加工；不创建任务。force 表示明确重做所选步骤。"""
+    return await _run(operations.plan_processing, sprite, actions, steps, force)
+
+
+@server.tool(name=_scope('submit_processing_batch', 'operate'), title='提交免费加工批次', annotations=OPERATE)
+@_wrap_errors
+async def submit_processing_batch(
+        sprite: SpriteRef,
+        steps: Annotated[List[FreeStep], Field(min_length=1, max_length=3)],
+        request_id: Annotated[str, Field(min_length=1, max_length=128)],
+        actions: Optional[List[str]] = None, force: bool = False) -> dict:
+    """提交抽帧/抠图/导出批次，不涉及付费生成。网络重试必须复用 request_id；
+    同编号不同参数会拒绝。默认跳过已完成步骤；中断后先查产物，明确重做用新编号。"""
+    return await _run(operations.submit_processing, sprite, actions, steps, request_id, force, CALLER.get())
+
+
+@server.tool(name=_scope('get_processing_batch'), title='查询加工批次', annotations=READ)
+@_wrap_errors
+async def get_processing_batch(batch_id: str) -> dict:
+    """查看持久化批次计划、各动作各步结果、进度或中断原因。"""
+    return await _run(operations.batch_view, batch_id)
+
+
+@server.tool(name=_scope('cancel_processing_job', 'operate'), title='取消免费加工', annotations=OPERATE)
+@_wrap_errors
+async def cancel_processing_job(job_id: str) -> dict:
+    """取消免费加工任务/批次；不支持取消付费生成和包含生成的混合流水线。"""
+    return await _run(operations.cancel_processing, job_id)
+
+
+PaidStep = Literal['firstframe', 'generate']
+PAID = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
+                       idempotentHint=True, openWorldHint=True)
+
+
+@server.tool(name=_scope('plan_generation'), title='付费生成计划', annotations=READ)
+@_wrap_errors
+async def plan_generation(sprite: SpriteRef,
+                          steps: Annotated[List[PaidStep], Field(min_length=1, max_length=2)],
+                          actions: Optional[List[str]] = None,
+                          mode: Literal['trial', 'production'] = 'trial', force: bool = False) -> dict:
+    """只读生成试产/量产计划与调用次数、视频秒数估算。将完整 JSON 保存给管理员审批；不会花钱。"""
+    return await _run(generation.plan_generation, sprite, actions, steps, mode, force)
+
+
+@server.tool(name=_scope('submit_generation_batch', 'generate'), title='提交已审批生成', annotations=PAID)
+@_wrap_errors
+async def submit_generation_batch(approval_id: str,
+        request_id: Annotated[str, Field(min_length=1, max_length=128)]) -> dict:
+    """仅执行管理员绑定当前调用方的计划，受额度控制；重试沿用 request_id，不自动重做失败调用。"""
+    return await _run(generation.submit_generation, approval_id, request_id, CALLER.get())
+
+
+@server.tool(name=_scope('get_generation_batch'), title='查询生成批次', annotations=READ)
+@_wrap_errors
+async def get_generation_batch(job_id: str) -> dict:
+    """查看当前调用方的生成批次，包括中断记录。"""
+    return await _run(generation.generation_batch, job_id, CALLER.get())
+
+
+@server.tool(name=_scope('get_generation_costs'), title='生成额度与用量', annotations=READ)
+@_wrap_errors
+async def get_generation_costs() -> dict:
+    """当前调用方的累计额度、预留、尝试记录及供应商用量；不把未知费用记为零。"""
+    return await _run(generation.generation_ledger.report, CALLER.get())
+
+
+@server.tool(name=_scope('cancel_generation_batch', 'generate'), title='取消生成批次', annotations=PAID)
+@_wrap_errors
+async def cancel_generation_batch(job_id: str) -> dict:
+    """停止后续付费调用并尝试取消远端任务；已尝试的生成可能仍计费。"""
+    return await _run(generation.cancel_generation, job_id, CALLER.get())
 
 
 # ---------------------------------------------------------------- 接入 FastAPI

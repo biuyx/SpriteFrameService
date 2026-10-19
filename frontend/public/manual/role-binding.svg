@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="450" viewBox="0 0 960 450" role="img" aria-label="角色模板绑定关系示意图">
+<defs><marker id="a" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="#64748b"/></marker></defs>
+<rect width="960" height="450" rx="16" fill="#f5f7fb"/>
+<g font-family="Microsoft YaHei, sans-serif" fill="#172b4d">
+<text x="36" y="45" font-size="25" font-weight="bold">一个角色，三类明确的参考</text><text x="36" y="74" font-size="16" fill="#52637b">示意图 · 每个角色保存自己的绑定，动作名称相同也不会跨组自动选图</text>
+<rect x="36" y="156" width="210" height="150" rx="12" fill="#dceafe" stroke="#90b8ef"/><text x="63" y="197" font-size="23" font-weight="bold">当前角色：店长2</text><text x="63" y="233" font-size="18">主分组：店长</text><text x="63" y="270" font-size="16">每个动作绑定参考视频</text>
+<g stroke="#64748b" stroke-width="2" fill="none" marker-end="url(#a)"><path d="M246 194L330 136"/><path d="M246 231H330"/><path d="M246 270L330 344"/></g>
+<rect x="340" y="100" width="580" height="86" rx="10" fill="#e3f5ef"/><text x="365" y="134" font-size="21" font-weight="bold">自己的立绘 → 决定角色长相</text><text x="365" y="165" font-size="17">店长2图库中的正面 / 背面标记，不借用店长1的立绘</text>
+<rect x="340" y="201" width="580" height="86" rx="10" fill="#e2edff"/><text x="365" y="235" font-size="21" font-weight="bold">固定参考首帧集 → 提供动作姿势</text><text x="365" y="266" font-size="17">店长参考集（店长1）· 按动作 key 匹配，缺图就阻塞</text>
+<rect x="340" y="302" width="580" height="86" rx="10" fill="#fff0d7"/><text x="365" y="336" font-size="21" font-weight="bold">参考视频模板 → 提供动作节奏与抽帧规则</text><text x="365" y="367" font-size="17">允许本组参考；跨组复用必须逐项授权共享</text>
+<text x="36" y="425" font-size="16" fill="#52637b">更改绑定不替换现有素材。新角色默认不复制模板角色的成品首帧。</text></g></svg>

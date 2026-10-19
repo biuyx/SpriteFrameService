@@ -43,5 +43,5 @@ def revert_history(session_id: str, req: RevertRequest):
                            {"step_id": req.step_id}, {"affected": len(affected)})
         return {"affected": affected, "count": len(affected)}
 
-    job = job_manager.submit("history-revert", _job, lock=session.lock)
+    job = job_manager.submit("history-revert", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}

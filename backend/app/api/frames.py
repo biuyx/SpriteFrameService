@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 from typing import List, Optional
 
 from fastapi import (APIRouter, File, Form, HTTPException, Query, Response,
@@ -19,12 +20,28 @@ from app.core.frame_extractor import FrameExtractor
 from app.core.frame_supplement import interpolate_frames
 from app.models.frame_data import FrameData
 from app.services.job_manager import job_manager
+from app.services.resources import estimate_extract_mb
 from app.utils.image_utils import encode_preview, read_image
 
 router = APIRouter(prefix="/sessions/{session_id}/frames", tags=["frames"])
 
 
 # ---------- 抽帧 ----------
+def validate_extract(session, start_time, end_time, fps):
+    if session.video_info is None:
+        raise HTTPException(status_code=400, detail='请先上传视频')
+    if not all(math.isfinite(v) for v in (start_time, end_time, fps)) or start_time < 0 or not 0 < fps <= 60:
+        raise HTTPException(status_code=400, detail='抽帧起始时间或帧率无效（帧率需在 0–60 之间）')
+    if end_time > session.video_info.duration + .001:
+        raise HTTPException(status_code=400, detail=f'结束时间超出视频时长 {session.video_info.duration:.2f}s')
+    if end_time <= start_time:
+        raise HTTPException(status_code=400, detail='结束时间必须大于开始时间')
+    planned = int((end_time - start_time) * fps) + 1
+    limit = get_settings().max_extract_frames
+    if limit and planned > limit:
+        raise HTTPException(status_code=400, detail=f'本次将抽取约 {planned} 帧，超过上限 {limit}。请缩短时间范围或降低帧率。')
+
+
 def submit_extract_job(session, start_time: float, end_time: float, fps: float,
                        keep: Optional[List[int]] = None,
                        keep_total: Optional[int] = None):
@@ -33,31 +50,23 @@ def submit_extract_job(session, start_time: float, end_time: float, fps: float,
     keep/keep_total：模板规则的选帧保留集——抽帧后自动删除保留集之外的帧；
     实际抽出帧数与校准时（keep_total）不符则跳过，全部保留并在消息里说明。
     """
-    if session.video_info is None:
-        raise HTTPException(status_code=400, detail="请先上传视频")
-    if end_time > session.video_info.duration + 0.001:
-        raise HTTPException(status_code=400, detail=f"结束时间超出视频时长 {session.video_info.duration:.2f}s")
-    if end_time <= start_time:
-        raise HTTPException(status_code=400, detail="结束时间必须大于开始时间")
-
-    # 每帧一张 PNG 落盘，长视频 × 高帧率足以撑满磁盘，这里给出上限
-    limit = get_settings().max_extract_frames
-    planned = int((end_time - start_time) * fps) + 1
-    if limit and planned > limit:
-        raise HTTPException(
-            status_code=400,
-            detail=f"本次将抽取约 {planned} 帧，超过上限 {limit}。请缩短时间范围或降低帧率。",
-        )
+    validate_extract(session, start_time, end_time, fps)
 
     return job_manager.submit(
         "extract",
         lambda ctx: run_extract(session, start_time, end_time, fps, keep, keep_total, ctx),
-        lock=session.lock)
+        lock=session.lock, target=session.id,
+        params={"start": start_time, "end": end_time, "fps": fps,
+                "keep": keep, "keep_total": keep_total},
+        memory_mb=estimate_extract_mb(session, start_time, end_time, fps))
 
 
 def run_extract(session, start_time: float, end_time: float, fps: float,
                 keep: Optional[List[int]], keep_total: Optional[int], ctx) -> Optional[dict]:
     """抽帧任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
+    validate_extract(session, start_time, end_time, fps)
+    from app.services.resources import resources
+    resources.check_estimate(session.id, estimate_extract_mb(session, start_time, end_time, fps))
     extractor = FrameExtractor()
     ctx.register_cancel(extractor.cancel)
     ctx.report(0, "开始抽帧...")
@@ -610,7 +619,7 @@ def loop_transition(session_id: str, req: LoopTransitionRequest):
             "gif": "/api/sessions/{}/frames/preview/loop_transition.gif".format(session_id),
         }
 
-    job = job_manager.submit("loop-transition", _job, lock=session.lock)
+    job = job_manager.submit("loop-transition", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -683,5 +692,5 @@ def supplement_frames(session_id: str, req: SupplementRequest):
                            {"added": len(new_frames)})
         return {"added": len(new_frames), "total": fm.frame_count}
 
-    job = job_manager.submit("supplement", _job, lock=session.lock)
+    job = job_manager.submit("supplement", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}

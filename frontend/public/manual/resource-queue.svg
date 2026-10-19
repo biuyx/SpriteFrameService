@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="340" viewBox="0 0 960 340" role="img" aria-label="资源调度排队示意图">
+<rect width="960" height="340" rx="16" fill="#f5f7fb"/><g font-family="Microsoft YaHei, sans-serif" fill="#172b4d">
+<text x="36" y="46" font-size="25" font-weight="bold">为什么抠图在运行，导出还在排队？</text><text x="36" y="77" font-size="16" fill="#52637b">示意图 · 两类任务共用本地内存预算，并分别受并发上限约束</text>
+<rect x="36" y="115" width="220" height="135" rx="12" fill="#e2edff"/><text x="62" y="154" font-size="22">抠图任务 / 导出任务</text><text x="62" y="190" font-size="17">根据输出尺寸估算内存</text><text x="62" y="221" font-size="17">提交后先检查准入</text>
+<text x="275" y="190" font-size="30">→</text><rect x="322" y="115" width="284" height="135" rx="12" fill="#fff0d7"/><text x="348" y="154" font-size="22">并发名额 + 可用内存</text><text x="348" y="190" font-size="17">两项都满足 → 开始运行</text><text x="348" y="221" font-size="17">暂时不足 → 等待资源释放</text>
+<text x="625" y="190" font-size="30">→</text><rect x="672" y="115" width="252" height="135" rx="12" fill="#e3f5ef"/><text x="698" y="154" font-size="22">运行完成，释放资源</text><text x="698" y="190" font-size="17">后续等待任务获得准入</text><text x="698" y="221" font-size="17">查看等待原因，避免重复提交</text>
+<text x="36" y="296" font-size="17" fill="#895a16">单任务估算超过总预算：明确拒绝。调整输出尺寸或图集布局后再试。</text></g></svg>

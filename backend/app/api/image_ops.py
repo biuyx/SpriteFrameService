@@ -116,7 +116,7 @@ def outline_frames(session_id: str, req: ImageOutlineRequest):
     job = job_manager.submit(
         "outline",
         lambda ctx: run_outline(session, indices, req.params, req.auto_pad, ctx),
-        lock=session.lock)
+        lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -180,7 +180,7 @@ def scale_frames(session_id: str, req: ScaleRequest):
         "scale",
         lambda ctx: run_scale(session, indices, req.mode, req.percent,
                               req.width, req.height, req.algorithm, ctx),
-        lock=session.lock)
+        lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -250,7 +250,7 @@ def crop_whitespace(session_id: str, req: CropRequest):
                            {"processed": processed, "size": f"{crop_w}x{crop_h}"})
         return {"processed": processed, "total": len(indices), "size": f"{crop_w}x{crop_h}"}
 
-    job = job_manager.submit("crop", _job, lock=session.lock)
+    job = job_manager.submit("crop", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -291,7 +291,7 @@ def optimize_edges(session_id: str, req: OptimizeEdgesRequest):
                            {"processed": processed})
         return {"processed": processed, "total": len(indices)}
 
-    job = job_manager.submit("optimize-edges", _job, lock=session.lock)
+    job = job_manager.submit("optimize-edges", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -332,7 +332,7 @@ def enhance_frames(session_id: str, req: EnhanceRequest):
                            {"processed": processed})
         return {"processed": processed, "total": len(indices), "model": req.model}
 
-    job = job_manager.submit("enhance", _job, lock=session.lock)
+    job = job_manager.submit("enhance", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 

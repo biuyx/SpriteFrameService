@@ -17,6 +17,7 @@ from typing import List, Optional
 
 from app.api.deps import get_session
 from app.services.concurrency import local_gate
+from app.services.resources import resources, estimate_export_mb, estimate_extract_mb, memory_budget_mb
 from app.services.sprite_store import sprite_store
 from app.services.template_store import template_store
 
@@ -80,27 +81,19 @@ def _sanitize(name: str) -> str:
 
 
 # ------------------------------------------------------------ 各步：检查 / 执行
-def _pick_ffset(action: dict, key: str, set_id: Optional[str]) -> Optional[dict]:
-    """参考首帧集：指定优先；否则分组匹配的、再否则任一含该 key 的。"""
-    from app.services.ffset_store import ffset_store
-    sets = ffset_store.list()
-    if set_id:
-        s = next((x for x in sets if x["id"] == set_id), None)
-        return s if s and any(f["key"] == key for f in s["frames"]) else None
-    tpl = template_store.get(action.get("template_id") or "")
-    group = ((tpl or {}).get("group") or "").strip()
-    cands = [s for s in sets if any(f["key"] == key for f in s["frames"])]
-    if group:
-        g = [s for s in cands if (s.get("group") or "").strip() == group]
-        if g:
-            return g[0]
-    return cands[0] if cands else None
+def _pick_ffset(action: dict, key: str, set_id: Optional[str], sprite_id=None) -> Optional[dict]:
+    """Only a role's bound set or a legacy explicit manual selection is eligible."""
+    from app.services.template_bindings import select_first_frame_set, TemplateBindingError
+    sid = sprite_id or action.get('sprite_id') or sprite_store.sprite_of_action(action['id'])
+    if not sid:
+        raise TemplateBindingError('无法确定动作所属角色，禁止自动选择参考集')
+    return select_first_frame_set(sid, action, key, set_id)
 
 
 def check_firstframe(sprite_id: str, action: dict, opts: dict):
     from app.core.first_frame_generator import action_key, resolve_refs
     key = action_key(action)
-    fs = _pick_ffset(action, key, opts.get("set_id"))
+    fs = _pick_ffset(action, key, opts.get("set_id"), sprite_id)
     if fs is None:
         raise StepBlocked(f"参考首帧集缺少动作 {key or '?'}")
     resolve_refs(sprite_id, action, fs["id"])      # 立绘缺失等 ValueError
@@ -118,6 +111,8 @@ def check_generate(sprite_id: str, action: dict, opts: dict):
     tpl = template_store.get(action.get("template_id") or "")
     if tpl is None:
         raise StepBlocked("未关联动作模板（参考视频）")
+    from app.services.template_bindings import validate_reference
+    validate_reference(sprite_id, tpl['id'])
     if not oss_configured():
         raise StepBlocked("未配置 OSS（参考视频需公网 URL）")
     return {"template": tpl.get("variant") or tpl.get("key")}
@@ -126,7 +121,9 @@ def check_generate(sprite_id: str, action: dict, opts: dict):
 def _rule_for(session, action: dict):
     from app.services.take_store import TakeStore
     ts = TakeStore(session.storage)
-    cur = ts.get(ts.current_id()) if ts.current_id() else None
+    # 检查计划只读索引，不能触发旧视频的懒迁移写盘。
+    data = ts._load()
+    cur = next((t for t in data.get('takes', []) if t['id'] == data.get('current')), None)
     tid = (cur or {}).get("template_id") or action.get("template_id")
     tpl = template_store.get(tid) if tid else None
     return tpl, (tpl or {}).get("extract_rule")
@@ -137,8 +134,18 @@ def check_extract(sprite_id: str, action: dict, opts: dict, session=None):
     if session.video_info is None:
         raise StepBlocked("无视频素材（将由上一步生成）")
     tpl, rule = _rule_for(session, action)
+    if tpl:
+        from app.services.template_bindings import validate_reference
+        validate_reference(sprite_id, tpl['id'])
     if not rule:
         raise StepBlocked("模板无抽帧规则")
+    from app.api.frames import validate_extract
+    from fastapi import HTTPException
+    try:
+        validate_extract(session, float(rule['start']),
+                         min(float(rule['end']), session.video_info.duration), float(rule['fps']))
+    except HTTPException as exc:
+        raise StepBlocked(str(exc.detail)) from exc
     return {"rule": f"{rule['start']}–{rule['end']}s @{rule['fps']}"}
 
 
@@ -201,8 +208,7 @@ def _is_done(step: str, sprite_id: str, action: dict, session=None) -> bool:
     if step == "matting":
         return bool(frames) and all(f.has_processed for f in frames)
     if step == "export":
-        s = sprite_store._action_summary(sprite_id, action["id"])
-        return bool(s.get("export_count"))
+        return any(item['files'] for item in session.storage.list_exports())
     return False
 
 
@@ -316,7 +322,9 @@ def submit_spine_export(sprite_id: str, spine: dict) -> dict:
     name = (req.name or sp.get("name") or sprite_id).strip()
     job = job_manager.submit(
         "spine_export",
-        lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu")
+        lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu",
+        targets=ids, resource='export', params=req.model_dump(mode='json'),
+        memory_mb=memory_budget_mb())
     return {"action": "spine_export", "job_id": job.id, "name": name,
             "actions": len(ids),
             "message": f"已提交 Spine 导出「{name}」（{len(ids)} 个动作）"}
@@ -408,7 +416,9 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 if not rule:
                     raise StepBlocked("模板无抽帧规则")
                 end = min(float(rule["end"]), session.video_info.duration)
-                with _local_gate.hold(_Sub(i)), session.lock:
+                with resources.hold(_Sub(i), 'heavy', [session.id],
+                                    estimate_extract_mb(session, float(rule['start']), end,
+                                                        float(rule['fps']))), session.lock:
                     run_extract(session, float(rule["start"]), end, float(rule["fps"]),
                                 rule.get("keep"), rule.get("total"), _Sub(i))
                 done.append(step); state["done"] = done
@@ -419,12 +429,14 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 m = dict((sp.get("preset") or {}).get("matting") or {})
                 params = {"model": info["model"], "alpha_threshold": m.get("alpha_threshold", 128),
                           "erode": m.get("erode", 1), "feather": m.get("feather", 0),
-                          "force_cpu": False}
+                          "force_cpu": None}
                 frames = session.frame_manager.frames
                 indices = [f.index for f in frames
                            if step in force or not f.has_processed]
                 if indices:
-                    with _local_gate.hold(_Sub(i)), session.lock:
+                    from app.config import get_settings
+                    with resources.hold(_Sub(i), 'matting', [session.id],
+                                        get_settings().matting_memory_mb), session.lock:
                         run_bg_remove(session, indices, "ai", params, _Sub(i))
                 done.append(step); state["done"] = done
             elif step == "export":
@@ -449,7 +461,8 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                                    outline=_preset(sprite_id, "outline",
                                                    DEFAULT_OUTLINE_PRESET))
                 indices = [f.index for f in session.frame_manager.frames if f.has_processed]
-                with _local_gate.hold(_Sub(i)), session.lock:
+                with resources.hold(_Sub(i), 'export', [session.id],
+                                    estimate_export_mb(session, indices, cfg)), session.lock:
                     run_export(session, cfg, indices, name, _Sub(i))
                 done.append(step); state["done"] = done
             _save_state(sprite_id, action_id, state)

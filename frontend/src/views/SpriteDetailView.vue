@@ -10,6 +10,8 @@ import BatchFfGenModal from '../components/BatchFfGenModal.vue'
 import PipelineModal from '../components/PipelineModal.vue'
 import SpineExportModal from '../components/SpineExportModal.vue'
 import ReviewModal from '../components/ReviewModal.vue'
+import TemplateBindingModal from '../components/TemplateBindingModal.vue'
+const bindingOpen = ref(false)
 
 const store = useStore()
 const actions = ref([])
@@ -223,6 +225,7 @@ onMounted(async () => {
               @click="reviewMode = 'frame'">速览首帧</button>
       <button v-if="actions.length" class="small" title="把全角色的素材视频铺开，静音循环播放"
               @click="reviewMode = 'video'">速览视频</button>
+      <button class="small" @click="bindingOpen = true">模板绑定</button>
       <button v-if="actions.length" class="small" @click="ffLibOpen = true">首帧图库</button>
       <button v-if="actions.length" class="small" :title="preselect ? `对已选 ${selectedIds.length} 个` : ''"
               @click="ffGenOpen = true">生成首帧{{ preselect ? `（${selectedIds.length}）` : '' }}</button>
@@ -323,6 +326,7 @@ onMounted(async () => {
     </div>
   </div>
 
+  <TemplateBindingModal v-if="bindingOpen" :actions="actions" @close="bindingOpen = false" @saved="load" />
   <SpineExportModal v-if="spineOpen" @close="spineOpen = false" />
   <ReviewModal v-if="reviewMode" :actions="actions" :mode="reviewMode"
                @close="reviewMode = ''" />

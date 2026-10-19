@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 from typing import List, Optional
 
 import numpy as np
@@ -94,10 +95,12 @@ class FrameStore:
     def save_metadata(self, frame_manager: FrameManager) -> None:
         """将当前帧元数据写入 frames.json。"""
         payload = [_frame_to_dict(f) for f in frame_manager.frames]
-        self._storage.frames_json.write_text(
+        tmp = self._storage.frames_json.with_name(f'.frames-{uuid4().hex}.tmp')
+        tmp.write_text(
             json.dumps(payload, ensure_ascii=False, indent=1),
             encoding="utf-8"
         )
+        tmp.replace(self._storage.frames_json)
 
     def load_metadata(self, frame_manager: FrameManager) -> None:
         """从 frames.json 恢复帧元数据（仅当内存为空时）。"""

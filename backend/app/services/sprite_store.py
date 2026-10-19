@@ -233,6 +233,8 @@ class SpriteStore:
         src = self._read_json(self.sprite_json(src_id))   # 不存在即抛错
         new_sp = self.create_sprite(name, tags if tags is not None else src.get("tags"))
         new_id = new_sp["id"]
+        if src.get('template_binding'):
+            self.update_sprite(new_id, {'template_binding': copy.deepcopy(src['template_binding'])})
         if isinstance(src.get("preset"), dict):
             self.update_sprite(new_id, {"preset": copy.deepcopy(src["preset"])})
 
@@ -309,6 +311,9 @@ class SpriteStore:
                 data["tags"] = [_clean_name(str(t), "") for t in patch["tags"] if str(t).strip()]
             if "preset" in patch and isinstance(patch["preset"], dict):
                 data.setdefault("preset", {}).update(patch["preset"])
+            if 'template_binding' in patch:
+                from app.services.template_bindings import normalize_binding
+                data['template_binding'] = normalize_binding(sprite_id, patch['template_binding'])
             self._write_json(self.sprite_json(sprite_id), data)
             return data
 
@@ -392,6 +397,9 @@ class SpriteStore:
                    "gen_prefs", "pipeline", "spine_anim", "export_alias"}
         with self._lock:
             data = self._read_json(self.action_json(sprite_id, action_id))
+            if 'template_id' in patch:
+                from app.services.template_bindings import validate_reference
+                validate_reference(sprite_id, patch['template_id'])
             for k in allowed & set(patch.keys()):
                 if k == "name":
                     data["name"] = _clean_name(str(patch["name"]), data["name"])
@@ -520,6 +528,10 @@ class SpriteStore:
 
         def count(sub: str, pattern: str = "*") -> int:
             p = d / sub
+            if sub == 'exports' and p.is_dir():
+                return sum(1 for item in p.iterdir() if item.is_dir()
+                           and not (item / '.incomplete').exists()
+                           and any(f.is_file() and not f.name.startswith('.') for f in item.iterdir()))
             return sum(1 for _ in p.glob(pattern)) if p.is_dir() else 0
 
         video_dir = d / "video"

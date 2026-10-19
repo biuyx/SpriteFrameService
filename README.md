@@ -4,7 +4,7 @@
 
 - **部署目标**：Linux（venv + systemd）；开发可在 Windows 完成。
 - **核心能力**：视频抽帧、AI/颜色抠图、姿势/轮廓/特征/区域SSIM 分析、去相似帧、找循环帧、循环过渡、首尾补帧、描边、缩放/裁剪/边缘优化、RealESRGAN 增强、魔棒编辑、精灵图/GIF/WebP/Godot 导出、**Spine 骨架 + 图集导出**、历史撤销。
-- **内置使用手册**：顶栏「? 手册」打开，按工序讲解，含概念入门、进阶与排错；从某道工序打开会定位到对应章节。
+- **图文使用手册**：顶栏「? 手册」打开，含多角色模板绑定、立绘标记、完整工序、MCP 权限与排错，配界面截图、立绘实图和流程示意。离线版见 [完整手册](docs/user-manual.html)；内容修改后运行 `node scripts/export_manual.mjs` 同步导出。
 
 > ⚠️ 本项目基于 SpriteFrameStudio 开发，原作者：小猫学游戏，原项目协议 **CC BY 4.0**（可商用、可修改、需署名）。
 
@@ -36,17 +36,24 @@ rtmlib/                  RTMPose 推理库（与原项目同款，已随仓库�
 
 **持久化**：会话数据以文件为准，进程重启后首次访问该会话会自动从磁盘恢复（帧元数据、帧图像、视频）。关停服务不会删除任何数据；只有显式 `DELETE /api/sessions/{id}` 才会清除磁盘内容。
 
-**并发**：同一动作（会话）的后台任务串行执行（动作级锁），不同动作之间并行，避免并发改写同一批帧。三层限额各管一段：
+**并发**：同一动作的后台任务串行执行，不同动作可在资源允许时并行。执行前同时检查动作占用、处理名额与预估内存：
 
 | 限额 | 配置 | 管什么 |
 |---|---|---|
-| 本地处理 | `SPRITE_MAX_WORKERS`（默认 4） | 抽帧、抠图、缩放、描边、导出、分析、Spine 导出。cpu 池线程数与 `local_gate` 取同一个值，直接提交的本地任务和流水线里的本地步骤抢同一批许可 |
+| 重型本地处理 | `SPRITE_MAX_WORKERS`（默认 4） | 抽帧、抠图、图像处理、分析；CPU BRIA 实测应设为 1，网页、预览、MCP 和流水线共用限制 |
+| 导出 | `SPRITE_EXPORT_WORKERS`（默认 1） | 独立线程池和名额；不同动作的小导出可与抠图并行，大导出等内存，同动作必须等加工结束 |
+| 本地内存 | `SPRITE_LOCAL_MEMORY_BUDGET_MB`（默认 0，物理内存的 85%） | 两类任务共享；`SPRITE_MATTING_MEMORY_MB` 默认每路预留 16384 MiB。导出/抽帧按帧数与尺寸估算；实际内存不足时继续排队。整角色 Spine 导出独占预算 |
 | 视频生成 | `SPRITE_GENERATE_MAX_CONCURRENT`（默认 5） | 火山方舟的视频生成（按次计费） |
 | 首帧生图 | `SPRITE_FIRST_FRAME_MAX_CONCURRENT`（默认 3） | Seedream 生图（按张计费） |
 
 超限的任务排队等待而不是拒绝，排队期间会如实上报「排队中」且可以取消；受限额的任务在拿到许可前不占线程。
 
 `SPRITE_MAX_WORKERS` 调大前先压测显存：抠图跑在 GPU 上，一台 P4（8G）同时几路会溢出。
+
+任务状态与结果存于数据目录的 `jobs.sqlite3`。服务重启后未完成任务标为“中断”，不会自动重放，
+也不会一直显示运行中；先检查产物再明确重试。生成任务的远端结果仍通过原有素材版本重挂机制取回。
+已完成抠图帧的元数据逐帧原子保存；导出半成品不计入完成状态，也不能下载。
+任务调度器使用进程锁，仅支持单个服务 worker，避免多个进程错误恢复同一队列。
 
 ---
 
@@ -239,12 +246,13 @@ curl -H "Authorization: Bearer $SPRITE_AUTH_TOKEN" http://127.0.0.1:8000/api/cap
 ## 让 AI 接入（MCP）
 
 平台在 `/api/mcp` 提供 MCP 服务，Claude Code 等 AI 客户端连上后可以查进度、做量产前体检、
-看图审核。**目前全部是只读工具**，不会启动任务、不会花钱。
+看图审核。二期增加模板驱动的**免费加工**，需要 `operate` 权限；不开放付费生成。
 
 **1. 给 AI 发一把专用密钥**（在服务器上，即发即用，不用重启）：
 
 ```bash
 .venv/bin/python scripts/agent_keys.py add claude-code      # 默认只读；命令会打印接入方式
+.venv/bin/python scripts/agent_keys.py add processing-agent --scopes read,operate  # 允许免费加工
 .venv/bin/python scripts/agent_keys.py list
 .venv/bin/python scripts/agent_keys.py revoke <id>          # 立即失效
 ```
@@ -268,6 +276,15 @@ claude mcp add --transport http sprite http://<服务器地址>:8000/api/mcp --h
 | `view_frames` | 帧序列抽样拼图（抠图后统一裁空白、透明处棋盘格），顺带报帧尺寸不一致 |
 | `view_video` | 生成视频抽帧拼图 + 版本信息（模型、提示词版本、时长） |
 | `list_jobs` / `wait_job` / `get_platform_status` | 任务进度、等任务结束、平台能力 |
+| `plan_processing` | 按模板抽帧规则及角色抠图/导出预设预览免费工序，返回阻塞原因；不创建任务 |
+| `submit_processing_batch` | 需要 operate；每批最多 50 个动作，只能 extract / matting / export，默认跳过已完成步骤 |
+| `get_processing_batch` | 查询持久化的批次计划、逐动作逐步结果及中断原因 |
+| `cancel_processing_job` | 需要 operate；取消免费任务/批次，不允许取消付费生成或混合流水线 |
+
+提交示例：`submit_processing_batch(sprite="vendor", actions=["walk"], steps=["matting", "export"], request_id="vendor-walk-20261016")`。
+必须先检查计划；同一密钥的网络重试复用 `request_id`，会返回原批次。相同编号不同参数会拒绝。
+明确重做用新编号，默认会跳过现有完成产物；`force=true` 才重做所选步骤。不能传临时提示词或生成参数。
+网页的同动作、同参数抽帧/抠图/导出请求在进行期间也会合并，避免重复排队。
 
 连接时服务会把工作理念（先定型、再量产；个别问题重做、系统性问题改模板）作为说明发给 AI。
 
@@ -276,7 +293,11 @@ claude mcp add --transport http sprite http://<服务器地址>:8000/api/mcp --h
 - AI 密钥库里只存摘要；**只能访问 `/api/mcp`**，拿它调平台其他接口一律 401
 - `/api/mcp` 只认 Bearer（平台口令或 AI 密钥），不认浏览器 Cookie
 - 每次工具调用记一行审计（`data/logs/agent_audit.jsonl`：谁、调了什么、参数、成败、耗时）
-- 密钥带权限范围：`read`（查询看图）已开放；`operate`（免费加工）、`generate`（花钱的生成）留给后续阶段
+- `read`（查询看图）与 `operate`（免费加工）已开放；`generate`（付费生成）仍预留。原只读密钥不会自动获得加工权限。
+
+部署脚本在重启前检查运行及排队任务；查询超时且服务仍活跃时拒绝更新。二期服务还支持
+`POST /api/jobs/maintenance {"enabled":true}` 暂停新任务准入，部署脚本自动使用并在退出时解除；
+已有任务不会被取消。首次从旧版本升级时只能使用原有空闲检查。不要用 `--force` 绕过任务保护。
 
 依赖 `mcp` 包（2.x，已列入 `requirements.txt`）。没装时平台照常启动，只是没有 `/api/mcp`；
 `SPRITE_MCP_ENABLED=false` 可关闭。
@@ -602,6 +623,8 @@ A：用 conda 创建 Python 3.11 环境再执行 setup 脚本。
 A：浏览器 `<video>` 仅支持部分编码（如 H.264）。不支持时请使用「帧预览」功能（抽帧后查看缩略图）。
 
 ---
+
+MCP M3 的试产、付费量产、管理员审批和额度管理见 [M3 操作说明](docs/mcp-m3.md)。开发完成不代表生产已经上线；现有只读密钥不会自动获得付费权限。
 
 ## 开源协议
 

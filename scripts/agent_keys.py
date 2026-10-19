@@ -6,7 +6,7 @@
     .venv/bin/python scripts/agent_keys.py revoke <id>
 
 密钥只在 add 时显示一次，库里只存摘要；丢了就吊销重发。
-权限范围：read 查询与看图 / operate 免费加工（预留）/ generate 花钱的生成（预留）。
+权限范围：read 查询与看图 / operate 免费加工 / generate 已审批且受额度约束的付费生成。
 发出去的密钥只能访问 /api/mcp，调平台其他接口一律 401。不用重启服务，即发即用。
 """
 from __future__ import annotations

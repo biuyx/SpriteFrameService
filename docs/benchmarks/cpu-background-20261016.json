@@ -1,0 +1,346 @@
+{
+  "environment": {
+    "date": "2026-10-16",
+    "vm_id": 103,
+    "ram_gib": 20,
+    "vcpu": 8,
+    "model": "bria-rmbg-2.0",
+    "image_shape": [
+      640,
+      640,
+      3
+    ],
+    "memory_limit_gib": 17,
+    "swap_allowed_for_benchmark": false
+  },
+  "result": "Single worker completed; two workers exceeded cgroup memory limit and were terminated.",
+  "events": [
+    {
+      "event": "start",
+      "time": 1792119616.8268764,
+      "image_shape": [
+        640,
+        640,
+        3
+      ],
+      "model": "bria-rmbg-2.0",
+      "cpus": 8,
+      "memory_kib": {
+        "VmHWM": 74072,
+        "VmRSS": 72632,
+        "VmSwap": 0,
+        "available": 19862328
+      }
+    },
+    {
+      "event": "load_start",
+      "time": 1792119616.8273044
+    },
+    {
+      "event": "load_done",
+      "time": 1792119734.335913,
+      "seconds": 117.508023128,
+      "memory_kib": {
+        "VmHWM": 2721084,
+        "VmRSS": 2721084,
+        "VmSwap": 0,
+        "available": 17215120
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119734.3360202,
+      "memory_kib": {
+        "VmHWM": 2721072,
+        "VmRSS": 2721072,
+        "VmSwap": 0,
+        "available": 17215120
+      }
+    },
+    {
+      "event": "stage_start",
+      "time": 1792119734.3364098,
+      "workers": 1,
+      "memory_kib": {
+        "VmHWM": 2721088,
+        "VmRSS": 2721088,
+        "VmSwap": 0,
+        "available": 17215120
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119739.3369637,
+      "memory_kib": {
+        "VmHWM": 4426608,
+        "VmRSS": 4426608,
+        "VmSwap": 0,
+        "available": 15476868
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119744.3401663,
+      "memory_kib": {
+        "VmHWM": 4426608,
+        "VmRSS": 4426608,
+        "VmSwap": 0,
+        "available": 15476868
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119749.341492,
+      "memory_kib": {
+        "VmHWM": 4971784,
+        "VmRSS": 4971784,
+        "VmSwap": 0,
+        "available": 14915236
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119754.3423011,
+      "memory_kib": {
+        "VmHWM": 8434960,
+        "VmRSS": 8434960,
+        "VmSwap": 0,
+        "available": 11436132
+      }
+    },
+    {
+      "event": "frame",
+      "time": 1792119759.274827,
+      "workers": 1,
+      "worker": 0,
+      "index": 0,
+      "seconds": 24.937360154999993,
+      "memory_kib": {
+        "VmHWM": 9598268,
+        "VmRSS": 9549288,
+        "VmSwap": 0,
+        "available": 10282664
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119759.3430512,
+      "memory_kib": {
+        "VmHWM": 9598268,
+        "VmRSS": 9555440,
+        "VmSwap": 0,
+        "available": 10282664
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119764.346192,
+      "memory_kib": {
+        "VmHWM": 11337248,
+        "VmRSS": 11337248,
+        "VmSwap": 0,
+        "available": 8544620
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119769.3468611,
+      "memory_kib": {
+        "VmHWM": 11337248,
+        "VmRSS": 11337248,
+        "VmSwap": 0,
+        "available": 8527392
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119774.3475287,
+      "memory_kib": {
+        "VmHWM": 11451000,
+        "VmRSS": 11451000,
+        "VmSwap": 0,
+        "available": 8416268
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119779.348292,
+      "memory_kib": {
+        "VmHWM": 14439692,
+        "VmRSS": 14439692,
+        "VmSwap": 0,
+        "available": 5422760
+      }
+    },
+    {
+      "event": "frame",
+      "time": 1792119782.3994727,
+      "workers": 1,
+      "worker": 0,
+      "index": 1,
+      "seconds": 23.12421951600001,
+      "memory_kib": {
+        "VmHWM": 14438920,
+        "VmRSS": 14390024,
+        "VmSwap": 0,
+        "available": 5422760
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119784.3491776,
+      "memory_kib": {
+        "VmHWM": 14438920,
+        "VmRSS": 14414604,
+        "VmSwap": 0,
+        "available": 5422760
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119789.3522305,
+      "memory_kib": {
+        "VmHWM": 14438920,
+        "VmRSS": 14414604,
+        "VmSwap": 0,
+        "available": 5414580
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119794.3529174,
+      "memory_kib": {
+        "VmHWM": 14438920,
+        "VmRSS": 14414604,
+        "VmSwap": 0,
+        "available": 5424244
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119799.3543024,
+      "memory_kib": {
+        "VmHWM": 14439692,
+        "VmRSS": 14439692,
+        "VmSwap": 0,
+        "available": 5421556
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119804.3572204,
+      "memory_kib": {
+        "VmHWM": 14439692,
+        "VmRSS": 14439692,
+        "VmSwap": 0,
+        "available": 5444468
+      }
+    },
+    {
+      "event": "frame",
+      "time": 1792119804.424889,
+      "workers": 1,
+      "worker": 0,
+      "index": 2,
+      "seconds": 22.024975046999998,
+      "memory_kib": {
+        "VmHWM": 14438936,
+        "VmRSS": 14390024,
+        "VmSwap": 0,
+        "available": 5492676
+      }
+    },
+    {
+      "event": "stage_done",
+      "time": 1792119804.4256976,
+      "workers": 1,
+      "frames": 3,
+      "wall_seconds": 70.08882921,
+      "cpu_seconds": 401.68517412,
+      "frames_per_minute": 2.568169593198431,
+      "frame_seconds": [
+        24.937360154999993,
+        23.12421951600001,
+        22.024975046999998
+      ],
+      "memory_kib": {
+        "VmHWM": 14438936,
+        "VmRSS": 14390084,
+        "VmSwap": 0,
+        "available": 5496472
+      },
+      "process_peak_kib": 14438936
+    },
+    {
+      "event": "stage_start",
+      "time": 1792119804.4260764,
+      "workers": 2,
+      "memory_kib": {
+        "VmHWM": 14438936,
+        "VmRSS": 14390084,
+        "VmSwap": 0,
+        "available": 5496472
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119809.357906,
+      "memory_kib": {
+        "VmHWM": 16268084,
+        "VmRSS": 16268084,
+        "VmSwap": 0,
+        "available": 3597776
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119814.3591368,
+      "memory_kib": {
+        "VmHWM": 16268084,
+        "VmRSS": 16268084,
+        "VmSwap": 0,
+        "available": 3597776
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119819.3621366,
+      "memory_kib": {
+        "VmHWM": 16268084,
+        "VmRSS": 16268084,
+        "VmSwap": 0,
+        "available": 3597796
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119824.3630092,
+      "memory_kib": {
+        "VmHWM": 16268084,
+        "VmRSS": 16268084,
+        "VmSwap": 0,
+        "available": 3599960
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119829.363641,
+      "memory_kib": {
+        "VmHWM": 16268084,
+        "VmRSS": 16268084,
+        "VmSwap": 0,
+        "available": 3614544
+      }
+    },
+    {
+      "event": "memory",
+      "time": 1792119834.3648329,
+      "memory_kib": {
+        "VmHWM": 17789984,
+        "VmRSS": 17789984,
+        "VmSwap": 0,
+        "available": 2101944
+      }
+    }
+  ]
+}

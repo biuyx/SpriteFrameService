@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useStore, toast, askConfirm } from '../stores'
 import api from '../api'
+import { roleFirstFrameChoices } from '../templateBindings'
 
 // 批量生成首帧：立绘 + 参考首帧集 → Seedream 生图（按张计费）
 const props = defineProps({
@@ -52,12 +53,12 @@ const missingRows = computed(() =>
 onMounted(async () => {
   try {
     const [s, t, r] = await Promise.all([
-      api.ffsets(), api.templates(), api.spriteRefs(store.currentSprite.id),
+      roleFirstFrameChoices(store.currentSprite.id), api.templates(), api.spriteRefs(store.currentSprite.id),
     ])
     sets.value = s.sets
     for (const x of t.templates) templatesById.value[x.id] = x
     refs.value = r.refs
-    if (sets.value.length) setId.value = sets.value[0].id
+    setId.value = s.selected
     resetChecks()
   } catch (e) { toast(`加载失败: ${e.message}`) }
   try {
@@ -157,6 +158,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
         <div class="row" style="gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
           <div class="field inline"><label>参考首帧集</label>
             <select v-model="setId" @change="resetChecks">
+              <option value="">请选择参考集或先配置角色模板绑定</option>
               <option v-for="s in sets" :key="s.id" :value="s.id">
                 {{ s.name }}（{{ s.frames.length }} 张{{ s.group ? ` · ${s.group}` : '' }}）</option>
             </select></div>

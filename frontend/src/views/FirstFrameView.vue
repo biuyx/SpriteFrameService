@@ -4,6 +4,7 @@ import { useStore, probeFirstFrame, markFirstFrame, toast, askConfirm } from '..
 import { startJob } from '../jobs'
 import { currentTab } from '../nav'
 import api from '../api'
+import { roleFirstFrameChoices } from '../templateBindings'
 import FirstFrameLibraryModal from '../components/FirstFrameLibraryModal.vue'
 
 // 工序 1：首帧参考图——角色一致性的锚点，来源：上传 / 精灵首帧图库 / AI 生成
@@ -67,15 +68,13 @@ function libText(rec) {
 async function openFfGen() {
   try {
     const [s, r, lib] = await Promise.all([
-      api.ffsets(),
+      roleFirstFrameChoices(store.currentSprite.id),
       api.resolvePrompt('first_frame', store.currentSprite.id, store.sessionId),
       api.prompts('first_frame'),
     ])
     ffGenSets.value = s.sets
-    if (!s.sets.length) return toast('还没有参考首帧集——先到顶栏「资源库 › 参考首帧库」导入或归档')
-    const mem = store.currentAction?.gen_prefs?.first_frame
-    if (mem?.set_id && s.sets.some((x) => x.id === mem.set_id)) ffGenSetId.value = mem.set_id
-    if (!ffGenSetId.value || !s.sets.some((x) => x.id === ffGenSetId.value)) ffGenSetId.value = s.sets[0].id
+    if (!s.sets.length) return toast('没有可用的绑定首帧集，请到角色看板「模板绑定」配置或归档')
+    ffGenSetId.value = s.selected
     ffPrompt.value = r.text
     ffPromptMatch.value = r
     ffPromptSel.value = r.prompt_id || ''
@@ -174,6 +173,7 @@ onMounted(probeFirstFrame)
         <h3 style="margin:0 0 12px;font-size:15px">AI 生成首帧</h3>
         <div class="field" style="margin-bottom:10px"><label>参考首帧集（姿势模板）</label>
           <select v-model="ffGenSetId" style="width:100%">
+            <option value="">请选择参考集（不自动匹配）</option>
             <option v-for="s in ffGenSets" :key="s.id" :value="s.id">
               {{ s.name }}（{{ s.frames.length }} 张{{ s.group ? ` · ${s.group}` : '' }}）</option>
           </select></div>

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -40,6 +41,26 @@ _ERROR_HINTS = [
 ]
 
 
+def friendly_ark_error(message: str) -> str:
+    """翻译新错误与历史素材错误；不改写落盘的原始记录。"""
+    lower = message.lower()
+    pixel_limit = re.search(
+        r"video pixel count[^:]*?must be (greater than or equal to|less than or equal to)\s+(\d+)",
+        lower,
+    )
+    if pixel_limit:
+        relation, count = pixel_limit.groups()
+        if relation == "greater than or equal to":
+            return (f"参考视频分辨率过低：宽×高至少需要 {int(count):,} 像素。"
+                    "请放大或更换参考视频后重试；修改生成结果的分辨率无效。")
+        return (f"参考视频分辨率过高：宽×高不能超过 {int(count):,} 像素。"
+                "请缩小或更换参考视频后重试。")
+    for key, hint in _ERROR_HINTS:
+        if key in lower:
+            return hint
+    return message
+
+
 def _summarize_error(resp: httpx.Response) -> str:
     try:
         data = resp.json()
@@ -47,10 +68,11 @@ def _summarize_error(resp: httpx.Response) -> str:
         msg = err.get("message") or str(err)
     except Exception:
         msg = resp.text[:200]
-    lower = msg.lower()
-    for key, hint in _ERROR_HINTS:
-        if key in lower:
-            return f"{hint}（HTTP {resp.status_code}: {msg[:160]}）"
+    # 用户看原因和下一步；完整上游错误（含 request id）留在服务日志里排查。
+    logger.warning("Ark 接口错误（HTTP %s）：%s", resp.status_code, msg)
+    hint = friendly_ark_error(msg)
+    if hint != msg:
+        return f"{hint}（HTTP {resp.status_code}）"
     return f"HTTP {resp.status_code}: {msg[:300]}"
 
 

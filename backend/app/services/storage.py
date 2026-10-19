@@ -175,7 +175,7 @@ class SessionStorage:
         if not self.exports_dir.exists():
             return result
         for d in sorted(self.exports_dir.iterdir()):
-            if d.is_dir():
+            if d.is_dir() and not (d / '.incomplete').exists():
                 files = [f for f in sorted(d.iterdir()) if f.is_file()]
                 total = sum(f.stat().st_size for f in files)
                 result.append({

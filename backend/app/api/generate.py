@@ -115,6 +115,8 @@ def generate_video(session_id: str, req: GenerateRequest):
             detail="必须提供角色首帧参考图：上传参考图，或选择已有帧作为首帧")
 
     if req.template_id:
+        from app.services.template_bindings import validate_video_reference
+        validate_video_reference(session_id, req.template_id)
         from app.services.template_store import template_store
         if template_store.get(req.template_id) is None:
             raise HTTPException(status_code=400, detail="动作模板不存在")
@@ -167,6 +169,8 @@ def _default_generate_payload(session, action: dict, template: dict,
     时长优先取动作记忆，其次模板推荐值。
     """
     from app.services.prompt_store import resolve_for_action
+    from app.services.template_bindings import validate_video_reference
+    validate_video_reference(session.id, template['id'])
     r = resolve_for_action("video_ref", action)
     mem = (action.get("gen_prefs") or {}).get("video") or {}
     duration = mem.get("duration") or template.get("duration_hint") or 4
@@ -470,7 +474,14 @@ def delete_template(template_id: str):
 @router.get("/sessions/{session_id}/takes")
 def list_takes(session_id: str):
     session = get_session(session_id)
-    return TakeStore(session.storage).list()
+    data = TakeStore(session.storage).list()
+    from app.core.ark_client import friendly_ark_error
+    # 历史失败也能直接看懂；原文保留在记录与悬浮提示，不修改历史文件。
+    return {**data, "takes": [
+        {**take, "error": friendly_ark_error(take["error"]),
+         "error_detail": take["error"]} if take.get("error") else take
+        for take in data["takes"]
+    ]}
 
 
 @router.get("/sessions/{session_id}/takes/{take_id}/video")

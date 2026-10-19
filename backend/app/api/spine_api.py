@@ -471,9 +471,12 @@ def export_spine(sprite_id: str, req: SpineExportRequest):
 
     _resolve_names(sprite_id, ids, req)
 
+    from app.services.resources import memory_budget_mb
     job = job_manager.submit(
         "spine_export",
-        lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu")
+        lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu",
+        resource='export', targets=ids, params=req.model_dump(mode='json'),
+        memory_mb=memory_budget_mb())
     return {"job_id": job.id, "name": name}
 
 

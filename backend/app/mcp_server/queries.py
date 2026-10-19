@@ -156,6 +156,7 @@ def sprite_overview(sprite_ref: str) -> dict:
         actions.append(rec)
     return {
         "sprite": {"id": sid, "name": sp.get("name"), "tags": sp.get("tags") or []},
+        "template_binding": sp.get('template_binding') or {},
         "portraits": {"正面立绘": bool(por["front"]), "背面立绘": bool(por["back"])},
         "preset": {"抠图模型": m.get("model") or "（默认）",
                    "抠图参数": {k: m.get(k) for k in ("alpha_threshold", "erode", "feather")
@@ -318,8 +319,11 @@ def readiness(sprite_ref: str, action_refs: Optional[List[str]] = None,
 
 # ---------------------------------------------------------------- 任务
 def job_view(job: dict, with_result: bool = False) -> dict:
-    v = {k: job.get(k) for k in ("id", "type", "status", "progress", "message", "error")}
+    v = {k: job.get(k) for k in ("id", "type", "status", "progress", "message", "error",
+                               "resource", "targets", "memory_mb", "interrupted", "metadata")}
     v["created"] = _ts(job.get("created_at"))
+    if v.get('metadata'):
+        v['metadata'] = {k: value for k, value in v['metadata'].items() if k != 'plan'}
     v["finished"] = _ts(job.get("finished_at"))
     if with_result and job.get("result") is not None:
         txt = json.dumps(job["result"], ensure_ascii=False, default=str)
@@ -329,7 +333,7 @@ def job_view(job: dict, with_result: bool = False) -> dict:
 
 ACTIVE = ("queued", "running")
 TERMINAL = ("done", "error", "cancelled")
-JOB_GONE = ("任务记录不存在——任务表在内存里，服务重启过就会丢。不要直接重新提交"
+JOB_GONE = ("未找到任务记录（可能早于任务持久化版本）。不要直接重新提交"
             "（生成类任务会重复花钱）：先用 get_sprite_overview 看对应动作的实际进度。")
 
 
@@ -353,9 +357,10 @@ def platform_status() -> dict:
     plat = cap.get("platform") or {}
     models = [m["name"] for m in cap.get("background_models") or [] if m.get("installed")]
     jobs = job_manager.list(limit=200)
+    from app.services.resources import resources
     return {"gpu": plat.get("gpu_available"), "抠图模型": models,
             "默认抠图模型": BackgroundRemover.default_model(),
             "视频生成": {"已配置": s.generate_enabled, "模型": s.ark_model,
                        "同时进行上限": s.generate_max_concurrent},
-            "OSS": oss_configured(),
+            "OSS": oss_configured(), "本地调度": resources.status(),
             "进行中的任务": sum(1 for j in jobs if j.get("status") in ACTIVE)}

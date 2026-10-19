@@ -30,7 +30,7 @@ const newName = ref('')
 const newTags = ref('')
 // 以已有角色为模板新建（复制动作骨架/模板绑定/提示词与参数记忆/工艺预设）
 const fromSprite = ref('')
-const copyFirstFrames = ref(true)
+const copyFirstFrames = ref(false)
 const copyRefs = ref(false)
 const creatingBusy = ref(false)
 const fromSpriteObj = computed(() => sprites.value.find(s => s.id === fromSprite.value) || null)

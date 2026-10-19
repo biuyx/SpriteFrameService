@@ -39,6 +39,8 @@ def resolve_refs(sprite_id: str, action: dict,
     key = action_key(action)
     if not key:
         raise ValueError("无法确定动作 key")
+    from app.services.template_bindings import select_first_frame_set
+    select_first_frame_set(sprite_id, action, key, set_id)
     frame_p = ffset_store.frame_path(set_id, key)
     if frame_p is None:
         raise ValueError(f"参考集缺少动作 {key}")
@@ -59,7 +61,8 @@ def resolve_refs(sprite_id: str, action: dict,
 def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
                         prompt: Optional[str], ctx,
                         prompt_meta: Optional[dict] = None,
-                        remember: bool = False) -> dict:
+                        remember: bool = False, *, resolved_refs=None,
+                        image_model: Optional[str] = None) -> dict:
     """生成单个动作的首帧（跑在 io 池；按张计费）。
 
     prompt 为空时按提示词库解析（记忆 > 模板 > key > 分组 > 全局 > 内置）；
@@ -72,7 +75,7 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
 
     action = sprite_store.get_action(sprite_id, action_id)
     ctx.report(5, "准备参考图...")
-    art, ref, key, role = resolve_refs(sprite_id, action, set_id)
+    art, ref, key, role = resolved_refs or resolve_refs(sprite_id, action, set_id)
 
     meta = dict(prompt_meta or {})
     if prompt and prompt.strip():
@@ -91,7 +94,12 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
     with heartbeat(ctx, "生图中（Seedream）", start=15, end=80, expect=20):
         try:
             # 图序与提示词对应：图1=姿势参考，图2=角色立绘
-            data = generate_image(text, [ref, art])
+            from app.services.template_bindings import select_first_frame_set
+            select_first_frame_set(sprite_id, action, key, set_id)
+            if hasattr(ctx, 'before_paid_call'):
+                ctx.before_paid_call()
+            data = (generate_image(text, [ref, art], model=image_model) if image_model
+                    else generate_image(text, [ref, art]))
         except ArkImageError as e:
             raise RuntimeError(str(e))
 

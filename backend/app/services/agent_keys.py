@@ -10,8 +10,8 @@
 
 权限范围：
     read      查询与看图（MCP 一期的全部工具）
-    operate   免费加工：抽帧、抠图、导出……（预留）
-    generate  花钱的生成：首帧、视频、流水线（预留）
+    operate   免费加工：抽帧、抠图、导出、取消免费任务（已开放）
+    generate  花钱的生成：已审批的首帧/视频批次及取消；另受额度与试产定型约束
 """
 from __future__ import annotations
 

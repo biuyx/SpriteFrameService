@@ -32,7 +32,7 @@ class SpriteCreate(BaseModel):
     tags: Optional[List[str]] = Field(default=None)
     # 以已有精灵为模板新建（复制动作骨架与预设，不复制素材/帧/导出）
     from_sprite_id: Optional[str] = Field(default=None)
-    copy_first_frames: bool = Field(default=True, description="连同各动作首帧图一起复制")
+    copy_first_frames: bool = Field(default=False, description="连同各动作首帧图一起复制")
     copy_refs: bool = Field(default=False, description="连同参考图库（含立绘标记）一起复制")
 
 
@@ -40,6 +40,7 @@ class SpritePatch(BaseModel):
     name: Optional[str] = None
     tags: Optional[List[str]] = None
     preset: Optional[dict] = None
+    template_binding: Optional[dict] = None
 
 
 class ActionCreate(BaseModel):
@@ -576,10 +577,13 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
                 raise HTTPException(status_code=400, detail=str(e))
         tpl_pool = template_store.list()
 
-    # 动作 key → 默认模板（同 key 多变体取第一个，生成前可切换）
-    tpl_by_key = {}
+    # Only a unique key is safe without an explicit template ID. Never choose
+    # a different role family or variant merely because it appears first.
+    candidates = {}
     for t in tpl_pool:
-        tpl_by_key.setdefault(t["key"], t["id"])
+        candidates.setdefault(t['key'], []).append(t['id'])
+    tpl_by_key = {key: ids[0] for key, ids in candidates.items() if len(ids) == 1}
+    pool_ids = {t['id'] for t in tpl_pool}
 
     existing_sprites = {sp["name"]: sp["id"] for sp in sprite_store.list_sprites()}
     stats = {"sprites_created": 0, "sprites_reused": 0,
@@ -609,6 +613,8 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
             sprite = sprite_store.create_sprite(
                 name, tags=[project] if project else None)
             sprite_id = sprite["id"]
+            if library_mode and (req.template_group or '').strip():
+                sprite_store.update_sprite(sprite_id, {'template_binding': {'group': req.template_group.strip()}})
             existing_sprites[name] = sprite_id
             stats["sprites_created"] += 1
 
@@ -622,6 +628,18 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
             else:                        # 库分组模式：模板即动作，精确绑定
                 a_name, img_key = item.name, item.key
                 tid = item.template_id or tpl_by_key.get(item.key)
+            if tid and tid not in pool_ids:
+                stats['errors'].append(f'{name}/{a_name}: 参考动作不属于所选模板分组')
+                continue
+            if tid:
+                from app.services.template_bindings import validate_reference, TemplateBindingError
+                try:
+                    validate_reference(sprite_id, tid)
+                except TemplateBindingError as exc:
+                    stats['errors'].append(f'{name}/{a_name}: {exc}')
+                    continue
+            elif img_key in candidates:
+                stats['errors'].append(f'{name}/{a_name}: 同名参考动作不唯一，未自动绑定，请明确选择模板')
             if a_name in existing_actions:
                 stats["actions_skipped"] += 1
                 continue
@@ -667,8 +685,8 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
 
 # ---------- 首帧生成（立绘 + 参考首帧集 → Seedream 生图） ----------
 class FfGenRequest(BaseModel):
-    # 缺省自动挑：速览里逐个重生成时不该强迫先选集合
-    set_id: Optional[str] = Field(default=None, description="参考首帧集 id，留空自动匹配")
+    # 缺省仅使用角色的固定绑定，禁止按同 key 跨组自动挑选。
+    set_id: Optional[str] = Field(default=None, description="参考首帧集 id；留空使用角色固定绑定")
     prompt: Optional[str] = Field(default=None, description="留空按提示词库解析")
     prompt_id: Optional[str] = None       # 提示词来自库时的追溯信息
     prompt_version: Optional[int] = None
@@ -693,7 +711,7 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
     if not set_id:
         from app.core.first_frame_generator import action_key
         from app.core.pipeline import _pick_ffset
-        fs = _pick_ffset(action, action_key(action), None)
+        fs = _pick_ffset(action, action_key(action), None, sprite_id)
         if fs is None:
             raise HTTPException(status_code=400,
                                 detail="没有含该动作的参考首帧集，请先建集或指定一个")

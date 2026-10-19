@@ -88,7 +88,7 @@ def detect(session_id: str, req: DetectRequest):
         ctx.report(100, f"检测完成: {processed}/{len(indices)} 帧")
         return {"mode": mode, "processed": processed, "total": len(indices)}
 
-    job = job_manager.submit("detect", _job, lock=session.lock)
+    job = job_manager.submit("detect", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -244,7 +244,7 @@ def remove_similar(session_id: str, req: RemoveSimilarRequest):
             "removed": removed,
         }
 
-    job = job_manager.submit("remove-similar", _job, lock=session.lock)
+    job = job_manager.submit("remove-similar", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}
 
 
@@ -301,5 +301,5 @@ def find_loop(session_id: str, req: FindLoopRequest):
 
         return result
 
-    job = job_manager.submit("find-loop", _job, lock=session.lock)
+    job = job_manager.submit("find-loop", _job, lock=session.lock, target=session.id)
     return {"job_id": job.id}

@@ -18,6 +18,8 @@ function plain(sec) {
   const parts = [sec.title]
   for (const b of sec.body) {
     if (b.text) parts.push(b.text)
+    if (b.alt) parts.push(b.alt)
+    if (b.caption) parts.push(b.caption)
     if (b.items) parts.push(b.items.join(' '))
     if (b.rows) parts.push(b.rows.map((r) => r.join(' ')).join(' '))
   }
@@ -81,6 +83,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
             <ol v-else-if="b.t === 'ol'"><li v-for="(x, j) in b.items" :key="j">{{ x }}</li></ol>
             <p v-else-if="b.t === 'note'" class="man-note">{{ b.text }}</p>
             <pre v-else-if="b.t === 'code'">{{ b.text }}</pre>
+            <figure v-else-if="b.t === 'figure'" class="man-figure">
+              <a :href="b.src" target="_blank" rel="noopener" :aria-label="`放大查看：${b.alt}`">
+                <img :src="b.src" :alt="b.alt" loading="lazy" />
+              </a>
+              <figcaption>{{ b.caption }}（点击图片可放大）</figcaption>
+            </figure>
             <table v-else-if="b.t === 'kv'" class="man-kv">
               <tr v-for="(r, j) in b.rows" :key="j"><th>{{ r[0] }}</th><td>{{ r[1] }}</td></tr>
             </table>
@@ -144,4 +152,15 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 .man-kv td { padding: 6px 0; border-bottom: 1px solid var(--border); }
 .man-kv tr:last-child td { border-bottom: none; }
+.man-figure { margin: 16px 0; }
+.man-figure img { display: block; width: 100%; height: auto; border-radius: 6px; background: #f5f7fb; }
+.man-figure figcaption { color: var(--text-dim); font-size: 12px; margin-top: 6px; line-height: 1.6; }
+@media (max-width: 640px) {
+  .modal { height: 92vh; padding: 12px; }
+  .modal-head { flex-wrap: wrap; }
+  .man-search { width: min(220px, 50vw); }
+  .man-nav { width: 120px; }
+  .man-wrap { gap: 8px; }
+  .man-kv th { white-space: normal; min-width: 64px; }
+}
 </style>

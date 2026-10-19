@@ -7,6 +7,7 @@ from pathlib import Path
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 def _is_windows() -> bool:
@@ -58,6 +59,10 @@ class Settings(BaseSettings):
     # 流水线里的抽帧/抠图/导出与直接提交的本地任务共用它）。调大前先压测显存——
     # 抠图在 GPU 上跑，一台 P4（8G）同时几路会溢出。
     max_workers: int = 4
+    export_workers: int = Field(default=1, ge=1, le=4)
+    # 0 = 按物理内存的 85% 自动设置；CPU BRIA 按实测预留 16 GiB。
+    local_memory_budget_mb: int = Field(default=0, ge=0)
+    matting_memory_mb: int = Field(default=16384, ge=1)
     cors_origins: str = "*"          # 逗号分隔的允许来源，"*" 为不限制
     debug_errors: bool = False       # 任务失败时是否把完整 traceback 返回给前端
 

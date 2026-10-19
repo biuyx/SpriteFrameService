@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useStore, toast, askConfirm } from '../stores'
 import api from '../api'
+import { roleFirstFrameChoices } from '../templateBindings'
 
 // 自动流水线：计划预览（每动作每步 执行/跳过/阻塞）→ 执行 → 进度；首帧后可暂停等确认
 const props = defineProps({
@@ -70,7 +71,10 @@ const cost = computed(() => ({
 }))
 
 onMounted(async () => {
-  try { sets.value = (await api.ffsets()).sets } catch { /* ignore */ }
+  try {
+    const choices = await roleFirstFrameChoices(store.currentSprite.id)
+    sets.value = choices.sets; setId.value = choices.selected
+  } catch { /* plan will report the missing binding */ }
   await replan()
 })
 
@@ -187,7 +191,7 @@ async function resume(list) {
             <span class="sep">|</span>
             <div class="field inline"><label>首帧参考集</label>
               <select v-model="setId">
-                <option value="">自动匹配（同分组 / 含该动作）</option>
+                <option value="">使用角色绑定（未绑定请先配置，或手动选择）</option>
                 <option v-for="s in sets" :key="s.id" :value="s.id">{{ s.name }}（{{ s.frames.length }}）</option>
               </select></div>
             <span class="sep">|</span>

@@ -137,10 +137,38 @@ for j in act[:8]:
     print("    %s  %s  %d%%  %s" % (j.get("type"), j.get("status"),
                                    int(j.get("progress") or 0), (j.get("message") or "")[:40]))' \
            < "$body" || echo "?" ;;
-    000) echo 0 ;;                      # 服务没在跑，自然也没有任务
+    000) if systemctl is-active --quiet "$SERVICE"; then
+           echo "?"; echo "    服务仍在运行，但任务查询超时；不能当成空闲"
+         else echo 0; fi ;;
     *) echo "?"; echo "    查任务列表返回 HTTP $code" ;;
   esac
   rm -f "$body"
+}
+
+MAINTENANCE=no
+maintenance_call() {
+  local enabled=$1 hdr body token code
+  hdr=$(mktemp); body=$(mktemp); chmod 600 "$hdr"
+  token=$(grep -E '^SPRITE_AUTH_TOKEN=' "$DIR/backend/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d "\"'\r")
+  [ -n "$token" ] && printf 'Authorization: Bearer %s\n' "$token" > "$hdr"
+  code=$(curl -s -m 10 -o "$body" -w '%{http_code}' -H "@$hdr" -H 'Content-Type: application/json' \
+    -X POST -d "{\"enabled\":$enabled}" "http://127.0.0.1:$PORT/api/jobs/maintenance" </dev/null)
+  rm -f "$hdr" "$body"
+  echo "$code"
+}
+resume_admission() {
+  [ "$MAINTENANCE" = yes ] && maintenance_call false >/dev/null
+  return 0
+}
+trap resume_admission EXIT
+pause_admission() {
+  systemctl is-active --quiet "$SERVICE" || return 0
+  local code; code=$(maintenance_call true)
+  case "$code" in
+    200) MAINTENANCE=yes; echo "[远端] 已暂停新任务准入，现有任务保持不变" ;;
+    404|405) echo "[远端] 当前版本尚无维护准入接口，按任务列表检查空闲（升级后启用完整保护）" ;;
+    *) cleanup; die "暂停任务准入失败（HTTP $code），没有更新" ;;
+  esac
 }
 
 # 有任务在跑就不重启——除非 --force。查不到任务列表（比如口令不对）也不重启：宁可不部署，
@@ -255,6 +283,7 @@ dryrun|apply)
   fi
   if [ "$NEED" = yes ]; then
     sudo -n true </dev/null 2>&1 || { cleanup; die "重启服务需要免密 sudo"; }
+    pause_admission
     guard_jobs
   fi
 
@@ -295,6 +324,7 @@ rollback)
   plan
   if [ "$NEED" = yes ]; then
     sudo -n true </dev/null 2>&1 || { cleanup; die "重启服务需要免密 sudo"; }
+    pause_admission
     guard_jobs
   fi
   sync_from "$IN" || { cleanup; die "同步文件出错，请登录服务器检查"; }

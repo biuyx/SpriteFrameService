@@ -129,7 +129,6 @@ def _local_limit() -> int:
     return max(1, get_settings().max_workers)
 
 
-# 本地处理（抽帧、抠图、缩放、描边、导出、分析、Spine 导出……）统一走这一个闸门：
-# cpu 池的任务由 JobManager 默认取它，流水线里的本地步骤也取它。此前是「cpu 池 2 个线程」
-# 加「流水线自己的闸门 2」两套互不知情的限额，实际最多 4 个并发，谁也管不住谁。
+# 重型本地处理共用该闸门；导出走独立名额。两类入口均由 resources 统一检查
+# 动作互斥与总内存预算，流水线不能绕开同一套限制。
 local_gate = ConcurrencyGate(_local_limit, "本地处理")

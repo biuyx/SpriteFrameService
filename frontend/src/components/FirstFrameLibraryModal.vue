@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { toast, askConfirm } from '../stores'
 import api from '../api'
+import { roleFirstFrameChoices } from '../templateBindings'
 
 // currentActionId：工作台模式（只有参考图库，应用到当前动作）
 // actions：看板模式（两个页签：动作首帧总览 / 参考图库；元素含 id/name/first_frame/summary）
@@ -74,9 +75,9 @@ async function load() {
 
 async function loadSets() {
   try {
-    const s = await api.ffsets()
+    const s = await roleFirstFrameChoices(props.spriteId)
     sets.value = s.sets
-    if (!setId.value && sets.value.length) setId.value = sets.value[0].id
+    setId.value = s.selected
   } catch { /* 无参考集则 AI 生成不可用 */ }
 }
 
@@ -270,6 +271,7 @@ onMounted(async () => {
         <template v-if="tab === 'overview'">
           <div class="field inline"><label>AI 生成用参考集</label>
             <select v-model="setId" style="max-width:190px">
+              <option value="">请选择参考集（不自动匹配）</option>
               <option v-if="!sets.length" value="">（无参考首帧集）</option>
               <option v-for="s in sets" :key="s.id" :value="s.id">
                 {{ s.name }}（{{ s.frames.length }}）</option>

@@ -41,13 +41,14 @@ TERMINAL_BAD = ("failed", "cancelled", "expired")
 
 
 # ------------------------------------------------------------ 首帧编码
-def _encode_first_frame(path: Path, max_side: int = 1024) -> Optional[str]:
+def _encode_first_frame(path: Path, max_side: int = 1024, *, image_bytes=None) -> Optional[str]:
     """读图 → 等比缩至最长边 ≤max_side → JPEG(q90) → data URL。
 
     原图直接 base64 很容易超请求体上限，必须压。透明背景合成到白底
     （Seedance 输入是照片语义，透明通道无意义）。
     """
-    img = cv2.imdecode(np.fromfile(str(path), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    raw = np.frombuffer(image_bytes, np.uint8) if image_bytes is not None else np.fromfile(str(path), dtype=np.uint8)
+    img = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
     if img is None:
         return None
     if img.ndim == 3 and img.shape[2] == 4:
@@ -233,6 +234,9 @@ def poll_until_done(client: ArkClient, task_id: str, ctx=None,
 def run_generate(session, req: dict, ctx) -> dict:
     """生成一个 take。req: {prompt, params{resolution,ratio,duration,seed}, first_frame}"""
     settings = get_settings()
+    if req.get('template_id'):
+        from app.services.template_bindings import validate_video_reference
+        validate_video_reference(session.id, req['template_id'])
     take_store = TakeStore(session.storage)
     params = req.get("params") or {}
     model = req.get("model") or settings.ark_model
@@ -253,7 +257,9 @@ def run_generate(session, req: dict, ctx) -> dict:
 
     try:
         ctx.report(2, "准备请求...")
-        image_url = resolve_first_frame(session, req.get("first_frame"))
+        image_url = (_encode_first_frame(session.storage.root / 'first_frame.png',
+                                        image_bytes=req['_first_frame_bytes'])
+                     if '_first_frame_bytes' in req else resolve_first_frame(session, req.get("first_frame")))
         if not image_url:
             raise ArkError("角色首帧参考图不可用（文件缺失或帧不存在）")
 
@@ -266,7 +272,9 @@ def run_generate(session, req: dict, ctx) -> dict:
             from app.core.oss_uploader import OssError
             ctx.report(3, "准备参考媒体（OSS）...")
             try:
-                if template_id:
+                if '_reference_video_bytes' in req:
+                    video_url = _cached_upload(session, req['_reference_video_bytes'], 'mp4', 'video/mp4')
+                elif template_id:
                     from app.services.template_store import template_store
                     video_url = template_store.ensure_oss_url(template_id)
                 else:
@@ -303,6 +311,11 @@ def run_generate(session, req: dict, ctx) -> dict:
         client = ArkClient()
         try:
             ctx.report(5, "提交生成任务...")
+            if req.get('template_id'):
+                from app.services.template_bindings import validate_video_reference
+                validate_video_reference(session.id, req['template_id'])
+            if hasattr(ctx, 'before_paid_call'):
+                ctx.before_paid_call()
             created = client.create_task(
                 model, content,
                 resolution=params.get("resolution"),
@@ -315,6 +328,8 @@ def run_generate(session, req: dict, ctx) -> dict:
             remote_id = created["id"]
             # 远端任务已产生（开始计费），第一时间落盘
             take_store.update(take_id, {"remote_task_id": remote_id, "status": "running"})
+            if hasattr(ctx, 'record_remote'):
+                ctx.record_remote(remote_id)
             ctx.register_cancel(lambda: client.cancel_task(remote_id))
 
             info = poll_until_done(client, remote_id, ctx)

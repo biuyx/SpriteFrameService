@@ -217,6 +217,12 @@ class BackgroundRemover:
             return "bria-rmbg-2.0"
         return "isnet-anime"
 
+    @classmethod
+    def release_idle_cache(cls):
+        """由调度器确认无抠图任务时调用，为大导出释放常驻模型与 arena。"""
+        with cls._cache_lock:
+            cls._model_cache.clear()
+
     @staticmethod
     def get_available_models() -> list:
         """获取可用的模型列表"""
@@ -302,7 +308,12 @@ class BackgroundRemover:
             if cls.get_model_path(name) is None:
                 return
             t0 = __import__("time").time()
-            cls()._init_rembg(name, force_cpu=force_cpu)
+            from app.services.resources import resources
+            class WarmupContext:
+                def cancelled(self): return False
+                def report(self, *args): pass
+            with resources.hold(WarmupContext(), 'matting'):
+                cls()._init_rembg(name, force_cpu=force_cpu)
             # 用 print：根日志器默认 WARNING，info 进不了 journald，看不到预热有没有成功
             print(f"[INFO] 抠图模型已预热: {name}（{__import__('time').time() - t0:.1f}s）",
                   flush=True)

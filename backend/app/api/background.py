@@ -50,21 +50,34 @@ def color_presets(session_id: str):
 def test_background(session_id: str, req: BackgroundTestRequest):
     """单帧参数测试：返回处理后图像（PNG）。"""
     session = get_session(session_id)
-    img = session.load_display_array(req.frame_index)
-    if img is None:
-        raise HTTPException(status_code=404, detail="帧图像不存在")
-    session.clear_frame_arrays()
-
     remover = BackgroundRemover()
     mode = BackgroundMode.AI if req.mode == "ai" else BackgroundMode.COLOR
     params = _ai_params(req.params) if req.mode == "ai" else _color_params(req.params)
 
+    from app.services.resources import resources
+    from app.config import get_settings
+    amount = get_settings().matting_memory_mb if req.mode == 'ai' else 256
+    if amount > resources.budget():
+        raise HTTPException(status_code=400, detail='单帧抠图预计内存超过处理预算')
+    resource = 'matting' if req.mode == 'ai' else 'heavy'
+    reason = resources.try_acquire(resource, [session.id], amount)
+    if reason:
+        raise HTTPException(status_code=409, detail='暂时不能预览抠图：' + reason)
     try:
-        result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
+        with session.lock:
+            img = session.load_display_array(req.frame_index)
+            if img is None:
+                raise HTTPException(status_code=404, detail="帧图像不存在")
+            session.clear_frame_arrays()
+            result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
+    except HTTPException:
+        raise
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"处理失败: {e}")
+    finally:
+        resources.release(resource, [session.id], amount)
 
     bytes_data = encode_preview(result, transparent_checker=True)
     return Response(content=bytes_data, media_type="image/png")
@@ -77,35 +90,38 @@ def run_bg_remove(session, indices: list, mode_name: str, params: dict, ctx) -> 
     ctx.register_cancel(remover.cancel)
     ctx.report(0, "开始抠图...")
 
-    arrays = session.load_display_arrays(indices)
+    try:
+        arrays = session.load_display_arrays(indices)
 
-    # 历史快照（供回退）
-    session.history.push_snapshot(
-        "背景去除",
-        f"{'AI' if mode_name == 'ai' else '颜色'}抠图 | {len(indices)}帧",
-        indices, session.frame_manager,
-    )
+        # 历史快照（供回退）
+        session.history.push_snapshot(
+            "背景去除",
+            f"{'AI' if mode_name == 'ai' else '颜色'}抠图 | {len(indices)}帧",
+            indices, session.frame_manager,
+        )
 
-    processed = 0
-    for i, (idx, img) in enumerate(zip(indices, arrays)):
-        if ctx.cancelled():
-            break
-        if img is None:
-            continue
-        result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
-        session.save_processed(idx, result)
-        processed += 1
-        ctx.report((i + 1) / len(indices) * 100, f"抠图 {i+1}/{len(indices)}")
+        processed = 0
+        for i, (idx, img) in enumerate(zip(indices, arrays)):
+            if ctx.cancelled():
+                break
+            if img is None:
+                continue
+            result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
+            session.save_processed(idx, result)
+            session.persist_metadata()  # 中断后保留已完成的帧，重试只加工剩余帧。
+            processed += 1
+            ctx.report((i + 1) / len(indices) * 100, f"抠图 {i+1}/{len(indices)}")
 
-    session.clear_frame_arrays()
-    session.persist_metadata()
-    ctx.report(100, f"抠图完成: {processed}/{len(indices)} 帧")
-    from app.services import recipe
-    recipe.record_step(session, "background",
-                       {"mode": mode_name, **{k: v for k, v in params.items()
-                                              if not callable(v)}},
-                       {"processed": processed})
-    return {"mode": mode_name, "processed": processed, "total": len(indices)}
+        session.persist_metadata()
+        ctx.report(100, f"抠图完成: {processed}/{len(indices)} 帧")
+        from app.services import recipe
+        recipe.record_step(session, "background",
+                           {"mode": mode_name, **{k: v for k, v in params.items()
+                                                  if not callable(v)}},
+                           {"processed": processed})
+        return {"mode": mode_name, "processed": processed, "total": len(indices)}
+    finally:
+        session.clear_frame_arrays()
 
 
 @router.post("/remove")
@@ -116,5 +132,8 @@ def remove_background(session_id: str, req: BackgroundRemoveRequest):
 
     job = job_manager.submit(
         "background", lambda ctx: run_bg_remove(session, indices, req.mode, params, ctx),
-        lock=session.lock)
+        lock=session.lock, target=session.id,
+        params={"indices": indices, "mode": req.mode, "params": params},
+        resource='matting' if req.mode == 'ai' else 'heavy',
+        memory_mb=256 if req.mode != 'ai' else None)
     return {"job_id": job.id}

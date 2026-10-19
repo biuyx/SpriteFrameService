@@ -159,7 +159,8 @@ class FfSetStore:
             rec = {"id": sid,
                    "name": (name or sp.get("name", "")).strip() or sprite_id,
                    "group": (group if group is not None
-                             else (tpl_groups.pop() if len(tpl_groups) == 1 else "")),
+                             else (sp.get('template_binding') or {}).get('group')
+                             or (tpl_groups.pop() if len(tpl_groups) == 1 else "")),
                    "created_at": time.time(),
                    "source_sprite": sprite_id,
                    "frames": frames}

@@ -69,8 +69,11 @@ def test_一期全是只读工具():
     assert {"list_sprites", "get_sprite_overview", "get_template_library", "check_readiness",
             "view_first_frames", "view_frames", "view_video", "list_jobs", "wait_job",
             "get_platform_status"} <= set(tools)
+    write_tools = {'submit_processing_batch', 'cancel_processing_job',
+                   'submit_generation_batch', 'cancel_generation_batch'}
     for t in tools.values():
-        assert t.annotations and t.annotations.read_only_hint, f"{t.name} 应标为只读"
+        assert t.annotations
+        assert t.annotations.read_only_hint == (t.name not in write_tools), t.name
 
 
 def test_服务说明里讲清先定型再量产():

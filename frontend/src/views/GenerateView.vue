@@ -50,16 +50,20 @@ async function loadTemplates() {
   tplVariants.value = []
   tplAll.value = []
   try {
-    const r = await api.templates()
-    tplAll.value = r.templates
+    const [r, sprite] = await Promise.all([
+      api.templates(), store.currentSprite ? api.sprite(store.currentSprite.id) : Promise.resolve({}),
+    ])
+    const binding = sprite.template_binding || {}
+    const allowed = r.templates.filter(t => !binding.group || (t.group || '').trim() === binding.group
+      || binding.shared_template_ids?.includes(t.id))
+    tplAll.value = allowed
     const key = (store.currentAction?.name || '').trim()
-    let matching = r.templates.filter((t) => t.key === key)
-    const boundTpl = r.templates.find((t) => t.id === store.currentAction?.template_id)
-    if (!matching.length && boundTpl) matching = r.templates.filter((t) => t.key === boundTpl.key)
+    let matching = allowed.filter((t) => t.key === key)
+    const boundTpl = allowed.find((t) => t.id === store.currentAction?.template_id)
+    if (!matching.length && boundTpl) matching = allowed.filter((t) => t.key === boundTpl.key)
     tplVariants.value = matching
     const bound = store.currentAction?.template_id
     if (bound && tplAll.value.some((t) => t.id === bound)) tplSelected.value = bound
-    else if (tplVariants.value.length) tplSelected.value = tplVariants.value[0].id
     else tplSelected.value = ''
     if (tplSelected.value) rvUse.value = true
     applyTplDuration()
@@ -512,13 +516,13 @@ onMounted(async () => {
         <span v-if="t.prompt_id" class="take-badge" :title="t.prompt">
           {{ t.prompt_name || '提示词' }}<template v-if="t.prompt_version"> v{{ t.prompt_version }}</template></span>
         <span v-else-if="t.prompt" class="hint take-prompt" :title="t.prompt">{{ t.prompt.slice(0, 40) }}…</span>
-        <span v-if="t.error" class="warn-text" :title="t.error">{{ t.error.slice(0, 50) }}</span>
         <span class="spacer" style="flex:1"></span>
         <span v-if="takes.current === t.id" class="ok-text" style="font-size:12px">✓ 当前使用</span>
         <button v-else-if="t.status === 'succeeded'" class="small" @click="useTake(t)">用这个</button>
         <button v-if="t.status === 'succeeded'" class="small" @click="openPreview(t)">预览</button>
         <button v-if="canCompare(t)" class="small" title="与参考视频并排对比" @click="openCompare(t)">对比</button>
         <button class="small danger" @click="removeTake(t)">删除</button>
+        <div v-if="t.error" class="warn-text take-error" :title="t.error_detail || t.error">{{ t.error }}</div>
       </div>
     </div>
     <div v-if="store.videoInfo" style="margin-top:10px">
@@ -620,10 +624,11 @@ onMounted(async () => {
 .prompt-bar { align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
 .take-list { margin-top: 4px; }
 .take-row {
-  display: flex; align-items: center; gap: 10px; padding: 7px 12px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 7px 12px;
   background: var(--bg-input); border: 1px solid var(--border); border-radius: 5px; margin-bottom: 5px; font-size: 13px;
 }
 .take-row.current { border-color: var(--accent); }
+.take-error { flex-basis: 100%; overflow-wrap: anywhere; line-height: 1.6; }
 .take-badge { font-size: 11px; padding: 1px 8px; border-radius: 8px; background: var(--bg-hover); color: var(--text-dim); }
 .take-badge.running { background: #ff980033; color: var(--warn); }
 .take-badge.failed { background: #ef535033; color: var(--err); }
