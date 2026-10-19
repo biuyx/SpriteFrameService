@@ -34,6 +34,8 @@ class SpriteCreate(BaseModel):
     from_sprite_id: Optional[str] = Field(default=None)
     copy_first_frames: bool = Field(default=False, description="连同各动作首帧图一起复制")
     copy_refs: bool = Field(default=False, description="连同参考图库（含立绘标记）一起复制")
+    project_id: Optional[str] = None
+    sprite_type_id: Optional[str] = None
 
 
 class SpritePatch(BaseModel):
@@ -41,6 +43,8 @@ class SpritePatch(BaseModel):
     tags: Optional[List[str]] = None
     preset: Optional[dict] = None
     template_binding: Optional[dict] = None
+    project_id: Optional[str] = None
+    sprite_type_id: Optional[str] = None
 
 
 class ActionCreate(BaseModel):
@@ -109,13 +113,15 @@ def list_sprites():
 @router.post("")
 def create_sprite(req: SpriteCreate):
     """新建精灵；给 from_sprite_id 则以该精灵为模板复制动作骨架。"""
+    ownership = {k: getattr(req, k) for k in ('project_id', 'sprite_type_id')}
     if req.from_sprite_id:
         r = _wrap(lambda: sprite_store.fork_sprite(
             req.from_sprite_id, req.name, req.tags,
-            copy_first_frames=req.copy_first_frames, copy_refs=req.copy_refs))
+            copy_first_frames=req.copy_first_frames, copy_refs=req.copy_refs,
+            ownership=ownership if {'project_id', 'sprite_type_id'} & req.model_fields_set else None))
         return {**r["sprite"], "forked_from": r["source"],
                 "copied": {k: r[k] for k in ("actions", "first_frames", "refs")}}
-    return sprite_store.create_sprite(req.name, req.tags)
+    return sprite_store.create_sprite(req.name, req.tags, **ownership)
 
 
 class SpriteCopy(BaseModel):
@@ -223,6 +229,9 @@ def get_sprite(sprite_id: str):
 @router.patch("/{sprite_id}")
 def patch_sprite(sprite_id: str, req: SpritePatch):
     patch = req.model_dump(exclude_none=True)
+    for key in ('project_id', 'sprite_type_id'):
+        if key in req.model_fields_set:
+            patch[key] = getattr(req, key)
     return _wrap(lambda: sprite_store.update_sprite(sprite_id, patch))
 
 
@@ -422,6 +431,8 @@ def apply_sprite_ref(sprite_id: str, ref_id: str, req: RefApplyRequest):
 
 # ---------- 批量导入（角色×动作矩阵） ----------
 class BatchScanRequest(BaseModel):
+    project_id: Optional[str] = None
+    sprite_type_id: Optional[str] = None
     frames_dir: str = Field(..., description="角色首帧根目录（每子目录一个角色）")
     templates_dir: Optional[str] = Field(default=None, description="动作模板视频目录（可选）")
     # 参考视频库分组名（非 None 时以该分组的动作为模板集，templates_dir 忽略）
@@ -447,6 +458,8 @@ class BatchImportRequest(BaseModel):
     templates_dir: Optional[str] = None
     template_group: Optional[str] = None    # 参考视频库分组（非 None 时优先）
     project: Optional[str] = None           # 项目名称 → 精灵分类标签
+    project_id: Optional[str] = None
+    sprite_type_id: Optional[str] = None
     sprites: List[BatchImportSprite]
 
 
@@ -527,7 +540,13 @@ def batch_scan(req: BatchScanRequest):
         templates_preview = {"found": found, "new_count": new}
 
     # 已有精灵（同名将复用而不是重复创建）
-    existing_sprites = {sp["name"]: sp["id"] for sp in sprite_store.list_sprites()}
+    from app.services.library_catalog import library_catalog
+    library_catalog.ownership(req.project_id, req.sprite_type_id)
+    candidates = {}
+    for sp in sprite_store.list_sprites():
+        if sp.get('project_id') == req.project_id and sp.get('sprite_type_id') == req.sprite_type_id:
+            candidates.setdefault(sp['name'], []).append(sp['id'])
+    existing_sprites = {name: ids[0] for name, ids in candidates.items() if len(ids) == 1}
     for s in sprites:
         s["existing_sprite_id"] = existing_sprites.get(s["dir_name"])
 
@@ -542,6 +561,8 @@ def batch_import(req: BatchImportRequest):
     毫无进度，所以放进后台任务；目录这类一眼能看出的错仍然同步返回。
     """
     from app.services.job_manager import job_manager
+    from app.services.library_catalog import library_catalog
+    library_catalog.ownership(req.project_id, req.sprite_type_id)
 
     if not Path(req.frames_dir.strip()).is_dir():
         raise HTTPException(status_code=400,
@@ -557,6 +578,11 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
         raise RuntimeError(f"首帧目录不存在: {root}")
 
     from app.services.template_store import template_store
+    from app.services.library_catalog import library_catalog, CatalogError
+    typ = library_catalog.ownership(req.project_id, req.sprite_type_id)
+    default_binding = (typ or {}).get('template_binding') or {}
+    if default_binding and req.template_group is not None and req.template_group.strip() != default_binding['group']:
+        raise CatalogError('导入参考分组与所选精灵类型不一致')
 
     project = (req.project or "").strip()
     library_mode = req.template_group is not None
@@ -585,7 +611,12 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
     tpl_by_key = {key: ids[0] for key, ids in candidates.items() if len(ids) == 1}
     pool_ids = {t['id'] for t in tpl_pool}
 
-    existing_sprites = {sp["name"]: sp["id"] for sp in sprite_store.list_sprites()}
+    scoped = [sp for sp in sprite_store.list_sprites()
+              if sp.get('project_id') == req.project_id and sp.get('sprite_type_id') == req.sprite_type_id]
+    counts = {}
+    for sp in scoped:
+        counts.setdefault(sp['name'], []).append(sp['id'])
+    existing_sprites = {name: ids[0] for name, ids in counts.items() if len(ids) == 1}
     stats = {"sprites_created": 0, "sprites_reused": 0,
              "actions_created": 0, "actions_skipped": 0,
              "actions_no_frame": 0, "errors": []}
@@ -600,6 +631,10 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
             continue
         name = (spec.name or spec.dir_name).strip()
 
+        if len(counts.get(name, [])) > 1:
+            stats['errors'].append(f'{name}: 当前项目与类型存在同名精灵，请先明确名称，未写入素材')
+            continue
+
         if name in existing_sprites:
             sprite_id = existing_sprites[name]
             stats["sprites_reused"] += 1
@@ -611,9 +646,10 @@ def _run_batch_import(req: BatchImportRequest, ctx) -> dict:
                     sprite_store.update_sprite(sprite_id, {"tags": tags + [project]})
         else:
             sprite = sprite_store.create_sprite(
-                name, tags=[project] if project else None)
+                name, tags=[project] if project else None,
+                project_id=req.project_id, sprite_type_id=req.sprite_type_id)
             sprite_id = sprite["id"]
-            if library_mode and (req.template_group or '').strip():
+            if not default_binding and library_mode and (req.template_group or '').strip():
                 sprite_store.update_sprite(sprite_id, {'template_binding': {'group': req.template_group.strip()}})
             existing_sprites[name] = sprite_id
             stats["sprites_created"] += 1

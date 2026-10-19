@@ -80,6 +80,11 @@ def create_app() -> FastAPI:
         return JSONResponse({'detail': str(exc)}, status_code=exc.status_code)
 
     from app.services.template_bindings import TemplateBindingError
+    from app.services.library_catalog import CatalogError
+    @app.exception_handler(CatalogError)
+    async def catalog_error(request, exc):
+        return JSONResponse({'detail': str(exc)}, status_code=400)
+
     @app.exception_handler(TemplateBindingError)
     async def template_binding_error(request, exc):
         return JSONResponse({'detail': str(exc)}, status_code=400)

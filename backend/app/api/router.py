@@ -15,6 +15,7 @@ from . import (
     history_api,
     image_ops,
     jobs,
+    library,
     project_io,
     prompts,
     sessions,
@@ -30,6 +31,7 @@ api_router = APIRouter(prefix="/api")
 api_router.include_router(auth.router)
 api_router.include_router(capabilities.router)
 api_router.include_router(sprites.router)
+api_router.include_router(library.router)
 api_router.include_router(sessions.router)
 api_router.include_router(videos.router)
 api_router.include_router(frames.router)

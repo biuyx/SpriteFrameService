@@ -170,7 +170,9 @@ class SpriteStore:
         with self._lock:
             return self._read_json(self.sprite_json(sprite_id))
 
-    def create_sprite(self, name: str, tags: Optional[List[str]] = None) -> dict:
+    def create_sprite(self, name: str, tags: Optional[List[str]] = None, *,
+                      project_id=None, sprite_type_id=None, template_binding=None) -> dict:
+        from app.services.library_catalog import library_catalog
         sprite_id = f"sp_{uuid.uuid4().hex[:10]}"
         payload = {
             "id": sprite_id,
@@ -191,7 +193,13 @@ class SpriteStore:
             },
             "actions": [],
         }
-        with self._lock:
+        with library_catalog.lock, self._lock:
+            typ = library_catalog.ownership(project_id, sprite_type_id, template_binding)
+            payload['project_id'] = project_id or None
+            payload['sprite_type_id'] = sprite_type_id or None
+            binding = template_binding or (typ or {}).get('template_binding')
+            if binding:
+                payload['template_binding'] = copy.deepcopy(library_catalog._binding(binding))
             self._ensure_index()
             self.reference_dir(sprite_id).mkdir(parents=True, exist_ok=True)
             (self.sprite_dir(sprite_id) / "actions").mkdir(parents=True, exist_ok=True)
@@ -219,7 +227,7 @@ class SpriteStore:
 
     def fork_sprite(self, src_id: str, name: str, tags: Optional[List[str]] = None,
                     copy_first_frames: bool = True, copy_refs: bool = False,
-                    copy_workdata: bool = False, progress=None) -> dict:
+                    copy_workdata: bool = False, progress=None, *, ownership=None) -> dict:
         """以已有精灵为模板新建。
 
         默认只复制骨架：工艺/导出预设、动作（名称、模板绑定、提示词与参数记忆、
@@ -231,7 +239,17 @@ class SpriteStore:
         import shutil
 
         src = self._read_json(self.sprite_json(src_id))   # 不存在即抛错
-        new_sp = self.create_sprite(name, tags if tags is not None else src.get("tags"))
+        membership = ownership if ownership is not None else {
+            'project_id': src.get('project_id'), 'sprite_type_id': src.get('sprite_type_id')}
+        from app.services.library_catalog import library_catalog
+        from app.services.template_bindings import validate_reference
+        with library_catalog.lock:
+            typ = library_catalog.ownership(**membership, binding=src.get('template_binding'))
+            contract = src.get('template_binding') or (typ or {}).get('template_binding') or {}
+            for action in self.list_actions(src_id):
+                validate_reference(src_id, action.get('template_id'), contract)
+            new_sp = self.create_sprite(name, tags if tags is not None else src.get("tags"),
+                                       **membership, template_binding=contract)
         new_id = new_sp["id"]
         if src.get('template_binding'):
             self.update_sprite(new_id, {'template_binding': copy.deepcopy(src['template_binding'])})
@@ -303,8 +321,15 @@ class SpriteStore:
 
     def update_sprite(self, sprite_id: str, patch: dict) -> dict:
         """浅合并更新（仅允许 name/tags/preset）。"""
-        with self._lock:
+        from app.services.library_catalog import library_catalog
+        with library_catalog.lock, self._lock:
             data = self._read_json(self.sprite_json(sprite_id))
+            if any(k in patch for k in ('project_id', 'sprite_type_id', 'template_binding')):
+                project = patch.get('project_id', data.get('project_id')) or None
+                typ = patch.get('sprite_type_id', data.get('sprite_type_id')) or None
+                library_catalog.ownership(project, typ, patch.get('template_binding', data.get('template_binding')))
+                if 'project_id' in patch or 'sprite_type_id' in patch:
+                    data.update(project_id=project, sprite_type_id=typ)
             if "name" in patch:
                 data["name"] = _clean_name(str(patch["name"]), data["name"])
             if "tags" in patch and isinstance(patch["tags"], list):

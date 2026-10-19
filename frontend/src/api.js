@@ -70,6 +70,11 @@ function uploadStaging(files, onProgress) {
 
 const api = {
   uploadStaging,
+  libraryCatalog: () => request('GET', '/api/library'),
+  saveCatalog: (kind, payload, id = null) => request(id ? 'PATCH' : 'POST', `/api/library/${kind}${id ? '/' + id : ''}`, { json: payload }),
+  deleteCatalog: (kind, id) => request('DELETE', `/api/library/${kind}/${id}`),
+  previewAssignment: (payload) => request('POST', '/api/library/assignment/preview', { json: payload }),
+  applyAssignment: (payload) => request('POST', '/api/library/assignment/apply', { json: payload }),
 
   // 认证
   authStatus: () => request('GET', '/api/auth/status'),

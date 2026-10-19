@@ -4,12 +4,22 @@ import { useStore, gotoSprite, toast, askConfirm } from '../stores'
 import api from '../api'
 import { startJob } from '../jobs'
 import BatchImportModal from '../components/BatchImportModal.vue'
+import MembershipFields from '../components/MembershipFields.vue'
+import LibraryTreeNode from '../components/LibraryTreeNode.vue'
+import LibraryCatalogModal from '../components/LibraryCatalogModal.vue'
+import { emptyCatalog, catalogTree, categoryPath, membershipLabel, matchesScope } from '../libraryModel'
 
 const store = useStore()
 const sprites = ref([])
 const legacyCount = ref(0)
 const loading = ref(true)
 const batchOpen = ref(false)
+const catalog = ref(emptyCatalog())
+const catalogOpen = ref(false)
+const selected = ref([])
+const assignment = ref(null)
+const assignmentPreview = ref(null)
+const assigning = ref(false)
 // 全局资源（项目包导入等）变动后重载列表
 watch(() => store.libraryVersion, () => load())
 
@@ -20,9 +30,27 @@ try { prefs = JSON.parse(localStorage.getItem(PREF_KEY) || '{}') } catch { prefs
 const keyword = ref(prefs.keyword || '')
 const category = ref(prefs.category || '')          // '' = 全部分类
 const sortBy = ref(prefs.sortBy || 'created_desc')
-watch([keyword, category, sortBy], ([k, c, s]) => {
-  try { localStorage.setItem(PREF_KEY, JSON.stringify({ keyword: k, category: c, sortBy: s })) } catch { /* ignore */ }
+const projectId = ref(prefs.projectId || '*'), scope = ref(prefs.scope || '')
+watch([keyword, category, sortBy, projectId, scope], ([k, c, s, p, sc]) => {
+  try { localStorage.setItem(PREF_KEY, JSON.stringify({ keyword: k, category: c, sortBy: s, projectId: p, scope: sc })) } catch { /* ignore */ }
 })
+watch(projectId, () => { scope.value = ''; selected.value = [] })
+watch(scope, () => { selected.value = [] })
+const tree = computed(() => catalogTree(catalog.value, projectId.value))
+const projectObj = computed(() => catalog.value.projects.find(p => p.id === projectId.value))
+const currentType = computed(() => catalog.value.types.find(t => t.id === scope.value))
+const counts = computed(() => Object.fromEntries([...catalog.value.categories, ...catalog.value.types].map(n => [n.id, sprites.value.filter(sp => matchesScope(catalog.value, sp, projectId.value, n.id)).length])))
+const breadcrumb = computed(() => {
+  if (!projectObj.value) return projectId.value==='unassigned'?'待归类':'全部项目'
+  const cat = catalog.value.categories.find(c => c.id === scope.value)
+  return [projectObj.value.name, categoryPath(catalog.value, currentType.value?.category_id || cat?.id), currentType.value?.name, scope.value==='untyped'?'未指定类型':''].filter(Boolean).join(' / ')
+})
+const newMembership = ref({project_id:null,sprite_type_id:null})
+function startCreate(){newMembership.value={project_id:projectObj.value?.id||null,sprite_type_id:currentType.value?.id||null};creating.value=true}
+function startAssignment(){assignment.value={project_id:projectObj.value?.id||null,sprite_type_id:currentType.value?.id||null};assignmentPreview.value=null}
+async function previewAssignment(){assigning.value=true;try{assignmentPreview.value=await api.previewAssignment({sprite_ids:selected.value,...assignment.value})}catch(e){toast(e.message)}finally{assigning.value=false}}
+async function applyAssignment(){assigning.value=true;try{await api.applyAssignment({sprite_ids:assignmentPreview.value.items.map(r=>r.id),project_id:assignmentPreview.value.project_id,sprite_type_id:assignmentPreview.value.sprite_type_id,revisions:Object.fromEntries(assignmentPreview.value.items.map(r=>[r.id,r.revision]))});assignment.value=null;selected.value=[];await load();toast('归类完成，原素材和绑定已保留')}catch(e){toast(e.message);assignmentPreview.value=null}finally{assigning.value=false}}
+function toggleSelection(e){selected.value=e.target.checked?shown.value.map(s=>s.id):[]}
 
 // 新建
 const creating = ref(false)
@@ -30,6 +58,7 @@ const newName = ref('')
 const newTags = ref('')
 // 以已有角色为模板新建（复制动作骨架/模板绑定/提示词与参数记忆/工艺预设）
 const fromSprite = ref('')
+watch(() => newMembership.value.project_id, () => { fromSprite.value = '' })
 const copyFirstFrames = ref(false)
 const copyRefs = ref(false)
 const creatingBusy = ref(false)
@@ -41,11 +70,14 @@ const editing = ref(null)         // {id, name, tags: 'a, b'}
 async function load() {
   loading.value = true
   try {
-    const r = await api.sprites()
+    const [r, c] = await Promise.all([api.sprites(), api.libraryCatalog()])
+    catalog.value = c
+    if (!['*','unassigned'].includes(projectId.value) && !c.projects.some(p=>p.id===projectId.value)) projectId.value='*'
+    if(scope.value && scope.value!=='untyped' && ![...c.types,...c.categories].some(n=>n.id===scope.value && n.project_id===projectId.value))scope.value=''
     sprites.value = r.sprites
     const l = await api.legacySessions()
     legacyCount.value = l.sessions.length
-  } finally {
+  } catch(e) { toast(`精灵库加载失败：${e.message}`) } finally {
     loading.value = false
   }
 }
@@ -68,8 +100,9 @@ const allCategories = computed(() => {
 
 const shown = computed(() => {
   let list = sprites.value
+  list = list.filter(sp => matchesScope(catalog.value, sp, projectId.value, scope.value))
   const kw = keyword.value.trim().toLowerCase()
-  if (kw) list = list.filter(sp => sp.name.toLowerCase().includes(kw))
+  if (kw) list = list.filter(sp => [sp.name, membershipLabel(catalog.value, sp), ...(sp.tags||[])].join(' ').toLowerCase().includes(kw))
   if (category.value) list = list.filter(sp => (sp.tags || []).includes(category.value))
   const by = sortBy.value
   return [...list].sort((a, b) => {
@@ -104,6 +137,7 @@ async function createSprite() {
       from_sprite_id: fromSprite.value || null,
       copy_first_frames: copyFirstFrames.value,
       copy_refs: copyRefs.value,
+      ...newMembership.value,
     })
     newName.value = ''
     newTags.value = ''
@@ -155,10 +189,11 @@ function startEdit(sp) {
 async function saveEdit() {
   const e = editing.value
   if (!e || !e.name.trim()) return
-  await api.patchSprite(e.id, { name: e.name.trim(), tags: parseTags(e.tags) })
-  editing.value = null
-  toast('已保存')
-  await load()
+  try {
+    await api.patchSprite(e.id, { name: e.name.trim(), tags: parseTags(e.tags) })
+    editing.value = null
+    toast('已保存'); await load()
+  } catch(err) { toast(err.message) }
 }
 
 async function removeSprite(sp) {
@@ -178,11 +213,14 @@ onMounted(load)
 
 <template>
   <div class="library">
+    <div class="project-toolbar"><label>项目 <select v-model="projectId"><option value="*">全部项目</option><option value="unassigned">待归类（旧数据）</option><option v-for="p in catalog.projects" :key="p.id" :value="p.id">{{p.name}}</option></select></label><span class="hint">{{breadcrumb}}</span><span class="spacer"></span><button @click="catalogOpen=true">管理项目 / 分类 / 类型</button></div>
+    <div class="library-layout"><aside class="library-tree"><button class="tree-top" :class="{primary:!scope}" @click="scope=''">{{projectObj?'项目全部精灵':'全部精灵'}}</button><template v-if="projectObj"><LibraryTreeNode v-for="n in tree" :key="n.id" :node="n" :active="scope" :counts="counts" @pick="scope=$event"/><button class="tree-top" @click="scope='untyped'">未指定类型</button></template><p v-else class="hint">先选择项目，浏览多级分类与精灵类型。旧角色保留在待归类中。</p></aside><main class="library-main">
+    <div class="scope-header"><h2>{{currentType?.name || breadcrumb}}</h2><p v-if="currentType" class="hint">默认参考：{{currentType.template_binding?.group || '未配置'}} · {{currentType.template_binding?.first_frame_set_id?'已配置首帧集':'未配置首帧集'}}。仅新建继承，现有角色绑定保持。</p></div>
     <div class="lib-toolbar">
       <h2>精灵库 <span class="count" v-if="!loading">{{ shown.length }}<template v-if="shown.length !== sprites.length"> / {{ sprites.length }}</template></span></h2>
-      <input v-model="keyword" class="search" placeholder="搜索名称…" />
-      <select v-model="category" title="项目分类">
-        <option value="">全部分类</option>
+      <input v-model="keyword" class="search" placeholder="搜索名称、类型或标签…" />
+      <select v-model="category" title="标签（保留旧分类）">
+        <option value="">全部标签</option>
         <option v-for="c in allCategories" :key="c" :value="c">{{ c }}</option>
       </select>
       <select v-model="sortBy" title="排序">
@@ -195,17 +233,19 @@ onMounted(load)
       <span class="spacer"></span>
       <span class="hint" v-if="legacyCount">{{ legacyCount }} 个旧会话待认领</span>
       <button class="small" @click="batchOpen = true">批量导入</button>
-      <button class="primary" @click="creating = true">+ 新建精灵</button>
+      <button :disabled="!selected.length" @click="startAssignment">归类所选 {{selected.length||''}}</button>
+      <button class="primary" @click="startCreate">+ 新建{{currentType?.name || '精灵'}}</button>
     </div>
 
     <div v-if="creating" class="create-bar">
       <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin:0">
         <input v-model="newName" placeholder="精灵名称，如：厨师" style="width:180px" @keyup.enter="createSprite" autofocus />
-        <input v-model="newTags" placeholder="项目分类（可选，逗号分隔）" style="width:200px" @keyup.enter="createSprite" />
+        <input v-model="newTags" placeholder="标签（可选，逗号分隔）" style="width:200px" @keyup.enter="createSprite" />
+        <MembershipFields v-model="newMembership" :catalog="catalog" />
         <div class="field inline"><label>模板角色</label>
           <select v-model="fromSprite" style="max-width:190px" title="以已有角色为模板：复制动作、模板绑定、提示词与参数记忆、工艺/导出预设">
             <option value="">不使用（空白新建）</option>
-            <option v-for="s in sprites" :key="s.id" :value="s.id">{{ s.name }}（{{ s.action_count }} 动作）</option>
+            <option v-for="s in sprites.filter(s=>!newMembership.project_id || s.project_id===newMembership.project_id)" :key="s.id" :value="s.id">{{ s.name }}（{{ s.action_count }} 动作）</option>
           </select></div>
         <button class="primary" :disabled="creatingBusy" @click="createSprite">
           {{ creatingBusy ? '创建中…' : '创建' }}</button>
@@ -225,15 +265,16 @@ onMounted(load)
     <div v-else-if="!sprites.length" class="empty">
       <div class="empty-icon">🎨</div>
       <p>还没有精灵。精灵 = 一个角色，包含它的所有动作（走路、待机、攻击…）。</p>
-      <button class="primary" @click="creating = true">创建第一个精灵</button>
+      <button class="primary" @click="startCreate">创建第一个精灵</button>
     </div>
 
     <div v-else class="tbl-wrap">
       <table class="lib-tbl">
         <thead>
           <tr>
-            <th style="width:26%">精灵</th>
-            <th style="width:16%">分类</th>
+            <th><input type="checkbox" aria-label="选择当前筛选全部精灵" :checked="!!shown.length && shown.every(s=>selected.includes(s.id))" @change="toggleSelection" /></th>
+            <th style="width:18%">精灵</th>
+            <th style="width:20%">项目 / 类型 / 标签</th>
             <th style="width:8%">动作</th>
             <th style="width:24%">完成进度</th>
             <th style="width:13%">创建时间</th>
@@ -242,6 +283,7 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="sp in shown" :key="sp.id" class="sp-row" @click="open(sp)">
+            <td @click.stop><input v-model="selected" type="checkbox" :value="sp.id" :aria-label="`选择 ${sp.name}`" /></td>
             <td>
               <div class="sp-name">
                 <span class="avatar">{{ sp.name.slice(0, 2) }}</span>
@@ -249,7 +291,7 @@ onMounted(load)
               </div>
             </td>
             <td>
-              <span v-if="!sp.tags?.length" class="hint">—</span>
+              <div class="membership-path">{{membershipLabel(catalog,sp)}}</div>
               <span v-for="t in sp.tags" :key="t" class="tag">{{ t }}</span>
             </td>
             <td>{{ sp.action_count }}</td>
@@ -274,11 +316,12 @@ onMounted(load)
             </td>
           </tr>
           <tr v-if="!shown.length">
-            <td colspan="6" class="hint" style="text-align:center;padding:30px">没有匹配的精灵</td>
+            <td colspan="7" class="hint" style="text-align:center;padding:30px">没有匹配的精灵。可在当前项目和类型中新建，或调整筛选。</td>
           </tr>
         </tbody>
       </table>
     </div>
+    </main></div>
   </div>
 
   <!-- 编辑名称 / 分类 -->
@@ -287,7 +330,7 @@ onMounted(load)
       <h3>编辑精灵</h3>
       <div class="field"><label>名称</label>
         <input v-model="editing.name" @keyup.enter="saveEdit" /></div>
-      <div class="field"><label>项目分类（逗号分隔，可多个）</label>
+      <div class="field"><label>标签（逗号分隔，可多个）</label>
         <input v-model="editing.tags" placeholder="如：项目A, 主角" @keyup.enter="saveEdit" /></div>
       <div class="edit-ops">
         <button class="primary" @click="saveEdit">保存</button>
@@ -295,6 +338,9 @@ onMounted(load)
       </div>
     </div>
   </div>
+
+  <div v-if="assignment" class="edit-mask" @click.self="!assigning && (assignment=null)"><div class="edit-box assignment-box"><h3>明确归类 · {{selected.length}} 个精灵</h3><MembershipFields v-model="assignment" :catalog="catalog" @update:model-value="assignmentPreview=null" /><p class="hint">仅更改项目和类型，保留原标签、素材路径、参考绑定、动作与工艺；不套用类型默认配置。</p><template v-if="assignmentPreview"><p>将归入：{{membershipLabel(catalog,assignmentPreview)}}</p><ul><li v-for="r in assignmentPreview.items" :key="r.id">{{r.name}}</li></ul></template><div class="edit-ops"><button :disabled="assigning" @click="assignment=null">取消</button><button :disabled="assigning" @click="previewAssignment">预览变更</button><button v-if="assignmentPreview" class="primary" :disabled="assigning" @click="applyAssignment">确认归类</button></div></div></div>
+  <LibraryCatalogModal v-if="catalogOpen" :catalog="catalog" :project-id="projectObj?.id||''" @close="catalogOpen=false" @saved="load" />
 
   <!-- 复制精灵 -->
   <div v-if="copying" class="edit-mask" @click.self="copying = null">
@@ -321,12 +367,13 @@ onMounted(load)
     </div>
   </div>
 
-  <BatchImportModal v-if="batchOpen" @close="batchOpen = false"
+  <BatchImportModal v-if="batchOpen" :catalog="catalog" :membership="{project_id:projectObj?.id||null,sprite_type_id:currentType?.id||null}" @close="batchOpen = false"
                     @done="load()" />
 </template>
 
 <style scoped>
 .library { padding: 16px 24px; height: 100%; overflow-y: auto; }
+.project-toolbar{display:flex;gap:18px;align-items:center;flex-wrap:wrap;padding:8px 0 18px}.project-toolbar label{display:flex;gap:10px;align-items:center}.library-layout{display:flex;gap:22px}.library-tree{width:215px;flex:none;border-right:1px solid var(--border);padding-right:14px;overflow-wrap:anywhere}.library-main{min-width:0;flex:1}.tree-top{width:100%;text-align:left;margin-bottom:10px}.scope-header h2{margin:0 0 8px;font-size:20px}.scope-header{margin-bottom:18px}.tbl-wrap{overflow-x:auto!important}.assignment-box{width:620px!important}.assignment-box ul{max-height:240px;overflow:auto}@media(max-width:800px){.library-layout{display:block}.library-tree{width:100%;border:0;margin-bottom:14px}.library{padding:12px}}
 .lib-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .lib-toolbar h2 { font-size: 17px; margin: 0 6px 0 0; }
 .count { font-size: 13px; color: var(--text-dim); font-weight: 400; }
@@ -363,6 +410,7 @@ onMounted(load)
   font-size: 11px; padding: 1px 8px; background: var(--bg-input); border-radius: 8px;
   color: var(--text-dim); margin-right: 4px; display: inline-block;
 }
+.membership-path{font-size:12px;line-height:1.6;margin-bottom:4px;overflow-wrap:anywhere;color:var(--text-dim)}
 .prog { display: flex; align-items: center; gap: 8px; }
 .prog-bar { flex: 1; height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; }
 .prog-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }

@@ -5,6 +5,10 @@ import { startJob } from '../jobs'
 import api from '../api'
 import FolderPick from './FolderPick.vue'
 import { IMAGE_EXTS, VIDEO_EXTS } from '../fileTypes'
+import MembershipFields from './MembershipFields.vue'
+import { emptyCatalog } from '../libraryModel'
+const props = defineProps({catalog:{type:Object,default:emptyCatalog},membership:{type:Object,default:()=>({project_id:null,sprite_type_id:null})}})
+const targetMembership = ref({...props.membership})
 
 const emit = defineEmits(['close', 'done'])
 
@@ -38,13 +42,13 @@ onMounted(async () => {
       .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
     if (libGroups.value.length) {
       tplSource.value = 'library'
-      tplGroup.value = libGroups.value[0].name
+      tplGroup.value = (props.catalog.types.find(t=>t.id===targetMembership.value.sprite_type_id)?.template_binding||{}).group || libGroups.value[0].name
     }
   } catch { /* 模板库不可用则回落目录模式 */ }
 })
 
 function scanPayload() {
-  const p = { frames_dir: framesDir.value.trim() }
+  const p = { frames_dir: framesDir.value.trim(), ...targetMembership.value }
   if (tplSource.value === 'library') p.template_group = tplGroup.value
   else if (tplSource.value === 'dir' && templatesDir.value.trim())
     p.templates_dir = templatesDir.value.trim()
@@ -106,6 +110,7 @@ async function runImport() {
     await startJob(() => api.batchImport({
       ...scanPayload(),
       project: project.value.trim() || null,
+      ...targetMembership.value,
       sprites,
     }), {
       title: `批量建档（${sprites.length} 个角色）`,
@@ -134,7 +139,8 @@ async function runImport() {
       </div>
 
       <div class="set-group">
-        <label class="set-label">项目名称（可选，作为精灵的分类标签）</label>
+        <MembershipFields v-model="targetMembership" :catalog="catalog" />
+        <label class="set-label">附加标签（可选，兼容原项目分类）</label>
         <input v-model="project" style="width:100%" placeholder="例如：小镇经营、旅馆NPC" />
       </div>
 

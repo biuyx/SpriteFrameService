@@ -113,6 +113,7 @@ def list_sprites(keyword: str = "") -> dict:
             continue
         stages = Counter(stage_of(a) for a in sprite_store.list_actions(sp["id"]))
         out.append({"id": sp["id"], "name": sp.get("name"), "tags": sp.get("tags") or [],
+                    "project_id": sp.get('project_id'), "sprite_type_id": sp.get('sprite_type_id'),
                     "actions": sum(stages.values()), "stages": dict(stages)})
     return {"sprites": out, "count": len(out)}
 
@@ -155,7 +156,8 @@ def sprite_overview(sprite_ref: str) -> dict:
             rec["note"] = "视频提示词是这个动作单独记忆的，偏离了模板"
         actions.append(rec)
     return {
-        "sprite": {"id": sid, "name": sp.get("name"), "tags": sp.get("tags") or []},
+        "sprite": {"id": sid, "name": sp.get("name"), "tags": sp.get("tags") or [],
+                   "project_id": sp.get('project_id'), "sprite_type_id": sp.get('sprite_type_id')},
         "template_binding": sp.get('template_binding') or {},
         "portraits": {"正面立绘": bool(por["front"]), "背面立绘": bool(por["back"])},
         "preset": {"抠图模型": m.get("model") or "（默认）",

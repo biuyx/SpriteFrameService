@@ -11,6 +11,8 @@ import PipelineModal from '../components/PipelineModal.vue'
 import SpineExportModal from '../components/SpineExportModal.vue'
 import ReviewModal from '../components/ReviewModal.vue'
 import TemplateBindingModal from '../components/TemplateBindingModal.vue'
+import {emptyCatalog, membershipLabel} from '../libraryModel'
+const catalog = ref(emptyCatalog())
 const bindingOpen = ref(false)
 
 const store = useStore()
@@ -88,6 +90,7 @@ async function openAt(a, stageKey) {
 async function load() {
   loading.value = true
   try {
+    catalog.value = await api.libraryCatalog()
     const [a, s, l, t, r] = await Promise.all([
       api.actions(store.currentSprite.id),
       api.sprites(),
@@ -195,6 +198,7 @@ onMounted(async () => {
         <span v-for="t in spriteInfo?.tags || []" :key="t" class="tag">{{ t }}</span>
         <button class="small" title="重命名 / 改分类" @click="startEdit">编辑</button>
       </div>
+      <p class="hint">{{membershipLabel(catalog,spriteInfo)}} · 参考分组：{{spriteInfo?.template_binding?.group || '未绑定'}}（项目与类型归类请回精灵库操作）</p>
       <div class="sp-meta">
         <div class="prog" :title="`五阶段平均完成度 ${pct(spriteInfo)}%`">
           <div class="prog-bar"><div class="prog-fill" :style="{ width: pct(spriteInfo) + '%' }"></div></div>
