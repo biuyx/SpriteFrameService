@@ -190,3 +190,7 @@ Windows327通过，Linux隔离325通过2缺参考工程跳过，Node导航5通�
 ## 房东历史数据归类完成（2026-10-20 09:09）
 
 用户明确所有历史角色均属房东项目、仅租客和店长两类，并要求智能归类。复用已有项目pr_5e35a77df939，新建店长st_519b8850f0e4（2角色）、租客st_3280a5d2a042（14角色，含迁移测试-可删，未删除）。依据店长明确绑定和cash/onwork等专属动作、租客入住/行李动作与NPC引用，16角色均可确定。经管理员API预览+版本复核归类，只改归属，保留全部原标签/绑定/动作配置/立绘标记。店长类型默认用既有fs_99eee0ec绑定；租客类型分组旅馆NPC，未在16张和20张两套首帧间擅自选择。未重启、不改代码、不提交加工，原抠图继续19/49、另一任务仍排队。备份/opt/sprite/.deploy/config-backups/landlord-classification-20261020T010931Z，证据与验收data/releases/landlord-classification-20261020/acceptance.json。
+
+## 待归类空入口隐藏已准备（2026-10-20）
+
+用户要求移除已空待归类。8ba8640仅改前端3文件：零数量隐藏，有遗留或无效项目ID数据时恢复并显示数量；缓存选中已空入口回到全部项目，不受搜索/标签筛选影响。Node7项及构建通过。当前仍有1抠图运行1排队，未部署。快照data/releases/hide-empty-unassigned-20261020/release.json含229源码和11构建文件；操作见docs/hide-empty-unassigned-release.md。已创建5分钟静默heartbeat「待归类空项隐藏空闲上线」，ID automation-3，成功验收后暂停；旧m3与automation-2保持暂停。

@@ -10,3 +10,5 @@
 4. 使用Windows Git Bash执行scripts/deploy_linux.sh（代码已提交且部署源范围应干净），不使用--force或--no-restart。脚本负责维护准入、二次空闲检查、备份和回滚；新任务导致拒绝时等下轮。不要改动运行/排队任务。
 5. 验收service active、健康/前端/认证角色任务目录200、未认证401；全部dist_files生产磁盘/HTTP哈希匹配，86后端基线不变，本轮更新前metadata全部不变。房东16角色归属、原绑定/立绘/标签、密钥权限、CPU/并发/内存资源维持，不发真实加工或生成测试。无需在生产制造未归类角色，显示恢复及缓存回退已由隔离测试覆盖。
 6. 记录备份、时间和验收到本文件、docs/codex-handoff.md及本次release.json（status=deployed），成功后暂停本轮heartbeat自动化并通知用户。旧m3和automation-2继续暂停，不归档对话。忙碌与未变化静默，仅成功、真实失败或需要用户处理时通知。
+
+自动化ID automation-3，名称「待归类空项隐藏空闲上线」，每5分钟检查，成功后暂停。
