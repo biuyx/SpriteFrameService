@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { catalogTree, categoryPath, membershipLabel, matchesScope } from '../src/libraryModel.js'
+import { catalogTree, categoryPath, membershipLabel, matchesScope, unassignedCount, resolveProjectSelection } from '../src/libraryModel.js'
 const data = {
   projects:[{id:'pr_a',name:'旅馆'},{id:'pr_b',name:'另一项目'}],
   categories:[{id:'cat_1',name:'人物',project_id:'pr_a',parent_id:null},{id:'cat_2',name:'工作人员',project_id:'pr_a',parent_id:'cat_1'}],
@@ -33,4 +33,16 @@ test('malformed old hierarchy cannot make navigation recurse forever',()=>{
   const broken={...data,categories:[{id:'loop',name:'Loop',project_id:'pr_a',parent_id:'loop'}]}
   assert.equal(categoryPath(broken,'loop'),'Loop')
   assert.deepEqual(catalogTree(broken,'pr_a'),[])
+})
+test('empty pending entry is hidden and stale saved selection returns to all projects',()=>{
+  assert.equal(unassignedCount(data,[role]),0)
+  assert.equal(resolveProjectSelection(data,[role],'unassigned'),'*')
+  assert.equal(resolveProjectSelection(data,[],'unassigned'),'*')
+  assert.equal(resolveProjectSelection(data,[role],'pr_a'),'pr_a')
+})
+test('new legacy or unresolved imported roles restore the pending entry',()=>{
+  const sprites=[role,{}, {project_id:'missing'}]
+  assert.equal(unassignedCount(data,sprites),2)
+  assert.equal(resolveProjectSelection(data,sprites,'unassigned'),'unassigned')
+  assert.equal(resolveProjectSelection(data,sprites,'deleted-project'),'*')
 })

@@ -34,6 +34,14 @@ export function matchesScope(catalog, sp, projectId, scope = '') {
   }
   return false
 }
+// Use the complete inventory, so a name/tag filter never hides the recovery entry.
+export function unassignedCount(catalog, sprites) {
+  return sprites.filter(sp => matchesScope(catalog, sp, 'unassigned')).length
+}
+export function resolveProjectSelection(catalog, sprites, selected) {
+  if (selected === 'unassigned') return unassignedCount(catalog, sprites) ? selected : '*'
+  return selected === '*' || catalog.projects.some(p => p.id === selected) ? selected : '*'
+}
 export function catalogTree(catalog, projectId, parent = null, seen = new Set()) {
   const categories = catalog.categories.filter(c => c.project_id === projectId && (c.parent_id || null) === parent && !seen.has(c.id))
   return [

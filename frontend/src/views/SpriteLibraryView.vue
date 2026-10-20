@@ -7,7 +7,7 @@ import BatchImportModal from '../components/BatchImportModal.vue'
 import MembershipFields from '../components/MembershipFields.vue'
 import LibraryTreeNode from '../components/LibraryTreeNode.vue'
 import LibraryCatalogModal from '../components/LibraryCatalogModal.vue'
-import { emptyCatalog, catalogTree, categoryPath, membershipLabel, matchesScope } from '../libraryModel'
+import { emptyCatalog, catalogTree, categoryPath, membershipLabel, matchesScope, unassignedCount, resolveProjectSelection } from '../libraryModel'
 
 const store = useStore()
 const sprites = ref([])
@@ -38,6 +38,7 @@ watch(projectId, () => { scope.value = ''; selected.value = [] })
 watch(scope, () => { selected.value = [] })
 const tree = computed(() => catalogTree(catalog.value, projectId.value))
 const projectObj = computed(() => catalog.value.projects.find(p => p.id === projectId.value))
+const pendingCount = computed(() => unassignedCount(catalog.value, sprites.value))
 const currentType = computed(() => catalog.value.types.find(t => t.id === scope.value))
 const counts = computed(() => Object.fromEntries([...catalog.value.categories, ...catalog.value.types].map(n => [n.id, sprites.value.filter(sp => matchesScope(catalog.value, sp, projectId.value, n.id)).length])))
 const breadcrumb = computed(() => {
@@ -72,7 +73,7 @@ async function load() {
   try {
     const [r, c] = await Promise.all([api.sprites(), api.libraryCatalog()])
     catalog.value = c
-    if (!['*','unassigned'].includes(projectId.value) && !c.projects.some(p=>p.id===projectId.value)) projectId.value='*'
+    projectId.value = resolveProjectSelection(c, r.sprites, projectId.value)
     if(scope.value && scope.value!=='untyped' && ![...c.types,...c.categories].some(n=>n.id===scope.value && n.project_id===projectId.value))scope.value=''
     sprites.value = r.sprites
     const l = await api.legacySessions()
@@ -213,8 +214,8 @@ onMounted(load)
 
 <template>
   <div class="library">
-    <div class="project-toolbar"><label>项目 <select v-model="projectId"><option value="*">全部项目</option><option value="unassigned">待归类（旧数据）</option><option v-for="p in catalog.projects" :key="p.id" :value="p.id">{{p.name}}</option></select></label><span class="hint">{{breadcrumb}}</span><span class="spacer"></span><button @click="catalogOpen=true">管理项目 / 分类 / 类型</button></div>
-    <div class="library-layout"><aside class="library-tree"><button class="tree-top" :class="{primary:!scope}" @click="scope=''">{{projectObj?'项目全部精灵':'全部精灵'}}</button><template v-if="projectObj"><LibraryTreeNode v-for="n in tree" :key="n.id" :node="n" :active="scope" :counts="counts" @pick="scope=$event"/><button class="tree-top" @click="scope='untyped'">未指定类型</button></template><p v-else class="hint">先选择项目，浏览多级分类与精灵类型。旧角色保留在待归类中。</p></aside><main class="library-main">
+    <div class="project-toolbar"><label>项目 <select v-model="projectId"><option value="*">全部项目</option><option v-if="pendingCount" value="unassigned">待归类（{{pendingCount}}）</option><option v-for="p in catalog.projects" :key="p.id" :value="p.id">{{p.name}}</option></select></label><span class="hint">{{breadcrumb}}</span><span class="spacer"></span><button @click="catalogOpen=true">管理项目 / 分类 / 类型</button></div>
+    <div class="library-layout"><aside class="library-tree"><button class="tree-top" :class="{primary:!scope}" @click="scope=''">{{projectObj?'项目全部精灵':'全部精灵'}}</button><template v-if="projectObj"><LibraryTreeNode v-for="n in tree" :key="n.id" :node="n" :active="scope" :counts="counts" @pick="scope=$event"/><button class="tree-top" @click="scope='untyped'">未指定类型</button></template><p v-else class="hint">先选择项目，浏览多级分类与精灵类型。</p></aside><main class="library-main">
     <div class="scope-header"><h2>{{currentType?.name || breadcrumb}}</h2><p v-if="currentType" class="hint">默认参考：{{currentType.template_binding?.group || '未配置'}} · {{currentType.template_binding?.first_frame_set_id?'已配置首帧集':'未配置首帧集'}}。仅新建继承，现有角色绑定保持。</p></div>
     <div class="lib-toolbar">
       <h2>精灵库 <span class="count" v-if="!loading">{{ shown.length }}<template v-if="shown.length !== sprites.length"> / {{ sprites.length }}</template></span></h2>
