@@ -2,7 +2,7 @@
 
 用户要求移除已空的待归类入口。代码提交 8ba8640：按完整库存隐藏空入口，未归类/项目ID不可解析的数据再次出现时恢复并显示数量；缓存中选中已空入口时回到全部项目。不修改后端或生产数据。Node7项通过，Vite构建通过，现有导入恢复兼容性保留。线上仍有抠图运行与排队，本轮未更新。
 
-发布快照 data/releases/hide-empty-unassigned-20261020/release.json（229源文件，11构建文件）。相对第一阶段只有 libraryModel.js、SpriteLibraryView.vue、分类导航测试3文件变化。
+发布快照 data/releases/hide-empty-unassigned-20261020/release.json（229源文件，11构建文件）。用户追加要求将4个资源入口横向展示，已合并重新验证快照：相对第一阶段共 libraryModel.js、SpriteLibraryView.vue、分类导航测试、App.vue、ResourceMenu.vue 5文件变化。四个入口为参考视频库、参考首帧库、提示词库、项目包导出/导入，精灵库/看板/工作台共用；取消下拉，窄宽度允许横向按钮换行。隔离浏览器逐一验证4个原弹窗可直接打开，截图data/releases/hide-empty-unassigned-20261020/navigation-preview.png，构建通过。以release.json当前commit和hash为准，旧3文件快照已作废。
 
 1. 每轮先只读经SSH ProxyJump root@192.168.3.12到ubuntu@192.168.3.225；在/opt/sprite/backend用get_settings().auth_token认证查询http://127.0.0.1:8000/api/jobs?limit=200，不打印令牌、不初始化第二个JobManager。queued/running非空立即静默结束，不修改服务器、不取消任务；查询失败不当空闲。
 2. 空闲后按快照scopes用git ls-files -z -c -o --exclude-standard --核验完整源文件集合及SHA256；核验frontend/dist完整集合及dist_files哈希。意外变化不部署，通知需重新验证。
