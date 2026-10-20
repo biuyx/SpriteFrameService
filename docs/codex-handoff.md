@@ -186,3 +186,7 @@ Windows 302 项通过，Linux 300 项通过、2 项缺参考工程跳过，前�
 用户要求先提交既有代码，再实现项目、精灵类型、多级分类、旧数据兼容和测试，空闲时上线。既有工作提交 37d7fdf；第一阶段提交 14a22a8。新增 library_catalog.json（读时不创建）、项目/目录/类型管理员 API、稳定 project_id/sprite_type_id 归属、项目选择与递归分类树、类型默认参考、批量归类预览及过期/冲突/失败保护。原 tags、素材路径、角色绑定和动作不自动改写；旧角色从待归类进入，导入按项目与类型复用同名角色。手册同步到19章6图，详见 docs/library-catalog.md。
 
 Windows327通过，Linux隔离325通过2缺参考工程跳过，Node导航5通过，前端构建与隔离浏览器完整流程通过。确认生产queued/running为空、原基线匹配后，以干净提交正常运行部署脚本，维护准入/二次空闲/备份和重启成功。备份 /opt/sprite/.deploy/backups/20261019-200535.tar.gz；20:05:38恢复，20:06:49验收通过：86 app文件、11前端文件匹配提交和构建，449生产元数据文件未变，空目录只读不落盘，HTTP/认证/MCP19/SQLite/owner锁/资源/启动日志正常，无真实生成加工。发布快照data/releases/catalog-phase1-20261019/release.json为deployed；git_blob_files是干净git archive使用的LF哈希，与测试工作目录仅行尾差异。无需新自动化，旧m3与automation-2继续暂停。
+
+## 房东历史数据归类完成（2026-10-20 09:09）
+
+用户明确所有历史角色均属房东项目、仅租客和店长两类，并要求智能归类。复用已有项目pr_5e35a77df939，新建店长st_519b8850f0e4（2角色）、租客st_3280a5d2a042（14角色，含迁移测试-可删，未删除）。依据店长明确绑定和cash/onwork等专属动作、租客入住/行李动作与NPC引用，16角色均可确定。经管理员API预览+版本复核归类，只改归属，保留全部原标签/绑定/动作配置/立绘标记。店长类型默认用既有fs_99eee0ec绑定；租客类型分组旅馆NPC，未在16张和20张两套首帧间擅自选择。未重启、不改代码、不提交加工，原抠图继续19/49、另一任务仍排队。备份/opt/sprite/.deploy/config-backups/landlord-classification-20261020T010931Z，证据与验收data/releases/landlord-classification-20261020/acceptance.json。

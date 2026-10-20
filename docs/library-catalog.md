@@ -40,3 +40,11 @@ Windows：327 passed。Linux 隔离目录 `/tmp/sprite-catalog-phase1-20261019-q
 使用干净提交正常执行 `scripts/deploy_linux.sh`，未使用 --force、--no-restart 或 dirty 覆盖；维护准入和空闲复查通过，备份 `/opt/sprite/.deploy/backups/20261019-200535.tar.gz`，20:05:38 服务恢复。干净部署以 git archive 的 LF blob 为准，已确认与被测试工作目录文件仅有 CRLF 行尾差异；发布快照分别记录工作目录 hashes 和 git_blob_files。
 
 20:06:49 验收：service active，健康/前端/认证角色/任务/目录接口 200，未认证 401；86 个后端 app 文件与提交哈希一致，11 个前端文件磁盘及 HTTP 内容哈希一致。449 个生产元数据文件完全不变，未创建生产分类、未自动归类；GET /api/library 为空且未创建 catalog 文件。MCP 19 工具、只读密钥权限、CPU/并发/内存预算不变，两份 SQLite quick_check 正常、owner 锁已持有，启动无异常，队列为空。没有发起真实加工或付费测试。
+
+## 历史角色已明确归类（2026-10-20 09:09）
+
+用户明确说明历史数据全部属于「房东」项目，仅「租客、店长」两类，并授权根据历史数据智能归类。复用用户已创建的房东项目 pr_5e35a77df939，依据原参考分组及动作组合识别：店长1/店长2有店长固定绑定、收银与上下班等专属动作，归入店长；其余14角色有入住、行李、如厕等动作及旅馆NPC参考，归入租客。租客中包含「迁移测试-可删」，保留并归类，未删除。
+
+类型：店长 st_519b8850f0e4，租客 st_3280a5d2a042。店长类型默认参考沿用两位店长一致且此前已确认的绑定（fs_99eee0ec及3条共享参考）；租客类型默认参考分组为旅馆NPC，但16张/20张两套首帧集尚不自动选取。既有16角色原参考绑定、标签、立绘标记、动作引用/配置保持不变，只有 project_id / sprite_type_id 变更。
+
+通过管理员API先分别预览两组，再用档案版本指纹确认归类。此为归属元数据变更，无需部署/重启，不干扰现有抠图；验收时原任务继续到19/49帧，另一任务仍正常等待内存预算。配置前备份 `/opt/sprite/.deploy/config-backups/landlord-classification-20261020T010931Z/before.json`，分类依据及验收 `data/releases/landlord-classification-20261020/acceptance.json`。
