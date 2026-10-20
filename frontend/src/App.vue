@@ -43,7 +43,7 @@ const needLogin = ref(false)
 const loginNotice = ref('')
 const settingsOpen = ref(false)
 const manualOpen = ref(false)   // 使用手册（从工序页打开会定位到对应章节）
-// 全局资源弹窗（顶栏「资源库」菜单打开，任一层都可用）：tpl | ffset | prompt | transfer
+// 全局资源弹窗（顶栏四个直接入口，任一层都可用）：tpl | ffset | prompt | transfer
 const resModal = ref(null)
 function onImported() { store.libraryVersion++ }
 // 工作台「一键执行」：对当前动作跑流水线
@@ -382,7 +382,7 @@ async function jumpToJob(j) {
                @close="manualOpen = false" />
   <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
 
-  <!-- 全局资源库弹窗（顶栏「资源库」菜单） -->
+  <!-- 全局资源弹窗（顶栏横向入口） -->
   <TemplateLibraryModal v-if="resModal === 'tpl'" @close="resModal = null" />
   <FfSetLibraryModal v-if="resModal === 'ffset'" @close="resModal = null" />
   <PromptLibraryModal v-if="resModal === 'prompt'" @close="resModal = null" />
@@ -414,7 +414,8 @@ async function jumpToJob(j) {
 .toplevel { height: 100%; display: flex; flex-direction: column; }
 .toplevel-body { flex: 1; min-height: 0; }
 .brand-mini { font-size: 14px; font-weight: 700; margin-right: 4px; }
-.topnav { display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
+.topnav { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: 6px; }
+.topbar { flex-wrap: wrap; height: auto; min-height: 44px; }
 .topnav a {
   cursor: pointer; font-size: 13px; color: var(--text-dim); padding: 3px 8px; border-radius: 4px;
   text-decoration: none;
