@@ -196,3 +196,7 @@ Windows327通过，Linux隔离325通过2缺参考工程跳过，Node导航5通�
 用户要求移除已空待归类。8ba8640仅改前端3文件：零数量隐藏，有遗留或无效项目ID数据时恢复并显示数量；缓存选中已空入口回到全部项目，不受搜索/标签筛选影响。Node7项及构建通过。当前仍有1抠图运行1排队，未部署。快照data/releases/hide-empty-unassigned-20261020/release.json含229源码和11构建文件；操作见docs/hide-empty-unassigned-release.md。已创建5分钟静默heartbeat「待归类空项隐藏空闲上线」，ID automation-3，成功验收后暂停；旧m3与automation-2保持暂停。
 
 用户追加要求4个资源库菜单直接横向显示，已修改共用ResourceMenu和App顶栏布局，去除下拉与点击外部监听；隔离浏览器验证4个入口直接打开原弹窗。已合并到上述release快照（仍229源码11构建，现共5个前端文件变化），原3文件快照失效；automation-3暂停后更新为合并快照并继续等空闲，禁止使用旧哈希误报或重复部署。
+
+## 空待归类隐藏及资源横向入口已上线（2026-10-20 09:41）
+
+09:40确认queued/running为空，完整核验229源文件、11构建文件及86后端基线；显式维护准入后再次确认空闲，正常运行干净部署脚本，完成后恢复准入。仅静态前端变化，无需重启，PID25898不变。备份 `/opt/sprite/.deploy/backups/20261020-094141.tar.gz`，部署提交5ef2edf，功能提交5784b3c（含8ba8640）。09:42验收健康/前端/认证角色任务目录200、未认证401，11构建磁盘/HTTP哈希匹配，86后端与403受保护元数据文件不变；房东店长2/租客14、原参考绑定/立绘/标签、只读权限及资源并发配置均维持，MCP19、SQLite、owner锁与日志正常。未提交加工或付费生成。发布目录data/releases/hide-empty-unassigned-20261020/release.json标记deployed，详见docs/hide-empty-unassigned-release.md及acceptance.json。成功后暂停automation-3，旧m3与automation-2保持暂停。
