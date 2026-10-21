@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Literal
 
 from app.services.job_manager import job_manager
 
@@ -11,6 +12,55 @@ router = APIRouter(prefix="/jobs", tags=["jobs"])
 
 class MaintenanceRequest(BaseModel):
     enabled: bool
+
+
+class StopAllRequest(BaseModel):
+    confirm: Literal[True]
+
+
+class AdmissionRequest(BaseModel):
+    paused: bool
+
+
+@router.post('/admission')
+def admission(req: AdmissionRequest):
+    return job_manager.set_admission_paused(req.paused)
+
+
+@router.get('/control')
+def control_state():
+    return job_manager.control_state()
+
+
+@router.post('/stop-all')
+def stop_all(req: StopAllRequest):
+    return job_manager.stop_all()
+
+
+@router.get('/manage')
+def manage_jobs(limit: int = 500):
+    from app.services.sprite_store import sprite_store
+    contexts, pipeline_jobs = {}, {}
+    for sp in sprite_store.list_sprites():
+        for ref in sp.get('actions', []):
+            try:
+                action = sprite_store.get_action(sp['id'], ref['id'])
+            except Exception:
+                continue
+            context = {'sprite_id': sp['id'], 'sprite_name': sp['name'],
+                       'action_id': action['id'], 'action_name': action.get('name', '')}
+            contexts[action['id']] = context
+            jid = (action.get('pipeline') or {}).get('job_id')
+            if jid:
+                pipeline_jobs[jid] = context
+    rows = job_manager.list(limit=limit)
+    for row in rows:
+        meta = row.get('metadata') or {}
+        aid = meta.get('action_id') or meta.get('session_id')
+        if not aid and len(row.get('targets') or []) == 1:
+            aid = row['targets'][0]
+        row['context'] = contexts.get(aid) or pipeline_jobs.get(row['id']) or {}
+    return {'jobs': rows, **job_manager.control_state(), 'limit': max(1, min(limit, 2000))}
 
 
 @router.post('/maintenance')

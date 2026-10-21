@@ -346,6 +346,10 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
     def stage(i, msg, pct=0):
         ctx.report(min(99, (i + pct / 100) / total * 100), f"[{i + 1}/{total}] {msg}")
 
+    def check_cancelled():
+        if ctx.cancelled():
+            raise RuntimeError('已取消')
+
     class _Sub:
         """子步骤的 ctx：进度映射到总进度区间。"""
         def __init__(self, i): self.i = i
@@ -380,6 +384,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 with first_frame_gate.hold(sub):
                     run_gen_first_frame(sprite_id, action_id, info["set_id"],
                                         None, sub, remember=True)
+                check_cancelled()
                 done.append(step); state["done"] = done
                 if state.get("pause_after_firstframe"):
                     state.update({"status": "paused", "current": None,
@@ -406,6 +411,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                     run_generate(session, payload, sub)
                 finally:
                     generate_gate.release()
+                check_cancelled()
                 session = get_session(action_id)
                 done.append(step); state["done"] = done
             elif step == "extract":
@@ -421,6 +427,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                                                         float(rule['fps']))), session.lock:
                     run_extract(session, float(rule["start"]), end, float(rule["fps"]),
                                 rule.get("keep"), rule.get("total"), _Sub(i))
+                check_cancelled()
                 done.append(step); state["done"] = done
             elif step == "matting":
                 from app.api.background import run_bg_remove
@@ -438,6 +445,7 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                     with resources.hold(_Sub(i), 'matting', [session.id],
                                         get_settings().matting_memory_mb), session.lock:
                         run_bg_remove(session, indices, "ai", params, _Sub(i))
+                check_cancelled()
                 done.append(step); state["done"] = done
             elif step == "export":
                 from app.api.export_api import run_export
@@ -464,9 +472,11 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
                 with resources.hold(_Sub(i), 'export', [session.id],
                                     estimate_export_mb(session, indices, cfg)), session.lock:
                     run_export(session, cfg, indices, name, _Sub(i))
+                check_cancelled()
                 done.append(step); state["done"] = done
             _save_state(sprite_id, action_id, state)
 
+        check_cancelled()
         state.update({"status": "done", "current": None})
         _save_state(sprite_id, action_id, state)
         finish = finish_batch(sprite_id, state)
@@ -474,6 +484,10 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
         return {"status": "done", "done": done,
                 **({"batch_finish": finish} if finish else {})}
     except Exception as e:
+        if ctx.cancelled():
+            state.update(status='cancelled', current=None, error=None)
+            _save_state(sprite_id, action_id, state)
+            return {'status': 'cancelled', 'done': done}
         msg = str(e)
         state.update({"status": "error", "error": f"{STEP_LABEL.get(state.get('current'), '')}: {msg}"[:300]})
         _save_state(sprite_id, action_id, state)

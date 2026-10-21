@@ -2,7 +2,7 @@
 defineProps({
   jobs: { type: Array, required: true },
 })
-defineEmits(['cancel', 'close', 'jump'])
+defineEmits(['cancel', 'close', 'jump', 'manage'])
 
 const STATUS_TXT = { queued: '排队', running: '', done: '完成', error: '失败', cancelled: '已取消' }
 </script>
@@ -11,6 +11,7 @@ const STATUS_TXT = { queued: '排队', running: '', done: '完成', error: '失�
   <div class="panel job-panel">
     <div class="row2" style="align-items:center; margin-bottom:6px">
       <h3 style="margin:0">后台任务</h3>
+      <button class="small" @click="$emit('manage')">全局管理</button>
       <span class="hint">{{ jobs.filter(j => j.status === 'running').length }} 个进行中</span>
       <button class="small" title="隐藏任务栏" @click="$emit('close')">✕</button>
     </div>

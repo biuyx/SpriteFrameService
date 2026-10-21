@@ -305,6 +305,9 @@ const api = {
   recipe: (sid) => request('GET', `/api/sessions/${sid}/recipe`),
 
   // 任务
+  manageJobs: (limit = 500) => request('GET', `/api/jobs/manage?limit=${limit}`),
+  stopAllJobs: () => request('POST', '/api/jobs/stop-all', { json: { confirm: true } }),
+  setJobAdmission: (paused) => request('POST', '/api/jobs/admission', { json: { paused } }),
   job: (id) => request('GET', `/api/jobs/${id}`),
   cancelJob: (id) => request('POST', `/api/jobs/${id}/cancel`),
 }

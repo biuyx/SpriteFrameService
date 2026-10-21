@@ -40,6 +40,15 @@ TERMINAL_OK = "succeeded"
 TERMINAL_BAD = ("failed", "cancelled", "expired")
 
 
+def _cancel_remote_task(task_id):
+    # 停止请求在独立线程中执行，原轮询客户端可能已经退出并关闭。
+    client = ArkClient()
+    try:
+        return client.cancel_task(task_id)
+    finally:
+        client.close()
+
+
 # ------------------------------------------------------------ 首帧编码
 def _encode_first_frame(path: Path, max_side: int = 1024, *, image_bytes=None) -> Optional[str]:
     """读图 → 等比缩至最长边 ≤max_side → JPEG(q90) → data URL。
@@ -316,6 +325,8 @@ def run_generate(session, req: dict, ctx) -> dict:
                 validate_video_reference(session.id, req['template_id'])
             if hasattr(ctx, 'before_paid_call'):
                 ctx.before_paid_call()
+            if ctx.cancelled():
+                raise ArkError('已请求取消')
             created = client.create_task(
                 model, content,
                 resolution=params.get("resolution"),
@@ -330,7 +341,7 @@ def run_generate(session, req: dict, ctx) -> dict:
             take_store.update(take_id, {"remote_task_id": remote_id, "status": "running"})
             if hasattr(ctx, 'record_remote'):
                 ctx.record_remote(remote_id)
-            ctx.register_cancel(lambda: client.cancel_task(remote_id))
+            ctx.register_cancel(lambda: _cancel_remote_task(remote_id))
 
             info = poll_until_done(client, remote_id, ctx)
             ctx.report(92, "生成完成，下载视频...")
@@ -354,11 +365,12 @@ def run_generate(session, req: dict, ctx) -> dict:
         # 远端任务已创建且不是远端终态失败（网络中断/下载失败/本地超时）：
         # 保持 running，打开动作时自动重挂取回——付费结果不能丢
         recoverable = (bool(rec.get("remote_task_id"))
-                       and not isinstance(e, ArkError))
+                       and (ctx.cancelled() or not isinstance(e, ArkError)))
         if recoverable:
             take_store.update(take_id, {
                 "status": "running",
-                "error": f"轮询中断（重新打开该动作自动重挂取回）: {str(e)[:180]}",
+                "error": ('本地已停止，远端取消已尝试；请核对原远端任务并取回已有结果，不要重复生成'
+                          if ctx.cancelled() else f"轮询中断（重新打开该动作自动重挂取回）: {str(e)[:180]}"),
             })
         else:
             take_store.update(take_id, {"status": "failed", "error": str(e)[:300]})

@@ -16,6 +16,19 @@ class JobStore:
             db.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, "
                        "request_key TEXT UNIQUE, fingerprint TEXT NOT NULL, "
                        "created REAL NOT NULL, payload TEXT NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS scheduler_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+
+    def admission_paused(self, enabled=None):
+        with self.connect() as db:
+            if enabled is not None:
+                db.execute("INSERT INTO scheduler_state VALUES ('admission_paused', ?) "
+                           "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(bool(enabled)),))
+            row = db.execute("SELECT value FROM scheduler_state WHERE key='admission_paused'").fetchone()
+        return json.loads(row[0]) if row else False
+
+    def status_counts(self):
+        with self.connect() as db:
+            return dict(db.execute("SELECT json_extract(payload, '$.status'), COUNT(*) FROM jobs GROUP BY 1"))
 
     def claim_owner(self):
         """只有服务进程能恢复/调度任务，防止第二个 worker 把运行任务误判中断。"""

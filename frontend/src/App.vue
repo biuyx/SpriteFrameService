@@ -20,6 +20,7 @@ import EditorView from './views/EditorView.vue'
 import ExportView from './views/ExportView.vue'
 import HistoryView from './views/HistoryView.vue'
 import JobPanel from './components/JobPanel.vue'
+import GlobalJobsModal from './components/GlobalJobsModal.vue'
 import FrameBrowser from './components/FrameBrowser.vue'
 import VideoPanel from './components/VideoPanel.vue'
 import ResourceMenu from './components/ResourceMenu.vue'
@@ -36,6 +37,7 @@ const tab = currentTab
 const ready = ref(false)
 const err = ref('')
 const jobsVisible = ref(true)   // 后台任务栏是否显示
+const globalJobsOpen = ref(false)
 
 // 认证状态：needLogin 为真时整个应用被登录页挡住
 const authRequired = ref(false)
@@ -268,6 +270,7 @@ async function jumpToJob(j) {
         / <b>{{ store.currentSprite?.name }}</b>
       </span>
       <span class="spacer"></span>
+      <button class="small" @click="globalJobsOpen = true">全局任务</button>
       <button class="small" title="使用手册" @click="manualOpen = true">? 手册</button>
       <button class="small" @click="settingsOpen = true">⚙ 设置</button>
       <button v-if="authRequired" class="small" @click="doLogout">退出登录</button>
@@ -331,6 +334,7 @@ async function jumpToJob(j) {
         <button class="small primary" style="margin-left:8px" title="对当前动作自动执行 首帧→视频生成→抽帧→抠图→导出（已完成的步骤跳过）"
                 @click="pipelineOpen = true">⚡ 一键执行</button>
         <ResourceMenu style="margin-left:8px" @open="resModal = $event" />
+        <button class="small" @click="globalJobsOpen = true">全局任务</button>
         <button class="small" style="margin-left:8px" title="使用手册（定位到当前工序）"
                 @click="manualOpen = true">?</button>
         <button class="small" style="margin-left:8px" @click="settingsOpen = true">⚙</button>
@@ -372,12 +376,14 @@ async function jumpToJob(j) {
   </div>
 
   <JobPanel v-if="jobsVisible && jobs.items.length" :jobs="jobs.items"
-            @cancel="cancelJob" @close="jobsVisible = false" @jump="jumpToJob" />
+            @cancel="cancelJob" @close="jobsVisible = false" @jump="jumpToJob" @manage="globalJobsOpen = true" />
   <button v-if="!jobsVisible && jobs.items.length" class="job-toggle" @click="jobsVisible = true">
     后台任务 <span v-if="runningCount()">({{ runningCount() }} 进行中)</span>
   </button>
 
   <!-- 工作台里打开定位到当前工序；库/看板里从头开始，别落到上次停留的工序上 -->
+  <GlobalJobsModal v-if="globalJobsOpen" @close="globalJobsOpen = false"
+                   @jump="globalJobsOpen = false; jumpToJob($event)" />
   <ManualModal v-if="manualOpen" :topic="store.view === 'workbench' ? '' : 'concepts'"
                @close="manualOpen = false" />
   <SettingsModal v-if="settingsOpen" @close="settingsOpen = false" />
@@ -439,7 +445,7 @@ async function jumpToJob(j) {
 .act-switch select { max-width: 200px; padding: 3px 6px; font-size: 13px; }
 .act-switch button { padding: 3px 8px; }
 .cfm-mask {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 100;
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 1000;
   display: flex; align-items: center; justify-content: center;
 }
 .cfm-box {

@@ -763,7 +763,8 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
                                         req.prompt, ctx,
                                         prompt_meta=_prompt_meta(req),
                                         remember=req.remember),
-        pool="io", gate=first_frame_gate)
+        pool="io", gate=first_frame_gate,
+        metadata={'sprite_id': sprite_id, 'action_id': action_id})
     return {"job_id": job.id}
 
 
@@ -803,7 +804,8 @@ def batch_gen_first_frames(sprite_id: str, req: BatchFfGenRequest):
             (lambda _a: lambda ctx: run_gen_first_frame(
                 sprite_id, _a, req.set_id, req.prompt, ctx,
                 prompt_meta=_prompt_meta(req), remember=req.remember))(aid),
-            pool="io", gate=first_frame_gate)
+            pool="io", gate=first_frame_gate,
+            metadata={'sprite_id': sprite_id, 'action_id': aid})
         submitted.append({"action_id": aid, "name": name, "job_id": job.id})
     return {"submitted": submitted, "skipped": skipped}
 
@@ -835,7 +837,7 @@ def _pipeline_submit(sprite_id: str, action_id: str, name: str):
     job = job_manager.submit(
         "pipeline",
         (lambda _a: lambda ctx: run_pipeline(sprite_id, _a, ctx))(action_id),
-        pool="io")
+        pool="io", metadata={'sprite_id': sprite_id, 'action_id': action_id})
     return {"action_id": action_id, "name": name, "job_id": job.id}
 
 

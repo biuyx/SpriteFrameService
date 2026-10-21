@@ -102,7 +102,15 @@ class JobContext:
 
     def register_cancel(self, fn):
         with self._job._lock:
-            self._job._cancel_callbacks.append(fn)
+            cancelled = self._job.cancel_requested
+            if not cancelled:
+                self._job._cancel_callbacks.append(fn)
+        # 远端任务创建与登记回调之间可能已收到停止请求，不能漏掉取消。
+        if cancelled:
+            try:
+                fn()
+            except Exception:
+                logger.exception('取消任务回调失败')
 
 
 class JobManager:
@@ -120,10 +128,12 @@ class JobManager:
         self._export_executor = ThreadPoolExecutor(max_workers=get_settings().export_workers,
                                                   thread_name_prefix='spriteframe-export')
         self._io_executor = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix='spriteframe-io')
+        self._cancel_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='spriteframe-cancel')
         self._persistent = persistent or storage_path is not None
         self._storage_path = storage_path
         self._store = None
         self._maintenance = False
+        self._admission_paused = False
         self._pending = OrderedDict()
         self._pending_lock = self._jobs_lock
         self._admit_wake = threading.Event()
@@ -139,6 +149,7 @@ class JobManager:
                 store.claim_owner()
                 store.recover()
                 self._store = store
+                self._admission_paused = store.admission_paused()
                 for data in self._store.latest(self.MAX_JOBS):
                     job = Job.from_dict(data)
                     job._persist = self._save
@@ -187,7 +198,7 @@ class JobManager:
         self._closed.set()
         self._admit_wake.set()
         self._admitter.join(timeout=2)
-        for executor in (self._executor, self._export_executor, self._io_executor):
+        for executor in (self._executor, self._export_executor, self._io_executor, self._cancel_executor):
             executor.shutdown(wait=True)
         if self._store:
             self._store.close()
@@ -209,8 +220,8 @@ class JobManager:
         signature = json.dumps([job_type, target_ids, params], sort_keys=True, default=str)
         fingerprint = hashlib.sha256(signature.encode()).hexdigest()
         with self._jobs_lock:
-            if self._maintenance:
-                raise JobSubmissionError('服务正在维护更新，请稍后重试', 503)
+            if self._maintenance or self._admission_paused:
+                raise JobSubmissionError('新任务提交已暂停，请到全局任务管理中查看状态', 503)
             if request_key:
                 old = next((j for j in self._jobs.values() if j.request_key == request_key), None)
                 if old is None and self._store:
@@ -302,6 +313,63 @@ class JobManager:
             return {'enabled': self._maintenance,
                     'active': sum(j.finished_at is None for j in self._jobs.values())}
 
+    def set_admission_paused(self, paused):
+        self.initialize()
+        with self._jobs_lock:
+            if self._store:
+                self._store.admission_paused(bool(paused))
+            self._admission_paused = bool(paused)
+            return self.control_state()
+
+    def control_state(self):
+        self.initialize()
+        with self._jobs_lock:
+            counts = self._store.status_counts() if self._store else {}
+            if not self._store:
+                for job in self._jobs.values():
+                    counts[job.status.value] = counts.get(job.status.value, 0) + 1
+            return {'admission_paused': self._admission_paused, 'maintenance': self._maintenance,
+                    'accepting_jobs': not (self._admission_paused or self._maintenance), 'counts': counts,
+                    'active': sum(j.finished_at is None for j in self._jobs.values())}
+
+    def _request_cancel_locked(self, job):
+        if job.finished_at is not None or job.cancel_requested:
+            return []
+        with job._lock:
+            job.cancel_requested = True
+            if job.id in self._pending:
+                self._pending.pop(job.id)
+                job.status, job.message = JobStatus.CANCELLED, '已取消（排队中）'
+                job.finished_at = time.time()
+            callbacks = list(job._cancel_callbacks)
+        self._save(job, True)
+        return callbacks
+
+    @staticmethod
+    def _call_cancel(callback):
+        try:
+            callback()
+        except Exception:
+            logger.exception('取消任务回调失败')
+
+    def stop_all(self):
+        """先关闭准入，再原子地标记全部未完成任务；不删除任何素材或历史。"""
+        self.initialize()
+        with self._jobs_lock:
+            self.set_admission_paused(True)
+            active = [j for j in self._jobs.values() if j.finished_at is None]
+            queued_count = sum(j.id in self._pending for j in active)
+            callbacks = [cb for job in active for cb in self._request_cancel_locked(job)]
+            result = {'requested_count': len(active), 'job_ids': [j.id for j in active],
+                      'queued_cancelled': queued_count,
+                      'stopping_count': sum(j.finished_at is None for j in active),
+                      'admission_paused': True}
+        # 远端取消可能阻塞网络；不占任务锁、闸门锁或正在退出的任务线程池。
+        for callback in callbacks:
+            self._cancel_executor.submit(self._call_cancel, callback)
+        self._admit_wake.set()
+        return result
+
     def by_request_key(self, key):
         self.initialize()
         with self._jobs_lock:
@@ -328,19 +396,9 @@ class JobManager:
         if job is None or job.finished_at is not None:
             return False
         with self._jobs_lock:
-            with job._lock:
-                job.cancel_requested = True
-                if job.id in self._pending:
-                    self._pending.pop(job.id)
-                    job.status, job.message = JobStatus.CANCELLED, '已取消（排队中）'
-                    job.finished_at = time.time()
-                callbacks = list(job._cancel_callbacks)
-            self._save(job, True)
+            callbacks = self._request_cancel_locked(job)
         for callback in callbacks:
-            try:
-                callback()
-            except Exception:
-                logger.exception('取消任务回调失败')
+            self._call_cancel(callback)
         self._admit_wake.set()
         return True
 

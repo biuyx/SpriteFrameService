@@ -98,6 +98,8 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
             select_first_frame_set(sprite_id, action, key, set_id)
             if hasattr(ctx, 'before_paid_call'):
                 ctx.before_paid_call()
+            if ctx.cancelled():
+                raise RuntimeError('已取消')
             data = (generate_image(text, [ref, art], model=image_model) if image_model
                     else generate_image(text, [ref, art]))
         except ArkImageError as e:
