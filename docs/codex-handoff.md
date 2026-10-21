@@ -200,3 +200,11 @@ Windows327通过，Linux隔离325通过2缺参考工程跳过，Node导航5通�
 ## 空待归类隐藏及资源横向入口已上线（2026-10-20 09:41）
 
 09:40确认queued/running为空，完整核验229源文件、11构建文件及86后端基线；显式维护准入后再次确认空闲，正常运行干净部署脚本，完成后恢复准入。仅静态前端变化，无需重启，PID25898不变。备份 `/opt/sprite/.deploy/backups/20261020-094141.tar.gz`，部署提交5ef2edf，功能提交5784b3c（含8ba8640）。09:42验收健康/前端/认证角色任务目录200、未认证401，11构建磁盘/HTTP哈希匹配，86后端与403受保护元数据文件不变；房东店长2/租客14、原参考绑定/立绘/标签、只读权限及资源并发配置均维持，MCP19、SQLite、owner锁与日志正常。未提交加工或付费生成。发布目录data/releases/hide-empty-unassigned-20261020/release.json标记deployed，详见docs/hide-empty-unassigned-release.md及acceptance.json。成功后暂停automation-3，旧m3与automation-2保持暂停。
+
+## 调度死锁已修复并恢复（2026-10-21 09:26）
+
+用户明确授权先核对远端、防止重复付费，再修复调度死锁、补测试并恢复卡住的任务和服务。旧进程自10月20日18:55冻结，13running/1queued。定位ConcurrencyGate在闸门锁内上报进度，反向等待任务锁；准入线程持任务锁查询闸门，形成死锁。修复e88fb23将ctx回调移出闸门锁，补容量再检查/取消释放，JobContext提供job_id供流水线追溯。旧代码在新增回归稳定失败；Windows331通过、Linux隔离329通过2缺参考Spine工程跳过，聚焦40通过。
+
+只查询既有远端ID，5个均已成功；下载到 `/opt/sprite/.deploy/deadlock-recovery-20261021-092110`，验证SHA256和视频解码，备份任务/生成数据库及725份元数据。正常停止旧冻结服务后装回原take，不重新生成。正常部署脚本仅替换2个后端文件，备份 `/opt/sprite/.deploy/backups/20261021-092636.tar.gz`，09:26:37恢复PID36171，无--force或--no-restart。86后端/11静态哈希、部署前后873元数据、接口认证/MCP19/SQLite/owner锁与资源配置验收通过。
+
+10条可确定动作经原API各恢复一次：4个原未提交视频与1个首帧已成功，5条本地处理继续（1抠图+4等待）；抠图从已有6/49帧继续，09:32:55达到12/49，任务查询0.05–0.114秒，无新增错误。原5付费结果ID/哈希未变，22角色归属/模板绑定、密钥、额度和审批账本未变。4条历史强制首帧仅解除残留running、不重放付费流程；1条旧单独generate e5bdaa40d866因缺所属动作和参数保留中断，已询问用户，不猜测重发。详见docs/scheduler-deadlock-recovery.md与data/releases/scheduler-deadlock-20261021（audit、offline-recovery、resume-results、acceptance）。旧任务中断记录保留审计，恢复任务有新ID。无新自动化，不在当前本地处理期间再次部署。
