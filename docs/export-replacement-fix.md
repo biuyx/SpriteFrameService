@@ -26,4 +26,10 @@
 
 新增13项回归测试覆盖缩短帧数、非连续选帧、GIF/精灵图/WebP/Godot切换、原始及抠图帧/元数据不变、异常/空产物/取消保护、替换失败回滚、双重失败备份保留、旧半成品重试与暂存目录不可见。Windows全量352项通过；Linux隔离350项通过、2项缺少参考Spine工程跳过。Linux测试使用 `/tmp/sprite-mcp-phase2-testdeps` 中已有pytest依赖，独立临时源码和数据目录，未向生产虚拟环境安装依赖。
 
-本地证据 `data/releases/export-replacement-20261021`：cleanup-result.json、linux-tests.log、清理与验证脚本。待在再次确认空闲后用正常 `scripts/deploy_linux.sh` 更新修复，保持管理员暂停；不通过生产导出测试制造任务。
+本地证据 `data/releases/export-replacement-20261021`：cleanup-result.json、linux-tests.log、清理与验证脚本。
+
+## 上线及验收（12:11:19 / 12:11:44）
+
+功能提交 `9ab687e`。234份源文件的完整集合与SHA256、11份构建文件和86份生产后端基线核验通过，空闲时用正常 `scripts/deploy_linux.sh` 上线，仅替换 `backend/app/api/export_api.py`；代码回滚备份 `/opt/sprite/.deploy/backups/20261021-121118.tar.gz`。未使用force或no-restart，服务12:11:19恢复，PID43525。
+
+12:11:44起只读验收通过：健康、前端、角色、目录、任务及管理接口200，未认证控制接口401；管理员暂停保持true、接收任务false，运行/排队0。410份任务记录逐条载荷哈希完全不变，无新提交或重放。88,024份整理后素材文件大小/mtime、1825份精灵库JSON和根目录配置哈希不变；86份后端文件匹配修复快照，11份静态产物未变。两个实际下载ZIP分别49/26帧，每一张与整理后文件SHA256相同。MCP19工具、SQLite完整性、单进程owner锁和CPU/资源并发配置正常，启动后无新增错误。没有通过生产加工或导出任务做冒烟测试。
