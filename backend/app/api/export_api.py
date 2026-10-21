@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
+import shutil
+import tempfile
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -173,18 +177,30 @@ def _apply_to_frames(frames: list, cfg, ctx):
     return copies, notes
 
 
+def _publish_export(staged: Path, destination: Path) -> None:
+    """发布整份新产物；替换失败时恢复旧目录，回滚失败也保留备份供恢复。"""
+    backup = destination.parent.parent / ('.export-previous-' + uuid4().hex)
+    had_previous = destination.exists()
+    if had_previous:
+        destination.replace(backup)
+    try:
+        staged.replace(destination)
+    except BaseException:
+        if had_previous:
+            backup.replace(destination)
+        raise
+    if had_previous:
+        try:
+            shutil.rmtree(backup)
+        except OSError:
+            logging.getLogger(__name__).warning('旧导出备份清理失败，保留于 %s', backup)
+
+
 def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
     """导出任务体（端点与自动流水线共用）。调用方需持有会话锁。"""
     from app.services.resources import resources, estimate_export_mb
     resources.check_estimate(session.id, estimate_export_mb(session, indices, config))
-    export_dir = session.storage.export_dir(export_name)
-    incomplete = export_dir / '.incomplete'
-    if incomplete.exists():
-        for partial in export_dir.iterdir():
-            if partial.is_file() and partial != incomplete:
-                partial.unlink()
-    incomplete.touch()  # 失败或进程中断后保留，不能把半成品误判成已完成。
-
+    export_dir = _safe_child(session.storage.exports_dir, export_name)
     try:
         frames = []
         session.load_display_arrays(indices)
@@ -197,7 +213,6 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
             raise ValueError('没有可导出的帧，请重新选择帧后导出')
 
         cfg = config.model_copy()
-        cfg.output_path = export_dir
         # 文件名跟目录名用同一个已清洗的值：既跟着「角色_动作」走，
         # 也不让 ../ 之类的输入顺着 f"{output_name}.png" 跑出导出目录
         cfg.output_name = export_name
@@ -211,15 +226,24 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
         frames, size_notes = _apply_to_frames(frames, cfg, ctx)
 
         ctx.report(30, "开始导出...")
-        exporter = Exporter()
-        main_path, info = exporter.export(frames, cfg)
-
-
-        output_dir = Path(main_path) if Path(main_path).is_dir() else Path(main_path).parent
-        files = [f.name for f in sorted(output_dir.iterdir()) if f.is_file() and not f.name.startswith('.')]
-        if not files:
-            raise ValueError('导出没有生成文件，请检查帧图像是否完整')
-        incomplete.unlink(missing_ok=True)
+        # 暂存目录不放在 exports/，列表和下载始终只看到已发布的完整版本。
+        with tempfile.TemporaryDirectory(prefix='.export-work-', dir=session.storage.root) as work:
+            staged = Path(work) / export_name
+            staged.mkdir()
+            cfg.output_path = staged
+            if ctx.cancelled():
+                raise RuntimeError('已取消')
+            main_path, info = Exporter().export(frames, cfg)
+            files = [f.name for f in sorted(staged.iterdir())
+                     if f.is_file() and not f.name.startswith('.')]
+            if not files:
+                raise ValueError('导出没有生成文件，请检查帧图像是否完整')
+            main_name = Path(main_path).name
+            if isinstance(info, str):
+                info = info.replace(str(staged), str(export_dir))
+            if ctx.cancelled():
+                raise RuntimeError('已取消')
+            _publish_export(staged, export_dir)
         ctx.report(100, "导出完成")
         from app.services import recipe
         recipe.record_step(session, "export",
@@ -232,7 +256,7 @@ def run_export(session, config, indices: list, export_name: str, ctx) -> dict:
                            {"files": files})
         return {
             "name": export_name,
-            "main": Path(main_path).name,
+            "main": main_name,
             "info": info,
             "files": files,
             "dir": str(export_dir),

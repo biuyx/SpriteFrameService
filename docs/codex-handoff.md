@@ -1,5 +1,9 @@
 # SpriteFrameService 开发交接
 
+## 2026-10-21 同名导出残留修复
+
+详见 `docs/export-replacement-fix.md`。`run_export` 已改为独立暂存、成功后整目录替换，失败/取消保留旧版本；13项新增回归，Windows352通过，Linux隔离350通过/2缺参考工程跳过。店长1的assess/exclusivewait已保留当前49/26帧，72张旧尾帧及49张旧别名产物归档；完整两动作原素材备份 `/opt/sprite/.deploy/export-cleanup-20261021-120608/shop1-actions-original.tar.gz` 已逐文件校验。任务保持管理员暂停、0运行/排队，没有生产加工或重新提交。上线状态在专项文档验收段更新。
+
 交接日期：2026 年 10 月 16 日。用户要求将 Claude 的项目进展与上下文迁到当前 Codex 对话继续执行。
 
 ## 当前基线
