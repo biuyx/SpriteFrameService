@@ -77,6 +77,10 @@ class JobContext:
     def __init__(self, job):
         self._job = job
 
+    @property
+    def job_id(self):
+        return self._job.id
+
     def _save(self, force=False):
         if self._job._persist:
             self._job._persist(self._job, force)

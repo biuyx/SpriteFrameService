@@ -137,3 +137,13 @@ def test_进度与消息可上报():
     assert job.progress == 40
     assert _wait(lambda: job.status == JobStatus.DONE)
     assert job.progress == 100.0
+
+
+def test_context_exposes_persisted_job_id_for_pipeline_recovery():
+    jm = JobManager()
+    try:
+        job = jm.submit('pipeline', lambda ctx: ctx.job_id, pool='io')
+        assert _wait(lambda: job.finished_at is not None)
+        assert job.result == job.id
+    finally:
+        jm.close()

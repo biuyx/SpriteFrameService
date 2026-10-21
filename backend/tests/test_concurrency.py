@@ -154,3 +154,93 @@ def test_心跳退出后不再上报():
     n = len(ctx.reports)
     time.sleep(0.3)
     assert len(ctx.reports) == n, "心跳线程退出后仍在上报"
+
+
+def test_waiting_pipeline_report_cannot_block_scheduler_gate_probe():
+    """调度器持任务锁查闸门时，流水线进度回调不能反向持闸门锁。"""
+    from app.services.job_manager import Job, JobContext, JobManager
+
+    manager = JobManager()
+    job = Job(id='waiting-pipeline', type='pipeline')
+    job._persist = manager._save
+    ctx = JobContext(job)
+    gate = ConcurrencyGate(lambda: 1)
+    assert gate.try_acquire()
+    reporting, probed = threading.Event(), threading.Event()
+    errors = []
+
+    class WaitingContext:
+        def cancelled(self):
+            return ctx.cancelled()
+
+        def report(self, percent, message):
+            reporting.set()
+            ctx.report(percent, message)
+
+    def wait():
+        try:
+            gate.acquire(WaitingContext())
+            gate.release()
+        except Exception as exc:
+            errors.append(exc)
+
+    def probe():
+        assert not gate.try_acquire()
+        probed.set()
+
+    waiter = threading.Thread(target=wait, daemon=True)
+    checker = threading.Thread(target=probe, daemon=True)
+    try:
+        with manager._jobs_lock:
+            waiter.start()
+            assert reporting.wait(2)
+            # 此时真实 JobContext.report 正在等待任务锁。闸门仍须可查询，
+            # 否则实际准入线程会持任务锁等待闸门，形成永久死锁。
+            checker.start()
+            assert probed.wait(1), 'progress report held the gate while waiting for the job lock'
+    finally:
+        job.cancel_requested = True
+        gate.release()
+        waiter.join(3)
+        if checker.ident is not None:
+            checker.join(3)
+        manager.close()
+    assert not waiter.is_alive() and not checker.is_alive()
+    assert len(errors) == 1 and str(errors[0]) == '已取消'
+    assert gate.active == 0
+
+
+def test_cancel_after_reservation_releases_slot_without_starting_paid_work():
+    gate = ConcurrencyGate(lambda: 1)
+
+    class CancelAtReservation:
+        def cancelled(self):
+            return gate.active == 1
+
+    with pytest.raises(RuntimeError, match='已取消'):
+        gate.acquire(CancelAtReservation())
+    assert gate.active == 0
+    assert gate.try_acquire()
+    gate.release()
+
+
+def test_release_during_progress_report_is_not_missed():
+    gate = ConcurrencyGate(lambda: 1)
+    assert gate.try_acquire()
+
+    class ReleaseDuringReport(FakeCtx):
+        def report(self, percent, message):
+            super().report(percent, message)
+            # 用另一线程释放，验证回调期间没有锁；通知发生在 wait 之前。
+            done = threading.Event()
+            def release():
+                gate.release()
+                done.set()
+            thread = threading.Thread(target=release, daemon=True)
+            thread.start()
+            assert done.wait(1)
+            thread.join()
+
+    gate.acquire(ReleaseDuringReport())
+    assert gate.active == 1
+    gate.release()

@@ -63,17 +63,31 @@ class ConcurrencyGate:
         return self._active
 
     def acquire(self, ctx) -> None:
-        with self._cond:
-            while self._active >= max(1, self._limit()):
-                ctx.report(1, f"排队中（{self._label}并发已满 {self._active} 个）...")
-                if ctx.cancelled():
-                    raise RuntimeError("已取消")
-                self._cond.wait(timeout=2)
-            # 闸门空出来时循环条件先不成立就直接放行了，这里再查一次：
-            # 排队期间点了取消就不该继续——这些调用是按次计费的
+        while True:
             if ctx.cancelled():
                 raise RuntimeError("已取消")
-            self._active += 1
+            with self._cond:
+                acquired = self._active < max(1, self._limit())
+                if acquired:
+                    self._active += 1
+                active = self._active
+            # ctx.report 会取得任务管理器锁；调度线程持该锁调用 try_acquire。
+            # 所有 ctx 回调都必须在闸门锁外，避免两把锁反向等待。
+            if acquired:
+                try:
+                    if ctx.cancelled():
+                        raise RuntimeError("已取消")
+                except BaseException:
+                    self.release()
+                    raise
+                return
+            ctx.report(1, f"排队中（{self._label}并发已满 {active} 个）...")
+            if ctx.cancelled():
+                raise RuntimeError("已取消")
+            with self._cond:
+                # 上报期间可能已释放许可，重新检查可避免错过通知后空等。
+                if self._active >= max(1, self._limit()):
+                    self._cond.wait(timeout=2)
 
     def try_acquire(self) -> bool:
         """非阻塞取许可，供调度层做准入：拿不到就让任务留在队列里，
