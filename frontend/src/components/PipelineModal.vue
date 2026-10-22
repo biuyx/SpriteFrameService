@@ -40,7 +40,7 @@ const targetIds = computed(() => props.preselected?.length
 const steps = computed(() => STEPS.map(s => s.key).filter(k => stepOn.value[k]))
 
 const ICON = { run: '▶', skip: '⏭', blocked: '⛔' }
-const STATUS_TXT = { queued: '排队', running: '进行中', paused: '待确认', done: '完成', error: '失败' }
+const STATUS_TXT = { queued: '排队', running: '进行中', stopping: '停止中', cancelled: '已停止', paused: '待确认', done: '完成', error: '失败' }
 
 let planTimer = null
 async function replan() {

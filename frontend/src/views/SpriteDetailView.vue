@@ -34,7 +34,7 @@ const spineOpen = ref(false)
 const reviewMode = ref('')      // '' 关闭 | frame | video —— 素材速览
 
 const STATUS_LABEL = { new: '未开始', active: '进行中', final: '已定稿' }
-const PIPE_TXT = { queued: '流水线排队', running: '流水线进行中', paused: '待确认', done: '流水线完成', error: '流水线失败' }
+const PIPE_TXT = { queued: '流水线排队', running: '流水线进行中', stopping: '流水线停止中', cancelled: '流水线已停止', paused: '待确认', done: '流水线完成', error: '流水线失败' }
 const pausedIds = computed(() => actions.value.filter(a => a.pipeline?.status === 'paused').map(a => a.id))
 async function resumePaused() {
   if (!pausedIds.value.length) return

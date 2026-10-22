@@ -306,6 +306,14 @@ class JobManager:
                 job = Job.from_dict(data) if data else None
             return job
 
+    def active_job(self, job_type, **metadata):
+        """查询真实未退出任务；取消请求发出后仍占位，且不受历史分页限制。"""
+        self.initialize()
+        with self._jobs_lock:
+            return next((j for j in self._jobs.values()
+                         if j.type == job_type and j.finished_at is None
+                         and all(j.metadata.get(k) == v for k, v in metadata.items())), None)
+
     def maintenance(self, enabled):
         self.initialize()
         with self._jobs_lock:
