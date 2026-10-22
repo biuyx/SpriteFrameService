@@ -39,6 +39,30 @@ class VideoProcessor:
     def video_info(self) -> Optional[VideoInfo]:
         return self._video_info
 
+    @staticmethod
+    def _read_info(cap, path: Path) -> VideoInfo:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        return VideoInfo(path=path, width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                         height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), fps=fps,
+                         frame_count=count, duration=count / fps if fps > 0 else 0,
+                         codec=''.join(chr((fourcc >> 8*i) & 255) for i in range(4)))
+
+    @staticmethod
+    def read_metadata(path: str) -> VideoInfo:
+        """查询元数据后立即关闭解码器，不为每个排队动作常驻线程/缓冲。"""
+        source = Path(path)
+        if not source.is_file():
+            raise FileNotFoundError(f'视频文件不存在: {path}')
+        cap = cv2.VideoCapture(str(source))
+        try:
+            if not cap.isOpened():
+                raise IOError(f'无法打开视频文件: {path}')
+            return VideoProcessor._read_info(cap, source)
+        finally:
+            cap.release()
+
     def load_video(self, path: str) -> VideoInfo:
         """加载视频文件并提取元数据"""
         self.release()
@@ -51,25 +75,7 @@ class VideoProcessor:
         if not self._cap.isOpened():
             raise IOError(f"无法打开视频文件: {path}")
 
-        width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = self._cap.get(cv2.CAP_PROP_FPS)
-        frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        fourcc = int(self._cap.get(cv2.CAP_PROP_FOURCC))
-        codec = "".join([chr((fourcc >> 8 * i) & 0xFF) for i in range(4)])
-
-        duration = frame_count / fps if fps > 0 else 0
-
-        self._video_info = VideoInfo(
-            path=video_path,
-            width=width,
-            height=height,
-            fps=fps,
-            frame_count=frame_count,
-            duration=duration,
-            codec=codec
-        )
+        self._video_info = self._read_info(self._cap, video_path)
 
         self._detect_seek_mode()
         self._adjust_cache_settings()

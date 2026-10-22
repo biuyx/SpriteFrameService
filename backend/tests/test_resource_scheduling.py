@@ -71,11 +71,13 @@ def test_pipeline_reservation_and_api_use_same_target_and_memory_coordinator():
 def test_low_real_memory_does_not_evict_a_model_in_use(monkeypatch):
     import app.services.resources as module
     from app.core.background_remover import BackgroundRemover
-    monkeypatch.setattr(module, 'available_memory_mb', lambda: 100)
+    free = {'mb': 2000}
+    monkeypatch.setattr(module, 'available_memory_mb', lambda: free['mb'])
     evictions = []
     monkeypatch.setattr(BackgroundRemover, 'release_idle_cache', lambda: evictions.append(1))
     _, coord = manager()
     assert coord.try_acquire('matting', ['a'], 600) is None
+    free['mb'] = 100
     assert '实际可用内存' in coord.try_acquire('export', ['b'], 100)
     assert not evictions
     coord.release('matting', ['a'], 600)

@@ -158,7 +158,7 @@ def _refresh_session_video(session, take_store: TakeStore, take_id: str) -> None
     try:
         p = session.storage.video_path
         if p and p.exists():
-            session.video_info = session.video_processor.load_video(str(p))
+            session.load_video_info(str(p))
     except Exception:
         logger.exception("刷新视频元数据失败（不影响生成结果）")
 

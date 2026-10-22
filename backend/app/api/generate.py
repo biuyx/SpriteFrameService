@@ -512,8 +512,7 @@ def select_take(session_id: str, take_id: str):
         raise HTTPException(status_code=400, detail="切换失败")
 
     try:
-        session.video_info = session.video_processor.load_video(
-            str(session.storage.video_path))
+        session.load_video_info(str(session.storage.video_path))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"视频不可解析: {e}")
 
@@ -546,7 +545,7 @@ def delete_take(session_id: str, take_id: str):
         p = session.storage.video_path
         if p:
             try:
-                session.video_info = session.video_processor.load_video(str(p))
+                session.load_video_info(str(p))
             except Exception:
                 pass
     return {"deleted": ok, "id": take_id,

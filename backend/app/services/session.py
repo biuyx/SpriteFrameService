@@ -128,6 +128,11 @@ class Session:
             self._video_processor.release()
             self._video_processor = None
 
+    def load_video_info(self, path: str) -> VideoInfo:
+        self.release_video_handle()
+        self.video_info = VideoProcessor.read_metadata(path)
+        return self.video_info
+
     # --- 魔棒选区 ---
     MAX_WAND_MASKS = 8
 
@@ -213,7 +218,7 @@ class SessionManager:
         video_path = session.storage.video_path
         if video_path and video_path.exists():
             try:
-                session.video_info = session.video_processor.load_video(str(video_path))
+                session.load_video_info(str(video_path))
             except Exception:
                 session.video_info = None
 

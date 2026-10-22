@@ -28,7 +28,14 @@ def _isolated_data_dir(tmp_path_factory):
     get_settings.cache_clear()
     assert get_settings().resolved_data_dir == d, "数据目录未隔离，测试拒绝继续"
 
+    # 测试仅处理小图/替身模型，资源准入用确定的环境；真实低内存由专门用例模拟。
+    # 否则共享测试机上正运行的模型会让这些不做推理的单元用例无限排队。
+    memory_patch = pytest.MonkeyPatch()
+    memory_patch.setattr('app.services.resources.available_memory_mb', lambda: float('inf'))
+
     yield d
+
+    memory_patch.undo()
 
     if old is None:
         os.environ.pop("SPRITE_DATA_DIR", None)

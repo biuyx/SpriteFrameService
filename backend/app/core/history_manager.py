@@ -92,7 +92,7 @@ class HistoryManager:
         if step_dir is not None:
             for idx in frame_indices:
                 frame = frame_manager.get_frame(idx)
-                if frame is None or frame.display_image is None:
+                if frame is None or not (frame.has_image or frame.has_processed):
                     continue
                 path = self._write_snapshot(step_dir, idx, frame)
                 if path is None:

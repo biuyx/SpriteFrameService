@@ -91,8 +91,6 @@ def run_bg_remove(session, indices: list, mode_name: str, params: dict, ctx) -> 
     ctx.report(0, "开始抠图...")
 
     try:
-        arrays = session.load_display_arrays(indices)
-
         # 历史快照（供回退）
         session.history.push_snapshot(
             "背景去除",
@@ -101,13 +99,15 @@ def run_bg_remove(session, indices: list, mode_name: str, params: dict, ctx) -> 
         )
 
         processed = 0
-        for i, (idx, img) in enumerate(zip(indices, arrays)):
+        for i, idx in enumerate(indices):
             if ctx.cancelled():
                 break
+            img = session.load_display_array(idx)
             if img is None:
                 continue
             result = remover.remove_background(img, mode=mode, ai_params=params, color_params=params)
             session.save_processed(idx, result)
+            del img, result
             session.persist_metadata()  # 中断后保留已完成的帧，重试只加工剩余帧。
             processed += 1
             ctx.report((i + 1) / len(indices) * 100, f"抠图 {i+1}/{len(indices)}")
@@ -122,6 +122,8 @@ def run_bg_remove(session, indices: list, mode_name: str, params: dict, ctx) -> 
         return {"mode": mode_name, "processed": processed, "total": len(indices)}
     finally:
         session.clear_frame_arrays()
+        # 流水线的取消回调会持有 remover 到后续导出结束，不应连带保留模型工作区。
+        remover._rembg_session = None
 
 
 @router.post("/remove")

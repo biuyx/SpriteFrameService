@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     # 0 = 按物理内存的 85% 自动设置；CPU BRIA 按实测预留 16 GiB。
     local_memory_budget_mb: int = Field(default=0, ge=0)
     matting_memory_mb: int = Field(default=16384, ge=1)
+    matting_threads: int = Field(default=4, ge=1, le=32)
     cors_origins: str = "*"          # 逗号分隔的允许来源，"*" 为不限制
     debug_errors: bool = False       # 任务失败时是否把完整 traceback 返回给前端
 

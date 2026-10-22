@@ -47,7 +47,7 @@ async def upload_video(session_id: str, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="文件为空")
 
     try:
-        video_info = session.video_processor.load_video(str(dest))
+        video_info = session.load_video_info(str(dest))
     except Exception as e:
         take_store.delete(take["id"])
         raise HTTPException(status_code=400, detail=f"无法解析视频: {e}")
@@ -95,5 +95,5 @@ def get_video_info(session_id: str):
         path = session.storage.video_path
         if path is None:
             raise HTTPException(status_code=404, detail="未上传视频")
-        session.video_info = session.video_processor.load_video(str(path))
+        session.load_video_info(str(path))
     return session.video_info.model_dump()

@@ -86,6 +86,12 @@ class U2NetLocalSession:
         # 上百行 shape 推断警告（可安全忽略，运行时按 lenient 合并）。压到 ERROR
         # 级别，避免淹没服务日志。
         sess_opts.log_severity_level = 3
+        # CPU arena 会保留历史峰值；批量推理和多个动作共用服务时不能无限累积。
+        # 禁止 arena/内存模式缓存，限制算子线程，工作缓冲随本次推理释放。
+        sess_opts.enable_cpu_mem_arena = False
+        sess_opts.enable_mem_pattern = False
+        sess_opts.intra_op_num_threads = get_settings().matting_threads
+        sess_opts.inter_op_num_threads = 1
 
         if force_cpu:
             providers = ['CPUExecutionProvider']
@@ -222,6 +228,16 @@ class BackgroundRemover:
         """由调度器确认无抠图任务时调用，为大导出释放常驻模型与 arena。"""
         with cls._cache_lock:
             cls._model_cache.clear()
+        import gc
+        gc.collect()
+        # glibc 可能保留已释放的工作区；空闲时归还给系统，使准入依据实际内存。
+        import sys
+        if sys.platform.startswith('linux'):
+            import ctypes
+            try:
+                ctypes.CDLL(None).malloc_trim(0)
+            except (AttributeError, OSError):
+                pass
 
     @staticmethod
     def get_available_models() -> list:

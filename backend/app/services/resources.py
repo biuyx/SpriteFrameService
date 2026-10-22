@@ -59,7 +59,7 @@ class ResourceCoordinator:
                 return '等待同动作的其他任务完成'
             if self._used + memory_mb > self.budget():
                 return f'排队中（内存预算不足，已预留 {self._used}/{self.budget()} MiB）'
-            if resource != 'matting' and available_memory_mb() < memory_mb + 512:
+            if available_memory_mb() < memory_mb + 512:
                 # 模型的 arena 会在任务结束后继续常驻。没有抠图在使用时才可释放缓存。
                 module = sys.modules.get('app.core.background_remover')
                 if self.heavy_gate.active == 0 and module is not None:
