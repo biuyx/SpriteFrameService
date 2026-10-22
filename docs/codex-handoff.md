@@ -1,5 +1,13 @@
 # SpriteFrameService 开发交接
 
+## 2026-10-22 OOM修复及35条中断记录核对恢复
+
+详见 `docs/oom-recovery-20261022.md`。21日19:43内核因OOM杀服务，35中断记录实际为33条免费流水线和同动作2条生成；34动作的当前视频均已存在且验证可读，相关4个远端ID成功。59视频版本和105元数据、两SQLite备份 `/opt/sprite/.deploy/oom-recovery-20261022-092218`；不重复生视频。原缺参数e5bdaa40d866和今日额外DNS错误不在恢复范围，未重提。
+
+修复逐帧抠图、磁盘历史快照、元数据短生命周期解码器、ONNX CPU关闭arena/内存模式缓存及内部4线程、实际物理内存准入（包含抠图）、闲置模型工作区回收。新增9回归；Windows361通过、Linux359通过/2缺参考工程跳过。当前手动抠图09:25:17完成后，09:27:10正常上线1b0f3e6，代码备份 `/opt/sprite/.deploy/backups/20261022-092708.tar.gz`。四合成帧真实BRIA峰值7611.4MiB、帧间约2025MiB稳定、释放后89.9MiB；保留CPU/本地1/导出1/18432预算/16384抠图预留/视频5/首帧3。
+
+已恢复33条免费流水线，优先导出的店长6/sleep和店长7/walk各49帧产物通过验收；其余31条在处理/等待资源。09:37:02服务RSS约3.2GiB、峰值约7.6GiB，已有6/exclusivewait补到22/49，无新错误。管理员暂停/maintenance均false，接收新任务true。旧35中断记录保留，恢复job_id映射和35行CSV位于本地data/releases/oom-recovery-20261022，付费台账未变，未创建付费任务。
+
 ## 2026-10-21 同名导出残留修复
 
 详见 `docs/export-replacement-fix.md`。`run_export` 已改为独立暂存、成功后整目录替换，失败/取消保留旧版本；13项新增回归，Windows352通过，Linux隔离350通过/2缺参考工程跳过。店长1的assess/exclusivewait已保留当前49/26帧，72张旧尾帧及49张旧别名产物归档；完整两动作原素材备份 `/opt/sprite/.deploy/export-cleanup-20261021-120608/shop1-actions-original.tar.gz` 已逐文件校验。任务保持管理员暂停、0运行/排队，没有生产加工或重新提交。上线状态在专项文档验收段更新。

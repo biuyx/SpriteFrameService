@@ -25,6 +25,7 @@ def test_matting_streams_one_frame_and_keeps_disk_undo(disk_frames,ctx,monkeypat
     monkeypatch.setattr(s,'load_display_arrays',lambda *args:pytest.fail('must not load whole batch'))
     def remove(self,img,**kwargs):
         removers.append(self)
+        self._rembg_session = object()  # 模拟取消回调持有 remover 时的真实模型引用。
         assert sum(f.image is not None or f.processed_image is not None for f in s.frame_manager.frames)==1
         seen.append(img.shape)
         return np.full_like(img,255)
