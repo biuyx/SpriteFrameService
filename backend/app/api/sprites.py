@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import shutil
-import threading
 import time
 import uuid
 from functools import wraps
@@ -24,6 +23,7 @@ from app.services.sprite_store import (
     COMMON_ACTION_NAMES, SpriteStoreError, sprite_store,
 )
 from app.utils.image_utils import encode_preview, read_image
+from app.services.video_generation import submission_lock as _pipeline_submission_lock
 
 router = APIRouter(prefix="/sprites", tags=["sprites"])
 
@@ -822,6 +822,7 @@ class PipelinePlanRequest(BaseModel):
 
 
 class PipelineStartRequest(PipelinePlanRequest):
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     pause_after_firstframe: bool = True
     model: Optional[str] = None
     resolution: Optional[str] = None
@@ -831,10 +832,8 @@ class PipelineStartRequest(PipelinePlanRequest):
 
 
 class PipelineResumeRequest(BaseModel):
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     action_ids: List[str] = Field(..., min_length=1, max_length=200)
-
-
-_pipeline_submission_lock = threading.RLock()
 
 
 def _serialize_pipeline_submission(fn):
@@ -869,15 +868,43 @@ def _pipeline_view(action, sprite_id):
 
 
 def _pipeline_busy(sprite_id, action_id, name):
+    from app.services.job_manager import job_manager
+    from app.services.video_generation import active_video, require_resolved
     job = _active_pipeline(sprite_id, action_id)
     if job is None:
+        video = active_video(job_manager, action_id)
+        if video:
+            return {'action_id': action_id, 'name': name, 'job_id': video.id,
+                    'reason': '原视频任务正在停止，请等待退出' if video.cancel_requested else
+                              '原视频生成任务已运行或排队，请先等待原任务，避免重复生成'}
+        try:
+            require_resolved(sprite_store.action_dir(sprite_id, action_id))
+        except ValueError as exc:
+            return {'action_id': action_id, 'name': name, 'reason': str(exc)}
         return None
     reason = ('流水线正在停止，请等待退出' if job.cancel_requested else
               '流水线已排队' if job.status.value == 'queued' else '流水线进行中')
     return {'action_id': action_id, 'name': name, 'reason': reason, 'job_id': job.id}
 
 
-def _pipeline_submit(sprite_id: str, action_id: str, name: str, state: dict):
+def _pipeline_request(sprite_id, req, operation, action_id):
+    params = {'operation': operation, **req.model_dump(exclude={'request_id'})}
+    key = f'pipeline:{sprite_id}:{operation}:{req.request_id}:{action_id}' if req.request_id else None
+    return key, params
+
+
+def _pipeline_replay(key, params, action_id, name):
+    from app.services.job_manager import job_manager, JobSubmissionError
+    old = job_manager.by_request_key(key) if key else None
+    if not old:
+        return None
+    if old.metadata.get('pipeline_request') != params:
+        raise JobSubmissionError('请求编号已用于其他流水线参数，请重新确认操作')
+    return {'action_id': action_id, 'name': name, 'job_id': old.id, 'reused': True}
+
+
+def _pipeline_submit(sprite_id: str, action_id: str, name: str, state: dict,
+                     request_key=None, request_params=None):
     from app.core.pipeline import run_pipeline
     from app.services.job_manager import job_manager
     previous = sprite_store.get_action(sprite_id, action_id).get('pipeline')
@@ -893,7 +920,10 @@ def _pipeline_submit(sprite_id: str, action_id: str, name: str, state: dict):
 
     try:
         job = job_manager.submit('pipeline', run, pool='io',
-                                 metadata={'sprite_id': sprite_id, 'action_id': action_id})
+                                 target=action_id, params=request_params, request_key=request_key,
+                                 metadata={'sprite_id': sprite_id, 'action_id': action_id,
+                                           'pipeline_request': request_params,
+                                           'pipeline_batch': state.get('batch')})
     except Exception:
         sprite_store.update_action(sprite_id, action_id, {'pipeline': previous})
         raise
@@ -935,8 +965,9 @@ def pipeline_start(sprite_id: str, req: PipelineStartRequest):
         batch = {"id": uuid.uuid4().hex[:8], "members": [],
                  "spine": dict(req.spine_options or {})}
     # 先过一遍筛出真正要跑的，批次成员要在写状态前就确定
-    runnable, skipped = [], []
+    runnable, skipped, submitted = [], [], []
     spine_ready = True
+    previous_batch = None
     for aid in dict.fromkeys(req.action_ids):
         try:
             action = sprite_store.get_action(sprite_id, aid)
@@ -945,6 +976,13 @@ def pipeline_start(sprite_id: str, req: PipelineStartRequest):
             spine_ready = False
             continue
         name = action.get("name", aid)
+        key, request_params = _pipeline_request(sprite_id, req, 'start', aid)
+        replay = _pipeline_replay(key, request_params, aid, name)
+        if replay:
+            submitted.append(replay)
+            from app.services.job_manager import job_manager
+            previous_batch = job_manager.get(replay['job_id']).metadata.get('pipeline_batch') or previous_batch
+            continue
         busy = _pipeline_busy(sprite_id, aid, name)
         if busy:
             skipped.append(busy)
@@ -961,10 +999,12 @@ def pipeline_start(sprite_id: str, req: PipelineStartRequest):
         runnable.append((aid, name))
 
     if batch is not None:
-        batch["members"] = [aid for aid, _ in runnable]
+        batch = previous_batch or {**batch, 'members': [aid for aid, _ in runnable]}
 
-    submitted = []
     for aid, name in runnable:
+        if previous_batch and aid not in previous_batch['members']:
+            skipped.append({'action_id': aid, 'name': name, 'reason': '批次可执行动作已变化，请重新确认新批次'})
+            continue
         state = {
             "steps": steps, "force": req.force or [], "set_id": req.set_id,
             "pause_after_firstframe": req.pause_after_firstframe,
@@ -974,13 +1014,15 @@ def pipeline_start(sprite_id: str, req: PipelineStartRequest):
         }
         if batch is not None:
             state["batch"] = batch
-        submitted.append(_pipeline_submit(sprite_id, aid, name, state))
+        key, request_params = _pipeline_request(sprite_id, req, 'start', aid)
+        submitted.append(_pipeline_submit(sprite_id, aid, name, state, key, request_params))
 
     # 请求了收口但没有任何动作要跑（都已完成）：直接导出，别让用户空等
     finish = None
     if req.spine and not submitted and spine_ready:
         from app.core.pipeline import submit_spine_export
-        finish = submit_spine_export(sprite_id, req.spine_options or {})
+        key = f'pipeline:{sprite_id}:spine:{req.request_id}' if req.request_id else None
+        finish = submit_spine_export(sprite_id, req.spine_options or {}, key)
     return {"submitted": submitted, "skipped": skipped,
             **({"batch_id": batch["id"]} if batch else {}),
             **({"spine": finish} if finish else {})}
@@ -998,6 +1040,11 @@ def pipeline_resume(sprite_id: str, req: PipelineResumeRequest):
         except SpriteStoreError:
             continue
         name = action.get("name", aid)
+        key, request_params = _pipeline_request(sprite_id, req, 'resume', aid)
+        replay = _pipeline_replay(key, request_params, aid, name)
+        if replay:
+            submitted.append(replay)
+            continue
         st = dict(action.get("pipeline") or {})
         if not st:
             skipped.append({"action_id": aid, "name": name, "reason": "没有流水线记录"})
@@ -1009,7 +1056,7 @@ def pipeline_resume(sprite_id: str, req: PipelineResumeRequest):
         st["pause_after_firstframe"] = False
         st["status"] = "queued"
         st["error"] = None
-        submitted.append(_pipeline_submit(sprite_id, aid, name, st))
+        submitted.append(_pipeline_submit(sprite_id, aid, name, st, key, request_params))
     return {"submitted": submitted, "skipped": skipped}
 
 

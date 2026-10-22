@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.services.concurrency import ConcurrencyGate
 from app.services.job_manager import job_manager
 from app.services.take_store import TakeStore
+from app.services.video_generation import submit_video
 
 router = APIRouter(tags=["generate"])
 
@@ -53,6 +54,7 @@ def _prompt_templates() -> dict:
 
 # ------------------------------------------------------------ 生成
 class GenerateRequest(BaseModel):
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     prompt: str = Field(..., min_length=1, max_length=2000)
     model: Optional[str] = Field(default=None, description="缺省用默认模型")
     params: dict = Field(default_factory=dict, description="resolution/ratio/duration/seed")
@@ -135,8 +137,6 @@ def generate_video(session_id: str, req: GenerateRequest):
 
     payload = req.model_dump()
     payload["model"] = model
-    if req.remember:
-        _remember_video_prefs(session_id, req, model)
 
     def _job(ctx):
         from app.core.video_generator import run_generate
@@ -144,13 +144,15 @@ def generate_video(session_id: str, req: GenerateRequest):
 
     # io 池 + 不占会话锁：纯网络等待，只写新 take 文件，不碰帧数据。
     # 并发上限交给准入队列：排队的任务不占线程，取消也立即生效。
-    job = job_manager.submit("generate", _job, pool="io", gate=generate_gate,
-                             metadata={'action_id': session_id})
+    job = submit_video(job_manager, session, payload, req.request_id, _job, generate_gate)
+    if req.remember:
+        _remember_video_prefs(session_id, req, model)
     return {"job_id": job.id}
 
 
 # ------------------------------------------------------------ 批量生成
 class BatchGenerateRequest(BaseModel):
+    request_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     action_ids: list[str] = Field(..., min_length=1, max_length=200)
     model: Optional[str] = None
     resolution: str = Field(default="480p")
@@ -213,7 +215,7 @@ def batch_generate(sprite_id: str, req: BatchGenerateRequest):
     from app.services.template_store import template_store
 
     submitted, skipped = [], []
-    for aid in req.action_ids:
+    for aid in dict.fromkeys(req.action_ids):
         if sprite_store.sprite_of_action(aid) != sprite_id:
             skipped.append({"action_id": aid, "name": aid, "reason": "不属于该精灵"})
             continue
@@ -235,24 +237,27 @@ def batch_generate(sprite_id: str, req: BatchGenerateRequest):
             continue
 
         # 提示词覆盖只在单动作时生效：一句词套给一批动作没有意义
-        one = len(req.action_ids) == 1
+        one = len(set(req.action_ids)) == 1
         payload = _default_generate_payload(session, action, template,
                                             model, req.resolution, req.ratio,
                                             prompt=req.prompt if one else None)
-        if one and req.prompt and req.remember:
-            prefs = dict(action.get("gen_prefs") or {})
-            prefs["video"] = {**(prefs.get("video") or {}), "scope": "video_ref",
-                              "prompt_text": req.prompt.strip(),
-                              "prompt_id": None, "prompt_version": None,
-                              "prompt_name": "速览改写"}
-            sprite_store.update_action(sprite_id, aid, {"gen_prefs": prefs})
-
         def _job(ctx, _session=session, _payload=payload):
             from app.core.video_generator import run_generate
             return run_generate(_session, _payload, ctx)
 
-        job = job_manager.submit("generate", _job, pool="io", gate=generate_gate,
-                                 metadata={'sprite_id': sprite_id, 'action_id': aid})
+        from app.services.job_manager import JobSubmissionError
+        try:
+            job = submit_video(job_manager, session, payload, req.request_id,
+                               _job, generate_gate, sprite_id)
+        except (JobSubmissionError, ValueError) as exc:
+            skipped.append({'action_id': aid, 'name': name, 'reason': str(exc)})
+            continue
+        if one and req.prompt and req.remember:
+            prefs = dict(action.get('gen_prefs') or {})
+            prefs['video'] = {**(prefs.get('video') or {}), 'scope': 'video_ref',
+                              'prompt_text': req.prompt.strip(), 'prompt_id': None,
+                              'prompt_version': None, 'prompt_name': '速览改写'}
+            sprite_store.update_action(sprite_id, aid, {'gen_prefs': prefs})
         submitted.append({"action_id": aid, "name": name, "job_id": job.id,
                           "variant": template.get("variant"),
                           "duration": payload["params"]["duration"]})

@@ -17,6 +17,7 @@ take 字段：
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -49,8 +50,17 @@ class TakeStore:
     def _save(self, data: dict) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         tmp = self._json.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        with tmp.open('w', encoding='utf-8') as file:
+            file.write(json.dumps(data, ensure_ascii=False, indent=1))
+            file.flush()
+            os.fsync(file.fileno())
         tmp.replace(self._json)
+        if os.name != 'nt':
+            fd = os.open(self._dir, os.O_RDONLY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
 
     def _migrate_legacy(self, data: dict) -> dict:
         """旧动作的 upload.* 视频懒迁移为一个 take。
@@ -111,6 +121,33 @@ class TakeStore:
         return [t for t in self.load()["takes"]
                 if t.get("status") in ("pending", "running") and t.get("remote_task_id")]
 
+    def unresolved_generation(self) -> List[dict]:
+        """Fail closed for paid submission; corrupt indices must never permit a new charge."""
+        with dir_lock(self._dir):
+            if not self._json.exists():
+                return []
+            try:
+                data = json.loads(self._json.read_text(encoding='utf-8'))
+                assert isinstance(data, dict) and isinstance(data.get('takes'), list)
+                assert all(isinstance(t, dict) for t in data['takes'])
+            except (OSError, ValueError, AssertionError) as exc:
+                raise ValueError('素材版本索引无法读取，已阻止新生成；请先恢复/核对现有版本') from exc
+            return [t for t in data['takes'] if t.get('source') == 'generate'
+                    and (t.get('status') in ('pending', 'running')
+                         or t.get('dispatch_state') == 'unknown')]
+
+    def reserve_generation(self, **fields) -> dict:
+        """Persist an action-wide reservation before any provider call, across every entry point."""
+        from app.services.job_manager import JobSubmissionError
+        with dir_lock(self._dir):
+            try:
+                pending = self.unresolved_generation()
+            except ValueError as exc:
+                raise JobSubmissionError(str(exc)) from exc
+            if pending:
+                raise JobSubmissionError('原视频生成结果尚未确认，请先核对/取回已有远端结果，禁止重复付费生成')
+            return self.add('generate', status='pending', dispatch_state='not_sent', **fields)
+
     # ------------------------------------------------------------ 修改
     # 这几个方法都是「读出来 - 改 - 写回去」，必须整体互斥：同一个动作可以有很多版本
     # （抽卡就是这个意思），两个人同时生成同一动作是正常用法，但并发写会让后写的
@@ -151,6 +188,10 @@ class TakeStore:
             take = next((t for t in data["takes"] if t["id"] == take_id), None)
             if take is None:
                 return False
+            if take.get('source') == 'generate' and (take.get('status') in ('pending', 'running')
+                                                     or take.get('dispatch_state') == 'unknown'):
+                from app.services.job_manager import JobSubmissionError
+                raise JobSubmissionError('该版本生成结果尚未确认，不能删除付费请求凭据；请先核对远端结果')
             p = self._dir / take.get("file", f"{take_id}.mp4")
             try:
                 p.unlink(missing_ok=True)

@@ -180,6 +180,8 @@ def _execute(approval_id, caller, batch, ctx):
                         raise JobSubmissionError('排队期间视频或首帧已变化，请重新规划')
 
                 class Sub:
+                    @property
+                    def job_id(self): return getattr(ctx, 'job_id', None)
                     def report(self, percent, message=''):
                         ctx.report((index + percent / 100) / len(plan['items']) * 100, message)
                     def cancelled(self): return ctx.cancelled()

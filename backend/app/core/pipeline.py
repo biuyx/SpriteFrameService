@@ -307,7 +307,7 @@ def finish_batch(sprite_id: str, state: dict) -> Optional[dict]:
     return submit_spine_export(sprite_id, spine)
 
 
-def submit_spine_export(sprite_id: str, spine: dict) -> dict:
+def submit_spine_export(sprite_id: str, spine: dict, request_key=None) -> dict:
     """提交角色级 Spine 导出。
 
     导出范围是该精灵的全部动作，不只是这一批——骨架和图集是整角色一份，
@@ -323,7 +323,7 @@ def submit_spine_export(sprite_id: str, spine: dict) -> dict:
     job = job_manager.submit(
         "spine_export",
         lambda ctx: run_spine_export(sprite_id, name, ids, req, ctx), pool="cpu",
-        targets=ids, resource='export', params=req.model_dump(mode='json'),
+        targets=ids, resource='export', params=req.model_dump(mode='json'), request_key=request_key,
         memory_mb=memory_budget_mb())
     return {"action": "spine_export", "job_id": job.id, "name": name,
             "actions": len(ids),
@@ -356,6 +356,8 @@ def run_pipeline(sprite_id: str, action_id: str, ctx) -> dict:
         def report(self, pct, msg=""): stage(self.i, f"{STEP_LABEL[steps[self.i]]} {msg}", pct or 0)
         def cancelled(self): return ctx.cancelled()
         def register_cancel(self, fn): ctx.register_cancel(fn)
+        @property
+        def job_id(self): return getattr(ctx, 'job_id', None)
 
     try:
         for i, step in enumerate(steps):

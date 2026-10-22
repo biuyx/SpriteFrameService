@@ -1,5 +1,9 @@
 # SpriteFrameService 开发交接
 
+## 2026-10-22 视频跨入口幂等保护（待空闲发布）
+
+普通视频/批量视频/一键流水线统一动作级准入和持久化request_id；核心视频生成原子占位、供应商POST前fsync记录未知提交，取消/超时保留远端凭据，未确认时阻止重提或删除。无编号旧请求保守复用，旧生成历史要求刷新明确确认；新编号仍可明确生成新版本。用户只授权空闲上线，不允许真实付费测试或重提任务。31项新增后端、7项前端回归；Windows412、Linux隔离410通过2跳过，Node16通过、构建通过。发布步骤及限制见docs/video-idempotency-release.md，冻结证据data/releases/video-idempotency-20261022。不会重放原29取消、缺参数或DNS失败任务；维持CPU/本地1/导出1/18432MiB预算/16384MiB抠图/内部4线程/视频5/首帧3及原权限额度审批。
+
 ## 2026-10-22 流水线停止状态修复已上线
 
 功能提交06baa720f0be7bb88ca370ec67a3f91f74fef8a6，20项新增回归（Windows381、Linux379通过2缺参考工程跳过），前端构建通过。start/resume以真实未退出任务校验，排队/运行/停止退出期间防重复，提交被拒恢复原状态；看板只读校正残留running/queued，保持素材。详见docs/pipeline-state-release.md。

@@ -31,6 +31,10 @@ class PollInterrupted(RuntimeError):
     之后打开动作时自动重挂（reconcile）取回结果，而不是判死丢件。
     """
 
+
+class RemoteGenerationFailed(ArkError):
+    """The provider explicitly reported a terminal failure, not a polling/transport error."""
+
 logger = logging.getLogger(__name__)
 
 POLL_INITIAL = 5.0
@@ -183,6 +187,7 @@ def _finalize_success(take_store: TakeStore, take_id: str, info: dict,
         raise last_err
     take = take_store.update(take_id, {
         "status": "succeeded",
+        "dispatch_state": "resolved",
         "bytes": size,
         "seed": info.get("seed"),
         "usage": info.get("usage"),
@@ -227,7 +232,7 @@ def poll_until_done(client: ArkClient, task_id: str, ctx=None,
         if status in TERMINAL_BAD:
             err = (info.get("error") or {})
             msg = err.get("message") if isinstance(err, dict) else str(err)
-            raise ArkError(f"远端任务{status}: {msg or '无详情'}")
+            raise RemoteGenerationFailed(f"远端任务{status}: {msg or '无详情'}")
         if time.time() > deadline:
             raise PollInterrupted(
                 f"本地等待超时（任务仍在远端执行，ID={task_id}），"
@@ -250,8 +255,8 @@ def run_generate(session, req: dict, ctx) -> dict:
     params = req.get("params") or {}
     model = req.get("model") or settings.ark_model
 
-    take = take_store.add(
-        "generate", status="pending",
+    take = take_store.reserve_generation(
+        owner_job_id=getattr(ctx, 'job_id', None),
         model=model, prompt=req.get("prompt", ""),
         params=params, first_frame=req.get("first_frame"),
         used_reference_video=bool(req.get("use_reference_video")),
@@ -263,6 +268,7 @@ def run_generate(session, req: dict, ctx) -> dict:
         prompt_name=req.get("prompt_name") or None,
     )
     take_id = take["id"]
+    attempted = False
 
     try:
         ctx.report(2, "准备请求...")
@@ -327,6 +333,11 @@ def run_generate(session, req: dict, ctx) -> dict:
                 ctx.before_paid_call()
             if ctx.cancelled():
                 raise ArkError('已请求取消')
+            # Commit the uncertain boundary before POST. A lost create response
+            # or process crash must block every entry point from charging again.
+            take_store.update(take_id, {'dispatch_state': 'unknown',
+                                        'dispatch_started_at': time.time()})
+            attempted = True
             created = client.create_task(
                 model, content,
                 resolution=params.get("resolution"),
@@ -338,7 +349,8 @@ def run_generate(session, req: dict, ctx) -> dict:
             )
             remote_id = created["id"]
             # 远端任务已产生（开始计费），第一时间落盘
-            take_store.update(take_id, {"remote_task_id": remote_id, "status": "running"})
+            take_store.update(take_id, {"remote_task_id": remote_id, "status": "running",
+                                       'dispatch_state': 'created'})
             if hasattr(ctx, 'record_remote'):
                 ctx.record_remote(remote_id)
             ctx.register_cancel(lambda: _cancel_remote_task(remote_id))
@@ -364,16 +376,19 @@ def run_generate(session, req: dict, ctx) -> dict:
         rec = take_store.get(take_id) or {}
         # 远端任务已创建且不是远端终态失败（网络中断/下载失败/本地超时）：
         # 保持 running，打开动作时自动重挂取回——付费结果不能丢
-        recoverable = (bool(rec.get("remote_task_id"))
-                       and (ctx.cancelled() or not isinstance(e, ArkError)))
+        recoverable = (bool(rec.get('remote_task_id')) and not isinstance(e, RemoteGenerationFailed))
         if recoverable:
             take_store.update(take_id, {
                 "status": "running",
                 "error": ('本地已停止，远端取消已尝试；请核对原远端任务并取回已有结果，不要重复生成'
                           if ctx.cancelled() else f"轮询中断（重新打开该动作自动重挂取回）: {str(e)[:180]}"),
             })
+        elif attempted and not rec.get('remote_task_id') and not getattr(e, 'request_rejected', False):
+            take_store.update(take_id, {'status': 'running', 'dispatch_state': 'unknown',
+                'error': '生成提交结果未确认，可能已计费。请先核对远端结果，禁止重复提交；' + str(e)[:120]})
         else:
-            take_store.update(take_id, {"status": "failed", "error": str(e)[:300]})
+            take_store.update(take_id, {"status": "failed", "error": str(e)[:300],
+                                       'dispatch_state': 'rejected' if attempted else 'not_sent'})
         raise
 
 
@@ -400,7 +415,7 @@ def run_reconcile(session, ctx) -> dict:
                 elif status in TERMINAL_BAD:
                     err = (info.get("error") or {})
                     msg = err.get("message") if isinstance(err, dict) else str(err)
-                    take_store.update(tid, {"status": "failed",
+                    take_store.update(tid, {"status": "failed", 'dispatch_state': 'resolved',
                                             "error": f"远端{status}: {msg or ''}"[:300]})
                     results.append({"id": tid, "status": "failed"})
                 else:

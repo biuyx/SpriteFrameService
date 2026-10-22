@@ -100,7 +100,9 @@ class ArkClient:
                 body[k] = v
         r = self._client.post(f"{self._base}/contents/generations/tasks", json=body)
         if r.status_code >= 400:
-            raise ArkError(f"创建任务失败: {_summarize_error(r)}")
+            exc = ArkError(f"创建任务失败: {_summarize_error(r)}")
+            exc.request_rejected = r.status_code in (400, 401, 403, 404, 405, 413, 415, 422, 429)
+            raise exc
         data = r.json()
         if not data.get("id"):
             raise ArkError(f"创建任务响应缺少 id: {str(data)[:200]}")

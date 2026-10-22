@@ -1,4 +1,5 @@
 // 后端 API 封装
+import { idempotentRequest } from './requestIdentity'
 const BASE = ''
 
 // 401 回调：由 App 注册，用于把界面切回登录页
@@ -132,11 +133,14 @@ const api = {
   batchScan: (payload) => request('POST', '/api/sprites/batch-scan', { json: payload }),
   batchImport: (payload) => request('POST', '/api/sprites/batch-import', { json: payload }),
   batchGenerate: (sid, payload) =>
-    request('POST', `/api/sprites/${sid}/batch-generate`, { json: payload }),
+    idempotentRequest(`batch-video:${sid}`, payload,
+      json => request('POST', `/api/sprites/${sid}/batch-generate`, { json })),
   pipelinePlan: (sid, payload) => request('POST', `/api/sprites/${sid}/pipeline/plan`, { json: payload }),
-  pipelineStart: (sid, payload) => request('POST', `/api/sprites/${sid}/pipeline/start`, { json: payload }),
+  pipelineStart: (sid, payload) => idempotentRequest(`pipeline-start:${sid}`, payload,
+    json => request('POST', `/api/sprites/${sid}/pipeline/start`, { json })),
   pipelineResume: (sid, actionIds) =>
-    request('POST', `/api/sprites/${sid}/pipeline/resume`, { json: { action_ids: actionIds } }),
+    idempotentRequest(`pipeline-resume:${sid}`, { action_ids: actionIds },
+      json => request('POST', `/api/sprites/${sid}/pipeline/resume`, { json })),
   batchExtract: (sid, actionIds) =>
     request('POST', `/api/sprites/${sid}/batch-extract`, { json: { action_ids: actionIds } }),
   templates: () => request('GET', '/api/templates'),
@@ -189,7 +193,8 @@ const api = {
 
   // 视频生成 / take 版本
   genCapabilities: () => request('GET', '/api/generate/capabilities'),
-  generate: (sid, params) => request('POST', `/api/sessions/${sid}/generate`, { json: params }),
+  generate: (sid, params) => idempotentRequest(`video:${sid}`, params,
+    json => request('POST', `/api/sessions/${sid}/generate`, { json })),
   uploadFirstFrame: (sid, file) => {
     const form = new FormData()
     form.append('file', file)
