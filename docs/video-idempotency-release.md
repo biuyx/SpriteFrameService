@@ -15,7 +15,7 @@
 
 ## 发布快照与操作
 
-冻结快照 `data/releases/video-idempotency-20261022/release.json`；当前待确认空闲上线。代码源、测试、脚本及前端按scopes冻结完整集合和SHA256；构建dist完整集合单列。生产基线为此前已上线06baa72的86后端文件和11静态文件；本次新增一个后端模块，预期87后端。
+冻结快照 `data/releases/video-idempotency-20261022/release.json`；已于2026-10-22 13:51:58 +08确认空闲后上线。代码源、测试、脚本及前端按scopes冻结完整集合和SHA256；构建dist完整集合单列。生产基线为此前已上线06baa72的86后端文件和11静态文件；本次新增一个后端模块，预期87后端。
 
 1. 每轮先只读运行 `.venv/Scripts/python.exe data/releases/video-idempotency-20261022/run_check.py`。经现有密钥SSH ProxyJump root@192.168.3.12连接ubuntu@192.168.3.225，仅在/opt/sprite/backend导入config取得认证，不打印令牌，不初始化第二个生产JobManager。queued/running或control.active非零立即静默结束，不更改服务器，不取消任务；查询失败不是空闲。
 2. 空闲后同目录verify_local.py核验git ls-files -z -c -o --exclude-standard --完整源码集合及全部SHA256、dist完整集合及哈希、HEAD及干净工作树、验收辅助脚本哈希。异常变动停止部署并通知需重验。
@@ -23,3 +23,13 @@
 4. Windows Git Bash正常运行现有scripts/deploy_linux.sh，不得使用--force、--no-restart或--allow-dirty绕过已提交源。保留维护准入、空闲二次检查、备份与失败回滚；新任务进入导致拒绝时等下一轮，不取消或恢复任何任务。
 5. 部署后只读运行run_check.py verify，验收service active、健康/前端/认证角色目录任务200、未认证401、MCP19工具、87后端及完整静态磁盘/HTTP哈希、SQLite完整性及owner锁、before素材/元数据/原任务/台账/资源权限保持、启动错误日志。不得以生产重复请求或加工/付费任务做冒烟。
 6. 记录上线时间、备份、验收到本文件、docs/codex-handoff.md及release.json(status=deployed)。若通过自动化等待，成功后暂停该自动化并通知用户；忙碌和未变化静默，仅成功、真实失败或需要用户处理时通知。旧30条任务已终结，不再恢复；e5bdaa40d866及历史DNS失败也不重提。不归档对话。
+
+## 生产上线与验收（已完成）
+
+2026-10-22 13:51:19只读确认全局空闲；verify_local.py核验240源码、11构建、HEAD c8be781及干净工作树和辅助脚本通过。正常部署脚本再次维护准入及检查空闲，13:51:58重启完成，PID66681，版本备份 `/opt/sprite/.deploy/backups/20261022-135157.tar.gz`。没有使用force/no-restart/allow-dirty，没有提交生产加工、付费或恢复请求。
+
+13:55:09只读验收通过：服务active，健康/前端/角色/目录/任务200，未认证401，MCP19工具，87后端及11静态磁盘/HTTP哈希一致；SQLite完整性、owner锁和原资源权限配置正常，原641任务载荷及付费生成台账不变，接收开放、maintenance=false、活动0，无启动后新错误。
+
+首次严格验收发现26文件发生变化，未据此直接判定成功。只读日志证明客户端192.168.7.143于13:52:54主动导出店长6/idle，完成任务19d55a31d1d5于13:52:57更新wait1的25张图和recipe.json；此前13:51:22也有客户端导出。保留原production-before.json和失败日志，使用补充验收逐项限定这26文件，验证recipe与该完成任务时间/25帧清单一致，其余93,492素材文件及元数据保持。证据preservation-diff.json、preservation-events.json、verify_concurrent_export.py、acceptance.json均在本次发布目录，未重置原基线。客户端13:50:13曾主动stop-all，非本部署取消或恢复任务。
+
+没有真实付费测试，没有重提旧29取消、缺参数或DNS失败任务；未知远端提交仍须先核对，不能靠新编号或删除版本绕过。上线成功后暂停本次空闲上线自动化automation-4，其他旧自动化保持暂停。
