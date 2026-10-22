@@ -16,7 +16,7 @@ Windows完整381项通过；Linux隔离379通过、2项缺参考Spine工程跳�
 
 截图时间09:06；09:36已经按此前授权恢复33条免费流水线。09:51只读检查：2完成、31未完成（16运行含资源等待，15排队），店长6/sleep完成，exclusivewait正在补图21/28，hawk/clean/onwork真实等待处理名额。因此目前提示进行中的这些任务不应再次提交。不能为处理历史截图而重启、取消或重放它们。
 
-发布快照位于 `data/releases/pipeline-state-20261022/release.json`。当前状态为等待空闲，尚未上线本次状态修复。现有内存修复保持生效。缺参数e5bdaa40d866以及此前DNS生成失败均不重提，不新增加工或付费测试。
+发布快照位于 `data/releases/pipeline-state-20261022/release.json`。已于12:25:23空闲上线本次状态修复，12:27只读验收通过。现有内存修复保持生效。缺参数e5bdaa40d866以及此前DNS生成失败均不重提，不新增加工或付费测试。
 
 ## 空闲发布步骤
 
@@ -26,3 +26,13 @@ Windows完整381项通过；Linux隔离379通过、2项缺参考Spine工程跳�
 4. Windows Git Bash执行 `scripts/deploy_linux.sh`，禁止--force、--no-restart或绕过维护准入。脚本再次关闭准入并检查空闲，备份并失败回滚；如果新任务进入导致拒绝，等待下一轮，不能取消新任务。无需变更GPU、内存、并发、权限、额度、审批和管理员接收状态。
 5. 部署后运行 `.venv/Scripts/python.exe data/releases/pipeline-state-20261022/run_check.py verify`。验收service active、健康/前端/认证角色目录任务接口200、未认证401、MCP19工具、86后端及完整静态磁盘/HTTP哈希、SQLite完整性及owner锁、原资源设置和所有before素材/配置/任务记录保持。只读检查动作看板状态与实际任务一致，不提交生产流水线来验证。
 6. 在本文件、docs/codex-handoff.md与release.json记录时间、备份、结果，status=deployed。成功后暂停本次自动化并通知用户；忙碌或无变化静默，仅成功、真实失败或需要用户处理时通知。不归档对话、不启用旧自动化。
+
+## 已上线与监控结果（2026-10-22）
+
+10:19所剩30个原任务已于10:37核对为1成功、29取消，并非全部成功；日志显示10:35:23来自客户端192.168.7.143的一键停止请求200，10:35:55重新开放接收，之后客户端继续提交新任务。没有自动恢复或重提被取消任务。原批次终结快照与清单固化在tasks-monitor-final.json和30条任务监控结果.csv，不将后续任务加入该固定监控集合，也不重复提醒已报告取消。
+
+12:24这轮检查最终确认全局0运行/排队，12:25:00生产快照保存；236源码、11构建文件的完整集合及SHA256、86后端生产基线、HEAD和干净工作树全部通过。正常执行scripts/deploy_linux.sh，无force/no-restart：仅替换2个后端源文件和前端静态产物；维护准入后二次空闲检查通过。备份 `/opt/sprite/.deploy/backups/20261022-122521.tar.gz`，12:25:23启动新服务PID62979，部署功能提交06baa720f0be7bb88ca370ec67a3f91f74fef8a6。
+
+12:27:05只读验收通过：service active，健康/前端/认证角色目录任务接口200、未认证401，MCP19工具，86后端完整哈希及11静态磁盘/HTTP哈希一致；93,089份素材文件大小/mtime和精灵JSON哈希、613条原任务载荷、生成台账、根配置和资源环境全部保持。SQLite完整性和单进程owner锁正常，启动后无新增错误。所有动作看板均无假的running/queued/stopping标记；只读校正未写回action.json。管理员接收仍开放，maintenance=false，active=0。
+
+首次只读验收的MCP tools/list请求缺少Accept协议头，返回406；只修正本地验收脚本为Accept: application/json, text/event-stream并记录新旧辅助脚本哈希后复验通过。未改动生产源码或再次部署。证据为production-before.json、deploy.log、acceptance-run.log（首次406）、acceptance-retry.log、acceptance.json及release.json。自动化automation-2成功后已暂停，旧自动化没有启用，对话未归档。全程没有加工/付费测试、取消任务或重提任务。
