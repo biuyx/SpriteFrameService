@@ -44,11 +44,11 @@ def generate_capabilities():
         "concurrent": {"limit": s.generate_max_concurrent,
                        "active": generate_gate.active},
         "prompt_templates": _prompt_templates(),
-        # 首帧生图可选的模型（方舟 Seedream + LocalAI 的 gpt-image 系列）
+        # 首帧生图可选的模型（方舟 Seedream + 网关的 gpt-image 系列）
         "image_models": s.image_models_list,
         "default_image_model": s.default_image_model,
         "image_provider": s.image_provider,
-        "localai_configured": s.localai_configured,
+        "weimeta_configured": s.weimeta_configured,
     }
 
 

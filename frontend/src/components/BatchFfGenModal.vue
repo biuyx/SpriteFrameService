@@ -21,7 +21,7 @@ const phase = ref('pick')
 const rows = ref([])
 const skippedRows = ref([])
 const promptOf = ref({})           // action_id -> 提示词库解析结果
-// 生图模型：默认取平台默认（LocalAI 配好时是 gpt-image-2.5-sunburst）
+// 生图模型：默认取平台默认（配好网关密钥时是 gpt-image-2.5-sunburst）
 const imageModels = ref([])
 const imageModel = ref('')
 const imageDefault = ref('')
@@ -184,7 +184,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <select v-model="imageModel">
               <option v-for="mm in imageModels" :key="mm.id" :value="mm.id">
                 {{ mm.label }}<template v-if="mm.id === imageDefault">（默认）</template>
-                · {{ mm.provider === 'localai' ? 'LocalAI' : '方舟' }}</option>
+                · {{ mm.provider === 'weimeta' ? '网关' : '方舟' }}</option>
             </select></div>
           <span class="hint">模型不同，画风与出图速度会有差异；失败不计费。</span>
         </div>

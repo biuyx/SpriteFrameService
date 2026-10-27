@@ -732,7 +732,7 @@ class FfGenRequest(BaseModel):
     prompt_name: Optional[str] = None
     remember: bool = Field(default=True, description="记为该动作的首帧生成设定")
     model: Optional[str] = Field(
-        default=None, description="生图模型 id；留空用平台默认（LocalAI 配好时是 "
+        default=None, description="生图模型 id；留空用平台默认（配好网关密钥时是 "
                                   "gpt-image-2.5-sunburst，否则用方舟 Seedream）")
 
 

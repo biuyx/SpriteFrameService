@@ -15,10 +15,9 @@ const ossBucket = ref('')
 const ossDomain = ref('')
 const ossAk = ref('')
 const ossSk = ref('')
-// LocalAI 生图通道（留空 = 不修改）
-const laiUrl = ref('')
-const laiUser = ref('')
-const laiPass = ref('')
+// weimeta 生图网关（留空 = 不修改）
+const wmUrl = ref('')
+const wmKey = ref('')
 
 async function load() {
   loading.value = true
@@ -43,14 +42,13 @@ async function save() {
     if (ossDomain.value.trim()) patch.oss_public_domain = ossDomain.value.trim()
     if (ossAk.value.trim()) patch.oss_access_key_id = ossAk.value.trim()
     if (ossSk.value.trim()) patch.oss_access_key_secret = ossSk.value.trim()
-    if (laiUrl.value.trim()) patch.localai_base_url = laiUrl.value.trim()
-    if (laiUser.value.trim()) patch.localai_username = laiUser.value.trim()
-    if (laiPass.value.trim()) patch.localai_password = laiPass.value.trim()
+    if (wmUrl.value.trim()) patch.weimeta_base_url = wmUrl.value.trim()
+    if (wmKey.value.trim()) patch.weimeta_api_key = wmKey.value.trim()
     if (!Object.keys(patch).length) { emit('close'); return }
     current.value = await api.saveSettings(patch)
     newKey.value = ''
     ossBucket.value = ossDomain.value = ossAk.value = ossSk.value = ''
-    laiUrl.value = laiUser.value = laiPass.value = ''
+    wmUrl.value = wmKey.value = ''
     toast('设置已保存并生效')
     emit('close')
   } catch (e) {
@@ -73,12 +71,12 @@ async function clearKey() {
   }
 }
 
-async function clearLocalai() {
-  if (!(await askConfirm('清除配置文件中的 LocalAI 配置？之后首帧生图会回退到方舟 Seedream。'))) return
+async function clearWeimeta() {
+  if (!(await askConfirm('清除配置文件中的网关密钥？之后首帧生图会回退到方舟 Seedream。'))) return
   saving.value = true
   try {
     current.value = await api.saveSettings({
-      localai_base_url: '', localai_username: '', localai_password: '',
+      weimeta_base_url: '', weimeta_api_key: '',
     })
     toast('已清除')
   } catch (e) {
@@ -165,22 +163,21 @@ onMounted(load)
         </div>
 
         <div class="set-group">
-          <label class="set-label">LocalAI 生图通道（gpt-image-2.5 等）</label>
+          <label class="set-label">生图网关（gpt-image-2.5 系列，直连）</label>
           <div class="set-row">
-            <span class="key-now" v-if="current.localai?.configured">
-              当前：{{ current.localai.base_url }} · {{ current.localai.username }}
-              · 默认模型 {{ current.localai.default_image_model }}
+            <span class="key-now" v-if="current.weimeta?.configured">
+              当前：{{ current.weimeta.base_url }} · 密钥 {{ current.weimeta.api_key_masked }}
+              · 默认模型 {{ current.weimeta.default_image_model }}
             </span>
             <span class="key-now" v-else>未配置——首帧生图用方舟 Seedream</span>
-            <button v-if="current.localai?.configured" class="small"
-                    :disabled="saving" @click="clearLocalai">清除</button>
+            <button v-if="current.weimeta?.configured" class="small"
+                    :disabled="saving" @click="clearWeimeta">清除</button>
           </div>
           <div class="oss-grid">
-            <input v-model="laiUrl" placeholder="网关地址，如 http://192.168.3.246:8081" autocomplete="off" />
-            <input v-model="laiUser" placeholder="专用账号（需有 ai:image 权限）" autocomplete="off" />
-            <input v-model="laiPass" type="password" placeholder="密码" autocomplete="off" />
+            <input v-model="wmUrl" placeholder="网关地址（留空用默认 https://api.weimeta.ai）" autocomplete="off" />
+            <input v-model="wmKey" type="password" placeholder="网关密钥 sk-..." autocomplete="off" />
           </div>
-          <p class="hint">配好后首帧生图默认用 gpt-image-2.5-sunburst；参考图会先传 OSS 换公网 URL。保存到 backend\.env，立即生效。</p>
+          <p class="hint">配好后首帧生图默认用 gpt-image-2.5-sunburst；参考图会先传 OSS 换公网 URL。密钥保存到 backend\.env，立即生效。</p>
         </div>
 
         <div class="modal-foot">

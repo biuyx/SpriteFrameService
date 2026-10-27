@@ -99,20 +99,19 @@ class Settings(BaseSettings):
     ark_image_b64: bool = False
     ark_timeout_seconds: int = 900   # 单次生成总超时
 
-    # --- LocalAI 生图（gpt-image-2.5 等；走公司网关，按账号计费）---
-    # 通道选择：ark = 只走方舟；localai = 只走 LocalAI；auto = 按模型 id 判断
+    # --- weimeta 生图网关（gpt-image-2.5 家族；直连上游，不经 LocalAI）---
+    # 通道选择：ark = 只走方舟；weimeta = 只走网关；auto = 按模型 id 判断
     image_provider: str = "auto"
-    localai_base_url: str = ""       # 如 http://192.168.3.246:8081
-    localai_username: str = ""       # 专用账号（需有 ai:image 权限）
-    localai_password: str = ""
-    # 可选生图模型（id:标签，分号分隔）。默认模型是网关的 gpt-image-2.5-sunburst
-    localai_image_models: str = (
+    weimeta_base_url: str = "https://api.weimeta.ai"
+    weimeta_api_key: str = ""        # Bearer 密钥；留空则网关通道不可用
+    # 可选生图模型（id:标签，分号分隔）。默认 gpt-image-2.5-sunburst
+    weimeta_image_models: str = (
         "gpt-image-2.5-sunburst:GPT-Image-2.5 Sunburst（默认）;"
-        "gpt-image-2:GPT-Image-2（最稳）;"
-        "ep-20261027150254-4cxlt:Seedream 5.0 Pro（亚太·无预过滤）")
-    localai_image_model: str = "gpt-image-2.5-sunburst"
-    localai_timeout_seconds: int = 300   # 单张生图（含提交+轮询）总超时
-    localai_poll_seconds: float = 2.0    # 轮询间隔
+        "gpt-image-2.5:GPT-Image-2.5;"
+        "gpt-image-2:GPT-Image-2（最稳）")
+    weimeta_image_model: str = "gpt-image-2.5-sunburst"
+    weimeta_timeout_seconds: int = 300   # 单张生图（含提交+轮询）总超时
+    weimeta_poll_seconds: float = 2.0    # 轮询间隔
 
     generate_max_concurrent: int = 5  # 同时进行中的生成任务数上限（1~10）
     first_frame_max_concurrent: int = 3  # 同时进行中的首帧生图数上限（1~10）
@@ -144,15 +143,14 @@ class Settings(BaseSettings):
         return result
 
     @property
-    def localai_configured(self) -> bool:
-        """LocalAI 生图通道是否可用：地址和账号都要有。"""
-        return bool(self.localai_base_url.strip() and self.localai_username.strip()
-                    and self.localai_password.strip())
+    def weimeta_configured(self) -> bool:
+        """生图网关是否可用：地址和密钥都要有。"""
+        return bool(self.weimeta_base_url.strip() and self.weimeta_api_key.strip())
 
     @property
-    def localai_image_models_list(self) -> list[dict]:
-        """LocalAI 可选生图模型：[{"id", "label", "provider"}]。"""
-        return self._parse_models(self.localai_image_models, "localai")
+    def weimeta_image_models_list(self) -> list[dict]:
+        """网关可选生图模型：[{"id", "label", "provider"}]。"""
+        return self._parse_models(self.weimeta_image_models, "weimeta")
 
     @property
     def ark_image_models_list(self) -> list[dict]:
@@ -176,18 +174,18 @@ class Settings(BaseSettings):
     def image_models_list(self) -> list[dict]:
         """界面可选的生图模型（带 provider 标记）。
 
-        LocalAI 的模型只在通道配置完整时才列出来——否则界面上能选却一定失败。
+        网关的模型只在配好密钥后才列出来——否则界面上能选却一定失败。
         """
         models = list(self.ark_image_models_list)
-        if self.localai_configured:
-            models += self.localai_image_models_list
+        if self.weimeta_configured:
+            models += self.weimeta_image_models_list
         return models
 
     @property
     def default_image_model(self) -> str:
-        """默认生图模型：localai 通道可用时用它的默认，否则回退方舟。"""
-        if self.image_provider in ("localai", "auto") and self.localai_configured:
-            return self.localai_image_model.strip() or self.ark_image_model
+        """默认生图模型：网关可用时用它的默认（gpt-image-2.5-sunburst），否则回退方舟。"""
+        if self.image_provider in ("weimeta", "auto") and self.weimeta_configured:
+            return self.weimeta_image_model.strip() or self.ark_image_model
         return self.ark_image_model
 
     @property

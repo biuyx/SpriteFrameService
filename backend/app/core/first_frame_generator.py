@@ -92,7 +92,7 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
     # 并发由调用方把关（端点走准入队列、流水线用 hold）；这里只管生图。
     # 同步接口拿不到真实进度，用心跳按已等待秒数推进，免得整段静止。
     provider, model_id = resolve_model(image_model)
-    label = "LocalAI" if provider == "localai" else "Seedream"
+    label = "GPT-Image" if provider == "weimeta" else "Seedream"
     ctx.report(15, f"生图中（{label}）...")
     with heartbeat(ctx, f"生图中（{label}）", start=15, end=80, expect=20):
         try:
@@ -109,7 +109,7 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
 
             data = generate_first_frame_image(
                 text, [ref, art], model=image_model,
-                progress=_progress if provider == "localai" else None,
+                progress=_progress if provider == "weimeta" else None,
                 cancelled=ctx.cancelled)
         except ImageGenError as e:
             raise RuntimeError(str(e))

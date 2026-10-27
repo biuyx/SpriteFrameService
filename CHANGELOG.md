@@ -2,19 +2,21 @@
 
 ## 2026-10-27
 
-### 首帧生图接入 LocalAI（gpt-image-2.5 sunburst 为默认）
+### 首帧生图接入生图网关（gpt-image-2.5 sunburst 为默认）
 
-- 首帧生图从「只有方舟 Seedream」变成可切换的两条通道：方舟 / LocalAI，按所选模型
-  自动分流（`SPRITE_IMAGE_PROVIDER=ark|localai|auto`，默认 auto）
-- **默认模型改为 `gpt-image-2.5-sunburst`**（LocalAI 配好时）；界面上可选
-  `gpt-image-2`、`Seedream 5.0 Pro（亚太·无预过滤）`，没配 LocalAI 时仍走方舟
-- 首帧页与批量生成首帧都加了「生图模型」下拉；「设置」里新增 LocalAI 网关地址、账号、密码
-- 两条通道的差异收在一处：方舟收 base64 参考图，LocalAI 只收公网 URL——参考图会先传 OSS
+- 首帧生图从「只有方舟 Seedream」变成可切换的两条通道：方舟 / 生图网关，按所选模型
+  自动分流（`SPRITE_IMAGE_PROVIDER=ark|weimeta|auto`，默认 auto）
+- **直连网关，不经 LocalAI**：自己拿网关密钥调 `POST /v2/images/generations` 提交、
+  `GET /v2/tasks/{id}` 轮询，少一跳，也不依赖对方的账号、额度与可用性
+- **默认模型改为 `gpt-image-2.5-sunburst`**（配好网关密钥时）；界面上还可选
+  `gpt-image-2.5`、`gpt-image-2`（最稳）；没配密钥时仍走方舟，且下拉里不列网关模型
+- 首帧页与批量生成首帧都加了「生图模型」下拉；「设置」里新增网关地址与密钥（只回打码值）
+- 两条通道的差异收在一处：方舟收 base64 参考图，网关只收公网 URL——参考图会先传 OSS
   （按内容哈希去重，批量生成时立绘只传一次）
-- LocalAI 通道要点：登录换 JWT（进程内缓存，401 自动重登）、提交后轮询网关任务、
-  成功后从 `savedUrls` 下载；失败不计费，上游「模型暂时不可用」时提示换 `gpt-image-2`
+- 失败不计费；上游「模型暂时不可用」时提示换 `gpt-image-2`；超时会明确提示「任务可能仍在
+  上游执行，别重复提交」
 - 每个动作的首帧元数据记下 `provider` 与 `image_model`，便于复现和对账
-- 新增 10 个用例，全量 422 个通过
+- 新增 11 个用例，全量 423 个通过
 
 ## 2026-10-19
 
