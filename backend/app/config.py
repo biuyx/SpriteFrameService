@@ -25,6 +25,15 @@ _ENV_FILES = [
     _BACKEND_DIR.parent / ".env",
 ]
 
+# 生图模型的可读名（配置里没写标签时用；认不出的就显示原始 id）
+_IMAGE_MODEL_LABELS = {
+    "doubao-seedream-5-0-pro-260628": "Seedream 5.0 Pro（方舟）",
+    "doubao-seedream-4-5-250828": "Seedream 4.5（方舟）",
+    "gpt-image-2.5-sunburst": "GPT-Image-2.5 Sunburst",
+    "gpt-image-2.5": "GPT-Image-2.5",
+    "gpt-image-2": "GPT-Image-2",
+}
+
 
 class Settings(BaseSettings):
     """服务设置。
@@ -157,7 +166,9 @@ class Settings(BaseSettings):
             if not item:
                 continue
             mid, _, label = item.partition(":")
-            result.append({"id": mid.strip(), "label": label.strip() or mid.strip(),
+            mid = mid.strip()
+            result.append({"id": mid,
+                           "label": label.strip() or _IMAGE_MODEL_LABELS.get(mid, mid),
                            "provider": provider})
         return result
 
