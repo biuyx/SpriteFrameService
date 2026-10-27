@@ -130,11 +130,96 @@ def test_上游失败时说清换哪个模型(gateway, monkeypatch):
                         lambda *a, **k: FakeResp(body={"id": "t3", "status": "QUEUED"}))
     monkeypatch.setattr(weimeta_image.httpx, "get",
                         lambda *a, **k: FakeResp(body={"status": "FAILURE",
-                                                       "error": {"message": "模型暂时不可用"}}))
+                                                       "error": {"message": "模型暂时不可用"},
+                                                       "usage": {"quota": 0}}))
     with pytest.raises(ImageGenError) as e:
         generate("x", None, model="gpt-image-2.5-sunburst")
     msg = str(e.value)
-    assert "暂时不可用" in msg and "gpt-image-2" in msg and "不计费" in msg
+    assert "暂时不可用" in msg and "gpt-image-2" in msg
+    assert "quota=0" in msg and "未计费" in msg, "计费与否只按网关返回的 quota 说"
+
+
+def test_失败但计费时如实说(gateway, monkeypatch):
+    """万一网关在失败任务上也记了 quota，不能还嘴硬说没计费。"""
+    monkeypatch.setattr(weimeta_image.time, "sleep", lambda s: None)
+    monkeypatch.setattr(weimeta_image.httpx, "post",
+                        lambda *a, **k: FakeResp(body={"id": "t1", "status": "QUEUED"}))
+    monkeypatch.setattr(weimeta_image.httpx, "get", lambda *a, **k: FakeResp(
+        body={"status": "FAILURE", "error": {"message": "content policy rejected"},
+              "usage": {"quota": 68500}}))
+    with pytest.raises(ImageGenError) as e:
+        generate("x", None, model="gpt-image-2.5-sunburst")
+    assert "已计费 quota=68500" in str(e.value)
+
+
+def test_没有用量字段时不提计费(gateway, monkeypatch):
+    monkeypatch.setattr(weimeta_image.time, "sleep", lambda s: None)
+    monkeypatch.setattr(weimeta_image.httpx, "post",
+                        lambda *a, **k: FakeResp(body={"id": "t1", "status": "QUEUED"}))
+    monkeypatch.setattr(weimeta_image.httpx, "get", lambda *a, **k: FakeResp(
+        body={"status": "FAILURE", "error": {"message": "content policy rejected"}}))
+    with pytest.raises(ImageGenError) as e:
+        generate("x", None, model="gpt-image-2.5-sunburst")
+    assert "计费" not in str(e.value), "没有 quota 就别替网关下结论"
+
+
+def test_上游偶发EOF会自动重试(gateway, monkeypatch):
+    """网关回 upstream_error/EOF 时失败不计费，重试不会多花钱，应该自动重来。"""
+    state = {"posts": 0, "polls": 0}
+    monkeypatch.setattr(weimeta_image.time, "sleep", lambda s: None)
+
+    def fake_post(*a, **k):
+        state["posts"] += 1
+        return FakeResp(body={"id": f"t{state['posts']}", "status": "QUEUED"})
+
+    def fake_get(url, headers=None, timeout=None, **kw):
+        if "gw.test" in url:
+            state["polls"] += 1
+            if state["posts"] == 1:
+                return FakeResp(body={"status": "FAILURE", "error": {
+                    "message": 'upstream_error: 上游调用失败: openai request failed: EOF'}})
+            return FakeResp(body={"status": "SUCCESS",
+                                  "output": {"images": [{"url": "https://cdn.test/ok.png"}]}})
+        return FakeResp(content=b"retried-ok")
+
+    monkeypatch.setattr(weimeta_image.httpx, "post", fake_post)
+    monkeypatch.setattr(weimeta_image.httpx, "get", fake_get)
+    assert generate("x", None, model="gpt-image-2.5-sunburst") == b"retried-ok"
+    assert state["posts"] == 2, "第一次上游 EOF 后应重新提交一次"
+
+
+def test_内容策略拒绝不重试(gateway, monkeypatch):
+    state = {"posts": 0}
+    monkeypatch.setattr(weimeta_image.time, "sleep", lambda s: None)
+
+    def fake_post(*a, **k):
+        state["posts"] += 1
+        return FakeResp(body={"id": "t1", "status": "QUEUED"})
+
+    monkeypatch.setattr(weimeta_image.httpx, "post", fake_post)
+    monkeypatch.setattr(weimeta_image.httpx, "get", lambda *a, **k: FakeResp(
+        body={"status": "FAILURE", "error": {"message": "content policy rejected"}}))
+    with pytest.raises(ImageGenError):
+        generate("x", None, model="gpt-image-2.5-sunburst")
+    assert state["posts"] == 1, "内容被拒重试也没用"
+
+
+def test_上游连续失败会报出来(gateway, monkeypatch):
+    monkeypatch.setattr(weimeta_image.time, "sleep", lambda s: None)
+    state = {"posts": 0}
+
+    def fake_post(*a, **k):
+        state["posts"] += 1
+        return FakeResp(body={"id": f"t{state['posts']}", "status": "QUEUED"})
+
+    monkeypatch.setattr(weimeta_image.httpx, "post", fake_post)
+    monkeypatch.setattr(weimeta_image.httpx, "get", lambda *a, **k: FakeResp(
+        body={"status": "FAILURE", "error": {"message": "upstream_error: EOF"},
+              "usage": {"quota": 0}}))
+    with pytest.raises(ImageGenError) as e:
+        generate("x", None, model="gpt-image-2.5-sunburst")
+    assert state["posts"] == 3, "应该试满 3 次"
+    assert "未计费" in str(e.value)
 
 
 def test_未配置网关时给出明确提示(monkeypatch):

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 import time
 from typing import Callable, List, Optional
@@ -25,6 +26,8 @@ from urllib.parse import urlparse
 import httpx
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _REF_PREFIX = "sprite-service/first-frame-refs"
 _url_cache: dict[str, str] = {}
@@ -96,11 +99,45 @@ def _public_url(data: bytes, content_type: str = "image/png") -> str:
     return url
 
 
+class WeimetaTransientError(WeimetaError):
+    """上游偶发失败（EOF、openai request failed 之类）。失败不计费，值得重试。"""
+
+
+_ATTEMPTS = 3          # 含首次；失败不计费，所以重试是安全的
+
+
 def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
                    model: Optional[str] = None, size: Optional[str] = None,
                    progress: Optional[Callable[[float, str], None]] = None,
                    cancelled: Optional[Callable[[], bool]] = None) -> bytes:
-    """生成一张图并返回图片字节。images 为参考图（顺序即提示词里的图1、图2…）。"""
+    """生成一张图并返回图片字节。images 为参考图（顺序即提示词里的图1、图2…）。
+
+    上游偶发失败（网关回 upstream_error / EOF）会自动重试：这类失败不计费，
+    重试不会多花钱；内容策略拒绝、模型不存在、鉴权失败则不重试。
+    """
+    last: Optional[Exception] = None
+    for attempt in range(_ATTEMPTS):
+        try:
+            return _generate_once(prompt, images, model=model, size=size,
+                                  progress=progress, cancelled=cancelled,
+                                  attempt=attempt)
+        except WeimetaTransientError as e:
+            last = e
+            if attempt == _ATTEMPTS - 1:
+                raise
+            if progress:
+                progress(22, f"上游抖动（{e}），{3 + attempt * 3} 秒后重试...")
+            if cancelled and cancelled():
+                raise WeimetaError("已取消") from e
+            time.sleep(3 + attempt * 3)
+    raise WeimetaError(str(last) if last else "生图失败")
+
+
+def _generate_once(prompt: str, images: Optional[List[bytes]], *,
+                   model: Optional[str], size: Optional[str],
+                   progress: Optional[Callable[[float, str], None]],
+                   cancelled: Optional[Callable[[], bool]],
+                   attempt: int = 0) -> bytes:
     s = get_settings()
     if not configured():
         raise WeimetaError(
@@ -186,7 +223,13 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
         if status == "FAILURE":
             err = st.get("error") or {}
             detail = err.get("message") if isinstance(err, dict) else str(err or "")
-            raise WeimetaError(_friendly_failure(model, detail))
+            quota = _quota_of(st)
+            msg = _friendly_failure(model, detail, quota)
+            logger.warning("生图失败 task=%s model=%s quota=%s detail=%s",
+                           task_id, model, quota, (detail or "")[:300])
+            if _is_transient_detail(detail):
+                raise WeimetaTransientError(msg)
+            raise WeimetaError(msg)
         now = time.time()
         if now - last_note >= 3:
             last_note = now
@@ -195,15 +238,43 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
         time.sleep(max(0.5, s.weimeta_poll_seconds))
 
 
-def _friendly_failure(model: str, detail: str) -> str:
-    """上游失败时说清怎么办（gpt-image-2.5 家族的不稳定是已知的）。"""
+def _quota_of(st: dict) -> Optional[int]:
+    """网关终态的 usage.quota（失败时实测为 0）；取不到返回 None，不替它下结论。"""
+    usage = st.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    try:
+        return int(usage.get("quota"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _billing_note(quota: Optional[int]) -> str:
+    if quota is None:
+        return ""
+    if quota <= 0:
+        return "（网关返回 quota=0，本次未计费）"
+    return f"（本次已计费 quota={quota}）"
+
+
+def _is_transient_detail(detail: str) -> bool:
+    """上游连接层的偶发失败（EOF、openai request failed…）——这类失败不计费，值得重试。"""
     low = (detail or "").lower()
+    return any(k in low for k in ("upstream_error", "上游调用失败", "eof",
+                                  "timeout", "timed out", "bad gateway",
+                                  "connection reset", "502", "503"))
+
+
+def _friendly_failure(model: str, detail: str, quota: Optional[int] = None) -> str:
+    """上游失败时说清怎么办；计费与否只看网关返回的 usage.quota。"""
+    low = (detail or "").lower()
+    billing = _billing_note(quota)
     if "不可用" in (detail or "") or "unavailable" in low or "not available" in low:
         alt = "gpt-image-2" if model != "gpt-image-2" else "gpt-image-2.5-sunburst"
-        return f"{model} 上游暂时不可用（这次不计费）。换 {alt} 再试通常能出图"
+        return f"{model} 上游暂时不可用{billing}。换 {alt} 再试通常能出图"
     if "content" in low and ("policy" in low or "reject" in low or "safety" in low):
-        return f"生图被上游内容策略拒绝（{detail[:80]}）：改一下提示词再试"
-    return f"生图失败：{detail[:200] or '上游未给出原因'}（失败不计费）"
+        return f"生图被上游内容策略拒绝（{detail[:80]}）{billing}：改一下提示词再试"
+    return f"生图失败：{detail[:200] or '上游未给出原因'}{billing}"
 
 
 def _download(url: str, attempts: int = 3) -> bytes:
