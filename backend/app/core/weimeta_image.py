@@ -49,6 +49,13 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
+def _is_dns_error(e: Exception) -> bool:
+    """是否是「域名没解析出来」——这种失败请求一定没发出去，重试安全。"""
+    msg = str(e).lower()
+    return ("name resolution" in msg or "nodename nor servname" in msg
+            or "getaddrinfo" in msg or "name or service not known" in msg)
+
+
 def _explain(r: httpx.Response, stage: str) -> str:
     """把网关报错翻成能照做的中文。"""
     try:
@@ -116,15 +123,23 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
     if cancelled and cancelled():
         raise WeimetaError("已取消")
     note(20, f"提交生图任务（{model}）...")
-    try:
-        r = httpx.post(f"{_base()}/v2/images/generations", json=payload,
-                       headers=_headers(), timeout=httpx.Timeout(60.0))
-    except httpx.HTTPError as e:
-        # 提交阶段连不上是「不知道有没有提交成功」，重试可能重复扣费，所以不自动重试
-        raise WeimetaError(
-            f"连不上生图网关（{urlparse(_base()).hostname or _base()}）："
-            f"{type(e).__name__}。这次提交不确定是否已到达网关，"
-            "请先到网关后台确认没有生成记录，再重试") from e
+    r = None
+    for attempt in range(3):
+        try:
+            r = httpx.post(f"{_base()}/v2/images/generations", json=payload,
+                           headers=_headers(), timeout=httpx.Timeout(60.0))
+            break
+        except httpx.HTTPError as e:
+            # 只有「域名都没解析出来」才是确定没发出去，可以放心重试；
+            # 其它连接层失败可能已经到达网关，重试会重复扣费，直接报。
+            if _is_dns_error(e) and attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            raise WeimetaError(
+                f"连不上生图网关（{urlparse(_base()).hostname or _base()}）："
+                f"{type(e).__name__}。这次提交不确定是否已到达网关，"
+                "请先到网关后台确认没有生成记录，再重试") from e
+    assert r is not None
     if r.status_code >= 400:
         raise WeimetaError(_explain(r, "提交"))
     task_id = str((r.json() or {}).get("id") or "").strip()

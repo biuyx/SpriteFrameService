@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import os
 import re
+import time
 import urllib.parse
 
 import httpx
@@ -116,17 +117,35 @@ def upload_bytes(data: bytes, key: str, content_type: str) -> str:
     ).decode("ascii")
 
     url = _upload_base(bucket) + "/" + urllib.parse.quote(key, safe="/._-")
-    try:
-        r = httpx.put(url, content=data, timeout=httpx.Timeout(30.0, write=300.0),
-                      headers={
-                          "Authorization": f"OSS {ak}:{signature}",
-                          "Content-Type": content_type,
-                          "Content-MD5": content_md5,
-                          "Date": date_header,
-                      })
-    except httpx.HTTPError as e:
-        raise OssError(f"OSS 上传失败: {type(e).__name__}") from e
-    if r.status_code >= 400:
-        raise OssError(f"OSS 上传失败: HTTP {r.status_code}: {r.text[:150]}")
+    headers = {
+        "Authorization": f"OSS {ak}:{signature}",
+        "Content-Type": content_type,
+        "Content-MD5": content_md5,
+        "Date": date_header,
+    }
 
-    return public_domain + "/" + urllib.parse.quote(key, safe="/._-")
+    # 传输层故障（DNS 抖一下、连接被掐）重试：PUT 是幂等的（同 key 同内容），
+    # 重试不会产生副作用。4xx 是签名/权限问题，重试没用，直接报。
+    last: Exception | None = None
+    for attempt in range(3):
+        try:
+            r = httpx.put(url, content=data, headers=headers,
+                          timeout=httpx.Timeout(30.0, write=300.0))
+        except httpx.HTTPError as e:
+            last = e
+            if attempt < 2:
+                time.sleep(0.5 * (2 ** attempt))
+                continue
+            hint = "（域名解析失败，多半是服务器 DNS 抖了一下）" \
+                if "name resolution" in str(e).lower() else ""
+            raise OssError(
+                f"OSS 上传失败（重试 3 次）{hint}: {type(e).__name__}") from e
+        if r.status_code >= 500 and attempt < 2:
+            last = OssError(f"HTTP {r.status_code}")
+            time.sleep(0.5 * (2 ** attempt))
+            continue
+        if r.status_code >= 400:
+            raise OssError(f"OSS 上传失败: HTTP {r.status_code}: {r.text[:150]}")
+        return public_domain + "/" + urllib.parse.quote(key, safe="/._-")
+
+    raise OssError(f"OSS 上传失败（重试 3 次）: {last}")
