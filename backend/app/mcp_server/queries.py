@@ -301,6 +301,7 @@ def readiness(sprite_ref: str, action_refs: Optional[List[str]] = None,
     verdict = (f"就绪：{len(rows)} 个动作都能直接跑" if not blockers
                else f"有 {blocked_n}/{len(rows)} 个动作被阻塞，先补齐再量产")
     return {
+        "models": _model_options(),
         "sprite": {"id": sid, "name": sp.get("name")},
         "verdict": verdict,
         # 根因。同一原因落在很多动作、且涉及的模板就那几个 → 多半是模板没定型好，该找人改模板
@@ -317,6 +318,29 @@ def readiness(sprite_ref: str, action_refs: Optional[List[str]] = None,
         "export_ops": size_ops_of(sid) or ["无"],
         "actions": rows,
     }
+
+
+def _model_options() -> dict:
+    """可选生成模型。国内模型被内容审核拦时，可改用亚太（无预过滤）的备选。"""
+    from app.config import get_settings
+    s = get_settings()
+
+    def rows(models):
+        return [{"id": m["id"], "名称": m["label"], "通道": m["provider"]} for m in models]
+
+    out = {
+        "首帧生图": {"默认": s.default_image_model, "可选": rows(s.image_models_list)},
+        "视频": {"默认": s.ark_model, "可选": rows(s.video_models_list)},
+    }
+    if s.byteplus_configured:
+        out["无预过滤备选"] = {
+            "说明": "国内模型被内容审核拦时可改用亚太接入点（内容预过滤已关）；"
+                    "跨境更慢、按美元计价，属于人工确认后的备选，不要默认用",
+            "图片": [m["id"] for m in s.byteplus_image_models_list],
+            "视频": [m["id"] for m in s.byteplus_models_list],
+            "用法": "plan_generation 里传 image_model / video_model；不传就用上表的默认",
+        }
+    return out
 
 
 # ---------------------------------------------------------------- 任务
@@ -364,5 +388,6 @@ def platform_status() -> dict:
             "默认抠图模型": BackgroundRemover.default_model(),
             "视频生成": {"已配置": s.generate_enabled, "模型": s.ark_model,
                        "同时进行上限": s.generate_max_concurrent},
+            "生图/视频模型": _model_options(),
             "OSS": oss_configured(), "本地调度": resources.status(),
             "进行中的任务": sum(1 for j in jobs if j.get("status") in ACTIVE)}

@@ -63,6 +63,11 @@ INSTRUCTIONS = """\
    get_sprite_overview 会返回 template_binding。缺少绑定或参考集缺少动作时，应由管理员
    在角色看板「模板绑定」补齐；禁止从其他分组按同名动作兜底，不要重复提交生成绕过。
 
+8. 内容审核：国内模型被上游以「内容审核 / 敏感内容」拦下时，可以改用亚太接入点的
+   「无预过滤」备选模型——plan_generation 传 image_model / video_model 指定。这类模型
+   跨境更慢、按美元计价，属于备选：先向人说明，同意了再排进计划。可用模型见
+   check_readiness 或 get_platform_status 返回的 models；没配亚太密钥时不会出现。
+
 角色和动作的参数都可以传 id 或名字。"""
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
@@ -433,12 +438,19 @@ PAID = ToolAnnotations(readOnlyHint=False, destructiveHint=True,
 
 @server.tool(name=_scope('plan_generation'), title='付费生成计划', annotations=READ)
 @_wrap_errors
-async def plan_generation(sprite: SpriteRef,
-                          steps: Annotated[List[PaidStep], Field(min_length=1, max_length=2)],
-                          actions: Optional[List[str]] = None,
-                          mode: Literal['trial', 'production'] = 'trial', force: bool = False) -> dict:
+async def plan_generation(
+        sprite: SpriteRef,
+        steps: Annotated[List[PaidStep], Field(min_length=1, max_length=2)],
+        actions: Optional[List[str]] = None,
+        mode: Literal['trial', 'production'] = 'trial', force: bool = False,
+        image_model: Annotated[Optional[str], Field(
+            description='首帧生图模型 id；留空用默认。国内模型被内容审核拦时，'
+                        '可改用「亚太·无预过滤」的备选（跨境更慢，需人确认）')] = None,
+        video_model: Annotated[Optional[str], Field(
+            description='视频模型 id；留空用默认。同上，可用亚太·无预过滤的备选')] = None) -> dict:
     """只读生成试产/量产计划与调用次数、视频秒数估算。将完整 JSON 保存给管理员审批；不会花钱。"""
-    return await _run(generation.plan_generation, sprite, actions, steps, mode, force)
+    return await _run(generation.plan_generation, sprite, actions, steps, mode, force,
+                      image_model, video_model)
 
 
 @server.tool(name=_scope('submit_generation_batch', 'generate'), title='提交已审批生成', annotations=PAID)

@@ -23,12 +23,25 @@ def digest(value):
     return hashlib.sha256(raw).hexdigest()
 
 
-def plan_generation(sprite, actions, steps, mode='trial', force=False):
+def plan_generation(sprite, actions, steps, mode='trial', force=False,
+                    image_model=None, video_model=None):
     from app.api.generate import _default_generate_payload
     from app.core.first_frame_generator import resolve_refs
     from app.services.prompt_store import resolve_for_action
     if mode not in ('trial', 'production') or not steps or set(steps) - {'firstframe', 'generate'}:
         raise queries.ToolInputError('mode 请选择 trial/production；付费工序只支持 firstframe、generate')
+    settings = get_settings()
+    # 指定模型必须是下拉里真有的，否则等于让人审批一个跑不起来的计划
+    if image_model and image_model not in {m['id'] for m in settings.image_models_list}:
+        raise queries.ToolInputError(
+            'image_model 不在可选列表：' +
+            '、'.join(f"{m['id']}（{m['label']}）" for m in settings.image_models_list))
+    if video_model and video_model not in {m['id'] for m in settings.video_models_list}:
+        raise queries.ToolInputError(
+            'video_model 不在可选列表：' +
+            '、'.join(f"{m['id']}（{m['label']}）" for m in settings.video_models_list))
+    image_model = image_model or None
+    video_model = video_model or None
     sp = queries.find_sprite(sprite)
     acts = sorted({a['id']: a for a in queries.find_actions(sp, actions)}.values(), key=lambda a: a['id'])
     if not 1 <= len(acts) <= (1 if mode == 'trial' else 50):
@@ -36,7 +49,6 @@ def plan_generation(sprite, actions, steps, mode='trial', force=False):
     steps = [s for s in ('firstframe', 'generate') if s in steps]
     request = {'sprite': sp['id'], 'actions': [a['id'] for a in acts],
                'steps': steps, 'mode': mode, 'force': force}
-    settings = get_settings()
     blockers, items = [], []
     if not settings.generate_enabled:
         blockers.append('未配置 Ark API Key')
@@ -57,21 +69,23 @@ def plan_generation(sprite, actions, steps, mode='trial', force=False):
                     ff = pipeline.check_firstframe(sp['id'], action, {})
                     art, ref, key, role = resolve_refs(sp['id'], action, ff['set_id'])
                     prompt = resolve_for_action('first_frame', action)
+                    chosen = image_model or settings.ark_image_model
                     item.update(set_id=ff['set_id'], prompt=prompt,
-                                model=settings.ark_image_model,
+                                model=chosen,
                                 assets={'art': digest(art), 'reference': digest(ref)}, key=key, role=role)
                     recipe = {'step': step, 'key': key, 'prompt': prompt,
-                              'reference': digest(ref), 'model': settings.ark_image_model}
+                              'reference': digest(ref), 'model': chosen}
                 else:
                     from app.core.oss_uploader import oss_configured
                     if not oss_configured():
                         raise ValueError('未配置 OSS，参考视频无法供生成接口访问')
-                    if settings.ark_model not in {m['id'] for m in settings.ark_models_list}:
-                        raise ValueError('默认视频模型不在允许列表')
+                    chosen = video_model or settings.ark_model
+                    if chosen not in {m['id'] for m in settings.video_models_list}:
+                        raise ValueError('视频模型不在允许列表')
                     if not tpl:
                         raise ValueError('未绑定参考视频模板')
                     payload = _default_generate_payload(get_session(action['id']), action, tpl,
-                                                         settings.ark_model, '480p', 'adaptive')
+                                                         chosen, '480p', 'adaptive')
                     duration = payload['params']['duration']
                     if type(duration) is not int or not 4 <= duration <= 12:
                         raise ValueError('视频时长须为 4–12 秒的整数')
