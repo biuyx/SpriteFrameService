@@ -83,10 +83,28 @@ class Settings(BaseSettings):
     ark_model: str = "doubao-seedance-2-0-mini-260615"   # 默认模型
     # 生图模型（首帧生成用；需在方舟控制台开通）。SPRITE_ARK_IMAGE_MODEL 可覆盖
     ark_image_model: str = "doubao-seedream-5-0-pro-260628"
+    # 方舟可选生图模型（id:标签，分号分隔）；留空则只列 ark_image_model 一个
+    ark_image_models: str = ""
     # 生图结果的取回方式：默认拿 URL 再下载；机器连不上结果服务器（对象存储/CDN）
     # 时置 1，改成让接口直接回 base64，省掉那一跳
     ark_image_b64: bool = False
     ark_timeout_seconds: int = 900   # 单次生成总超时
+
+    # --- LocalAI 生图（gpt-image-2.5 等；走公司网关，按账号计费）---
+    # 通道选择：ark = 只走方舟；localai = 只走 LocalAI；auto = 按模型 id 判断
+    image_provider: str = "auto"
+    localai_base_url: str = ""       # 如 http://192.168.3.246:8081
+    localai_username: str = ""       # 专用账号（需有 ai:image 权限）
+    localai_password: str = ""
+    # 可选生图模型（id:标签，分号分隔）。默认模型是网关的 gpt-image-2.5-sunburst
+    localai_image_models: str = (
+        "gpt-image-2.5-sunburst:GPT-Image-2.5 Sunburst（默认）;"
+        "gpt-image-2:GPT-Image-2（最稳）;"
+        "ep-20261027150254-4cxlt:Seedream 5.0 Pro（亚太·无预过滤）")
+    localai_image_model: str = "gpt-image-2.5-sunburst"
+    localai_timeout_seconds: int = 300   # 单张生图（含提交+轮询）总超时
+    localai_poll_seconds: float = 2.0    # 轮询间隔
+
     generate_max_concurrent: int = 5  # 同时进行中的生成任务数上限（1~10）
     first_frame_max_concurrent: int = 3  # 同时进行中的首帧生图数上限（1~10）
 
@@ -115,6 +133,51 @@ class Settings(BaseSettings):
             mid, _, label = item.partition(":")
             result.append({"id": mid.strip(), "label": label.strip() or mid.strip()})
         return result
+
+    @property
+    def localai_configured(self) -> bool:
+        """LocalAI 生图通道是否可用：地址和账号都要有。"""
+        return bool(self.localai_base_url.strip() and self.localai_username.strip()
+                    and self.localai_password.strip())
+
+    @property
+    def localai_image_models_list(self) -> list[dict]:
+        """LocalAI 可选生图模型：[{"id", "label", "provider"}]。"""
+        return self._parse_models(self.localai_image_models, "localai")
+
+    @property
+    def ark_image_models_list(self) -> list[dict]:
+        """方舟可选生图模型：默认只有 ark_image_model 一个，可用同格式追加。"""
+        return self._parse_models(self.ark_image_models or self.ark_image_model, "ark")
+
+    def _parse_models(self, spec: str, provider: str) -> list[dict]:
+        result = []
+        for item in (spec or "").split(";"):
+            item = item.strip()
+            if not item:
+                continue
+            mid, _, label = item.partition(":")
+            result.append({"id": mid.strip(), "label": label.strip() or mid.strip(),
+                           "provider": provider})
+        return result
+
+    @property
+    def image_models_list(self) -> list[dict]:
+        """界面可选的生图模型（带 provider 标记）。
+
+        LocalAI 的模型只在通道配置完整时才列出来——否则界面上能选却一定失败。
+        """
+        models = list(self.ark_image_models_list)
+        if self.localai_configured:
+            models += self.localai_image_models_list
+        return models
+
+    @property
+    def default_image_model(self) -> str:
+        """默认生图模型：localai 通道可用时用它的默认，否则回退方舟。"""
+        if self.image_provider in ("localai", "auto") and self.localai_configured:
+            return self.localai_image_model.strip() or self.ark_image_model
+        return self.ark_image_model
 
     @property
     def generate_enabled(self) -> bool:

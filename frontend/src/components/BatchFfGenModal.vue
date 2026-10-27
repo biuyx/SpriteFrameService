@@ -21,6 +21,10 @@ const phase = ref('pick')
 const rows = ref([])
 const skippedRows = ref([])
 const promptOf = ref({})           // action_id -> 提示词库解析结果
+// 生图模型：默认取平台默认（LocalAI 配好时是 gpt-image-2.5-sunburst）
+const imageModels = ref([])
+const imageModel = ref('')
+const imageDefault = ref('')
 const SOURCE_TXT = { action: '记忆', template: '模板', key: 'key', group: '分组', global: '全局', builtin: '内置' }
 function promptLabel(a) {
   const p = promptOf.value[a.id]
@@ -52,9 +56,13 @@ const missingRows = computed(() =>
 
 onMounted(async () => {
   try {
-    const [s, t, r] = await Promise.all([
-      roleFirstFrameChoices(store.currentSprite.id), api.templates(), api.spriteRefs(store.currentSprite.id),
+    const [s, t, r, gen] = await Promise.all([
+      roleFirstFrameChoices(store.currentSprite.id), api.templates(),
+      api.spriteRefs(store.currentSprite.id), api.genCapabilities(),
     ])
+    imageModels.value = gen.image_models || []
+    imageDefault.value = gen.default_image_model || ''
+    imageModel.value = imageDefault.value
     sets.value = s.sets
     for (const x of t.templates) templatesById.value[x.id] = x
     refs.value = r.refs
@@ -84,11 +92,14 @@ async function start() {
   if (!n) return toast('请至少勾选一个动作')
   const overwrite = props.actions.filter(a => checked.value[a.id] && a.summary?.has_first_frame).length
   const warn = overwrite ? `\n其中 ${overwrite} 个已有首帧，将被覆盖。` : ''
+  const modelLabel = (imageModels.value.find(m => m.id === imageModel.value)?.label) || imageModel.value || '默认'
   if (!(await askConfirm(
-    `用参考集「${curSet.value?.name}」为 ${n} 个动作生成首帧？\n生图按张计费（Seedream）。${warn}`))) return
+    `用参考集「${curSet.value?.name}」为 ${n} 个动作生成首帧？\n`
+    + `生图按张计费，模型：${modelLabel}。${warn}`))) return
   try {
     const r = await api.batchGenFirstFrames(store.currentSprite.id, {
       action_ids: selectedIds.value, set_id: setId.value,
+      model: imageModel.value || null,
     })
     skippedRows.value = r.skipped
     rows.value = r.submitted.map(x => ({ ...x, status: 'queued', progress: 0, message: '', error: null }))
@@ -132,6 +143,7 @@ async function retry(row) {
   try {
     const r = await api.batchGenFirstFrames(store.currentSprite.id, {
       action_ids: [row.action_id], set_id: setId.value,
+      model: imageModel.value || null,
     })
     if (r.submitted.length) {
       Object.assign(row, { ...r.submitted[0], status: 'queued', progress: 0, message: '', error: null })
@@ -166,6 +178,15 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             正面立绘 {{ hasFront ? '✓' : '未标记' }}</span>
           <span :class="hasBack ? 'ok-text' : 'hint'">
             背面立绘 {{ hasBack ? '✓' : '未标记（背面动作将用正面立绘代替）' }}</span>
+        </div>
+        <div class="row" style="gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+          <div class="field inline"><label>生图模型</label>
+            <select v-model="imageModel">
+              <option v-for="mm in imageModels" :key="mm.id" :value="mm.id">
+                {{ mm.label }}<template v-if="mm.id === imageDefault">（默认）</template>
+                · {{ mm.provider === 'localai' ? 'LocalAI' : '方舟' }}</option>
+            </select></div>
+          <span class="hint">模型不同，画风与出图速度会有差异；失败不计费。</span>
         </div>
         <p v-if="!hasFront" class="warn-text" style="margin:0 0 6px;font-size:12px">
           请先在「首帧图库」上传立绘并点图片左下角标记「正面立绘」。</p>

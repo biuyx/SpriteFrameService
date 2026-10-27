@@ -305,6 +305,27 @@ claude mcp add --transport http sprite http://<服务器地址>:8000/api/mcp --h
 
 ---
 
+## 首帧生图通道（LocalAI）
+
+首帧生图有两条通道，可在「设置 → LocalAI 生图通道」里配，也可以直接写 `backend/.env`：
+
+```bash
+SPRITE_LOCALAI_BASE_URL=http://192.168.3.246:8081   # 公司 LocalAI 网关
+SPRITE_LOCALAI_USERNAME=sprite-service              # 专用账号，需有「生图」权限
+SPRITE_LOCALAI_PASSWORD=******
+```
+
+- **默认模型 `gpt-image-2.5-sunburst`**（走网关异步接口）。还可选 `gpt-image-2`（最稳）、
+  `Seedream 5.0 Pro（亚太·无预过滤）`。
+- 没配 LocalAI 时一切照旧：走方舟 Seedream，界面上也不列 LocalAI 的模型。
+- `SPRITE_IMAGE_PROVIDER=ark|localai|auto`（默认 auto）：按所选模型归属走对应通道。
+- 两条通道的差别：方舟收 base64 参考图；**LocalAI 只收公网 URL**，所以参考图会先传 OSS
+  再交给网关（同一张图按内容哈希只传一次）。
+- 失败不计费；`gpt-image-2.5` 上游偶发「模型暂时不可用」时，报错会直接建议换 `gpt-image-2`。
+- LocalAI 按账号计费，建议单独建一个账号，便于核账。
+
+---
+
 ## 模型与外部依赖（跨平台注意）
 
 | 依赖 | 位置 | 说明 |

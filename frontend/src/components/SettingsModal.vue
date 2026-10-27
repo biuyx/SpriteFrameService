@@ -15,6 +15,10 @@ const ossBucket = ref('')
 const ossDomain = ref('')
 const ossAk = ref('')
 const ossSk = ref('')
+// LocalAI 生图通道（留空 = 不修改）
+const laiUrl = ref('')
+const laiUser = ref('')
+const laiPass = ref('')
 
 async function load() {
   loading.value = true
@@ -39,10 +43,14 @@ async function save() {
     if (ossDomain.value.trim()) patch.oss_public_domain = ossDomain.value.trim()
     if (ossAk.value.trim()) patch.oss_access_key_id = ossAk.value.trim()
     if (ossSk.value.trim()) patch.oss_access_key_secret = ossSk.value.trim()
+    if (laiUrl.value.trim()) patch.localai_base_url = laiUrl.value.trim()
+    if (laiUser.value.trim()) patch.localai_username = laiUser.value.trim()
+    if (laiPass.value.trim()) patch.localai_password = laiPass.value.trim()
     if (!Object.keys(patch).length) { emit('close'); return }
     current.value = await api.saveSettings(patch)
     newKey.value = ''
     ossBucket.value = ossDomain.value = ossAk.value = ossSk.value = ''
+    laiUrl.value = laiUser.value = laiPass.value = ''
     toast('设置已保存并生效')
     emit('close')
   } catch (e) {
@@ -57,6 +65,21 @@ async function clearKey() {
   saving.value = true
   try {
     current.value = await api.saveSettings({ ark_api_key: '' })
+    toast('已清除')
+  } catch (e) {
+    toast(`操作失败: ${e.message}`)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function clearLocalai() {
+  if (!(await askConfirm('清除配置文件中的 LocalAI 配置？之后首帧生图会回退到方舟 Seedream。'))) return
+  saving.value = true
+  try {
+    current.value = await api.saveSettings({
+      localai_base_url: '', localai_username: '', localai_password: '',
+    })
     toast('已清除')
   } catch (e) {
     toast(`操作失败: ${e.message}`)
@@ -139,6 +162,25 @@ onMounted(load)
             <input v-model="ossSk" type="password" placeholder="AccessKey Secret" autocomplete="off" />
           </div>
           <p class="hint">用于把参考视频/参考图上传为公网 URL（Ark 要求）。保存到 backend\.env，立即生效。</p>
+        </div>
+
+        <div class="set-group">
+          <label class="set-label">LocalAI 生图通道（gpt-image-2.5 等）</label>
+          <div class="set-row">
+            <span class="key-now" v-if="current.localai?.configured">
+              当前：{{ current.localai.base_url }} · {{ current.localai.username }}
+              · 默认模型 {{ current.localai.default_image_model }}
+            </span>
+            <span class="key-now" v-else>未配置——首帧生图用方舟 Seedream</span>
+            <button v-if="current.localai?.configured" class="small"
+                    :disabled="saving" @click="clearLocalai">清除</button>
+          </div>
+          <div class="oss-grid">
+            <input v-model="laiUrl" placeholder="网关地址，如 http://192.168.3.246:8081" autocomplete="off" />
+            <input v-model="laiUser" placeholder="专用账号（需有 ai:image 权限）" autocomplete="off" />
+            <input v-model="laiPass" type="password" placeholder="密码" autocomplete="off" />
+          </div>
+          <p class="hint">配好后首帧生图默认用 gpt-image-2.5-sunburst；参考图会先传 OSS 换公网 URL。保存到 backend\.env，立即生效。</p>
         </div>
 
         <div class="modal-foot">

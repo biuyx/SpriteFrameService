@@ -731,6 +731,9 @@ class FfGenRequest(BaseModel):
     prompt_version: Optional[int] = None
     prompt_name: Optional[str] = None
     remember: bool = Field(default=True, description="记为该动作的首帧生成设定")
+    model: Optional[str] = Field(
+        default=None, description="生图模型 id；留空用平台默认（LocalAI 配好时是 "
+                                  "gpt-image-2.5-sunburst，否则用方舟 Seedream）")
 
 
 def _prompt_meta(req) -> dict:
@@ -765,7 +768,8 @@ def gen_first_frame(sprite_id: str, action_id: str, req: FfGenRequest):
         lambda ctx: run_gen_first_frame(sprite_id, action_id, set_id,
                                         req.prompt, ctx,
                                         prompt_meta=_prompt_meta(req),
-                                        remember=req.remember),
+                                        remember=req.remember,
+                                        image_model=req.model),
         pool="io", gate=first_frame_gate,
         metadata={'sprite_id': sprite_id, 'action_id': action_id})
     return {"job_id": job.id}
@@ -779,6 +783,8 @@ class BatchFfGenRequest(BaseModel):
     prompt_version: Optional[int] = None
     prompt_name: Optional[str] = None
     remember: bool = True
+    model: Optional[str] = Field(
+        default=None, description="生图模型 id；留空用平台默认（同单个生成）")
 
 
 @router.post("/{sprite_id}/batch-gen-first-frames")
@@ -806,7 +812,8 @@ def batch_gen_first_frames(sprite_id: str, req: BatchFfGenRequest):
             "gen_first_frame",
             (lambda _a: lambda ctx: run_gen_first_frame(
                 sprite_id, _a, req.set_id, req.prompt, ctx,
-                prompt_meta=_prompt_meta(req), remember=req.remember))(aid),
+                prompt_meta=_prompt_meta(req), remember=req.remember,
+                image_model=req.model))(aid),
             pool="io", gate=first_frame_gate,
             metadata={'sprite_id': sprite_id, 'action_id': aid})
         submitted.append({"action_id": aid, "name": name, "job_id": job.id})

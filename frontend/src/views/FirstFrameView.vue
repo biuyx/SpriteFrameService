@@ -59,6 +59,10 @@ const ffPromptSel = ref('')
 const ffPromptDirty = ref(false)
 const ffRemember = ref(true)
 const genBusy = ref(false)
+// 生图模型：LocalAI 配好时默认 gpt-image-2.5-sunburst，否则回退方舟 Seedream
+const ffImageModels = ref([])
+const ffImageModel = ref('')
+const ffImageDefault = ref('')
 
 function libText(rec) {
   const v = rec.versions.find((x) => x.v === rec.current) || rec.versions[rec.versions.length - 1]
@@ -67,11 +71,15 @@ function libText(rec) {
 
 async function openFfGen() {
   try {
-    const [s, r, lib] = await Promise.all([
+    const [s, r, lib, gen] = await Promise.all([
       roleFirstFrameChoices(store.currentSprite.id),
       api.resolvePrompt('first_frame', store.currentSprite.id, store.sessionId),
       api.prompts('first_frame'),
+      api.genCapabilities(),
     ])
+    ffImageModels.value = gen.image_models || []
+    ffImageDefault.value = gen.default_image_model || ''
+    if (!ffImageModel.value) ffImageModel.value = ffImageDefault.value
     ffGenSets.value = s.sets
     if (!s.sets.length) return toast('没有可用的绑定首帧集，请到角色看板「模板绑定」配置或归档')
     ffGenSetId.value = s.selected
@@ -105,6 +113,7 @@ async function runFfGen() {
       set_id: ffGenSetId.value, prompt: ffPrompt.value.trim(),
       prompt_id: m.prompt_id || null, prompt_version: m.version || null,
       prompt_name: m.name || null, remember: ffRemember.value,
+      model: ffImageModel.value || null,
     }), {
       title: 'AI 生成首帧',
       onDone: () => {
@@ -190,6 +199,12 @@ onMounted(probeFirstFrame)
         </div>
         <textarea v-model="ffPrompt" rows="4" style="width:100%;resize:vertical;margin-bottom:8px"
                   @input="ffPromptDirty = true"></textarea>
+        <div class="field" style="margin-bottom:10px"><label>生图模型</label>
+          <select v-model="ffImageModel" style="width:100%">
+            <option v-for="mm in ffImageModels" :key="mm.id" :value="mm.id">
+              {{ mm.label }}<template v-if="mm.id === ffImageDefault">（默认）</template>
+              · {{ mm.provider === 'localai' ? 'LocalAI' : '方舟' }}</option>
+          </select></div>
         <p class="hint" style="margin:0 0 10px">图1=姿势参考，图2=立绘；立绘在「从图库选」的图库里上传并标记正面/背面。</p>
         <div class="row" style="align-items:center;gap:10px">
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer">

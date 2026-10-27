@@ -71,7 +71,8 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
     import cv2
     import numpy as np
 
-    from app.core.ark_image import ArkImageError, generate_image
+    from app.core.image_gen import ImageGenError, generate as generate_first_frame_image
+    from app.core.image_gen import resolve_model
 
     action = sprite_store.get_action(sprite_id, action_id)
     ctx.report(5, "准备参考图...")
@@ -90,8 +91,10 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
         raise RuntimeError("已取消")
     # 并发由调用方把关（端点走准入队列、流水线用 hold）；这里只管生图。
     # 同步接口拿不到真实进度，用心跳按已等待秒数推进，免得整段静止。
-    ctx.report(15, "生图中（Seedream）...")
-    with heartbeat(ctx, "生图中（Seedream）", start=15, end=80, expect=20):
+    provider, model_id = resolve_model(image_model)
+    label = "LocalAI" if provider == "localai" else "Seedream"
+    ctx.report(15, f"生图中（{label}）...")
+    with heartbeat(ctx, f"生图中（{label}）", start=15, end=80, expect=20):
         try:
             # 图序与提示词对应：图1=姿势参考，图2=角色立绘
             from app.services.template_bindings import select_first_frame_set
@@ -100,9 +103,15 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
                 ctx.before_paid_call()
             if ctx.cancelled():
                 raise RuntimeError('已取消')
-            data = (generate_image(text, [ref, art], model=image_model) if image_model
-                    else generate_image(text, [ref, art]))
-        except ArkImageError as e:
+
+            def _progress(pct: float, msg: str) -> None:
+                ctx.report(min(80.0, max(15.0, pct)), msg)
+
+            data = generate_first_frame_image(
+                text, [ref, art], model=image_model,
+                progress=_progress if provider == "localai" else None,
+                cancelled=ctx.cancelled)
+        except ImageGenError as e:
             raise RuntimeError(str(e))
 
     ctx.report(85, "落盘...")
@@ -120,7 +129,9 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
                         "ref_set": set_id, "ref_key": key, "role": role,
                         "prompt_id": meta.get("prompt_id"),
                         "prompt_version": meta.get("prompt_version"),
-                        "prompt_text": text},
+                        "prompt_text": text,
+                        # 记下用哪条通道的哪个模型出的图，便于复现与对账
+                        "provider": provider, "image_model": model_id},
     }
     if remember:
         prefs = dict(action.get("gen_prefs") or {})
@@ -129,6 +140,7 @@ def run_gen_first_frame(sprite_id: str, action_id: str, set_id: str,
             "prompt_id": meta.get("prompt_id"),
             "prompt_version": meta.get("prompt_version"),
             "prompt_name": meta.get("prompt_name"), "set_id": set_id,
+            "provider": provider, "image_model": model_id,
         }
         patch["gen_prefs"] = prefs
     sprite_store.update_action(sprite_id, action_id, patch)
