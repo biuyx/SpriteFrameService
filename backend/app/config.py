@@ -25,10 +25,11 @@ _ENV_FILES = [
     _BACKEND_DIR.parent / ".env",
 ]
 
-# 生图模型的可读名（配置里没写标签时用；认不出的就显示原始 id）
+# 生图模型的可读名（配置里没写标签时用；认不出的就显示原始 id）。
+# 别在这里写「（默认）」或「（方舟）」——界面会自己标默认项和通道，重复了很难看。
 _IMAGE_MODEL_LABELS = {
-    "doubao-seedream-5-0-pro-260628": "Seedream 5.0 Pro（方舟）",
-    "doubao-seedream-4-5-250828": "Seedream 4.5（方舟）",
+    "doubao-seedream-5-0-pro-260628": "Seedream 5.0 Pro",
+    "doubao-seedream-4-5-250828": "Seedream 4.5",
     "gpt-image-2.5-sunburst": "GPT-Image-2.5 Sunburst",
     "gpt-image-2.5": "GPT-Image-2.5",
     "gpt-image-2": "GPT-Image-2",
@@ -106,7 +107,7 @@ class Settings(BaseSettings):
     weimeta_api_key: str = ""        # Bearer 密钥；留空则网关通道不可用
     # 可选生图模型（id:标签，分号分隔）。默认 gpt-image-2.5-sunburst
     weimeta_image_models: str = (
-        "gpt-image-2.5-sunburst:GPT-Image-2.5 Sunburst（默认）;"
+        "gpt-image-2.5-sunburst:GPT-Image-2.5 Sunburst;"
         "gpt-image-2.5:GPT-Image-2.5;"
         "gpt-image-2:GPT-Image-2（最稳）")
     weimeta_image_model: str = "gpt-image-2.5-sunburst"
