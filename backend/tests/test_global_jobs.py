@@ -178,6 +178,8 @@ def test_video_cancelled_during_preparation_never_submits_paid_call(monkeypatch,
     session=SimpleNamespace(storage=SessionStorage('cancel-video',tmp_path/'session'))
     monkeypatch.setattr(v,'resolve_first_frame',lambda *args:'data:image/jpeg;base64,AA==')
     class Client:
+        @classmethod
+        def for_model(cls, model=None): return cls()
         def create_task(self,*args,**kwargs): pytest.fail('cancelled request must not be billed')
         def close(self): pass
     monkeypatch.setattr(v,'ArkClient',Client)
@@ -190,6 +192,8 @@ def test_remote_cancel_uses_fresh_client_not_closed_polling_client(monkeypatch):
     from app.core import video_generator as v
     events=[]
     class Client:
+        @classmethod
+        def for_model(cls, model=None): return cls()
         def __init__(self): events.append('opened')
         def cancel_task(self,task): events.append(task);return True
         def close(self):events.append('closed')
@@ -208,6 +212,8 @@ def test_stop_racing_remote_id_registration_cancels_and_keeps_recoverable_take(m
     monkeypatch.setattr(v,'resolve_first_frame',lambda *args:'data:image/jpeg;base64,AA==')
     cancelled=[]
     class Client:
+        @classmethod
+        def for_model(cls, model=None): return cls()
         def create_task(self,*args,**kwargs):
             job.cancel_requested=True
             return {'id':'paid-existing-id'}

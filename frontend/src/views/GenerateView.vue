@@ -441,7 +441,8 @@ onMounted(async () => {
         <div class="row">
           <div class="field inline"><label>模型</label>
             <select v-model="genModel">
-              <option v-for="m in gen.models" :key="m.id" :value="m.id">{{ m.label }}</option>
+              <option v-for="m in gen.models" :key="m.id" :value="m.id">
+                {{ m.label }}<template v-if="m.provider === 'byteplus'"> · 亚太</template></option>
             </select>
           </div>
           <div class="field inline"><label>分辨率</label>

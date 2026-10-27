@@ -77,16 +77,34 @@ def _summarize_error(resp: httpx.Response) -> str:
 
 
 class ArkClient:
-    def __init__(self):
+    """方舟视频接口客户端。默认走国内接入点，也可显式指定 base_url/api_key。"""
+
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None):
         settings = get_settings()
-        key = settings.ark_key_value
+        base, key = settings.ark_endpoint("ark")
+        if base_url:
+            base = base_url.rstrip("/")
+        if api_key:
+            key = api_key
         if not key:
             raise ArkError("未配置 Ark API Key（SPRITE_ARK_API_KEY 或环境变量 ARK_API_KEY）")
-        self._base = settings.ark_base_url.rstrip("/")
+        self._base = base
         self._client = httpx.Client(
             timeout=httpx.Timeout(30.0, read=60.0),
             headers={"Authorization": f"Bearer {key}"},
         )
+
+    @classmethod
+    def for_model(cls, model: Optional[str]) -> "ArkClient":
+        """按模型选接入点：亚太（无预过滤）的 ep- 模型走 byteplus。"""
+        settings = get_settings()
+        provider = settings.ark_provider_for(model)
+        base, key = settings.ark_endpoint(provider)
+        if provider == "byteplus" and not key:
+            raise ArkError(
+                "这个模型走亚太接入点，但没配 SPRITE_BYTEPLUS_API_KEY；"
+                "请到「设置」里填，或换用国内模型")
+        return cls(base_url=base, api_key=key)
 
     def close(self):
         self._client.close()

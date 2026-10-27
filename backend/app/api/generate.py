@@ -33,8 +33,10 @@ def generate_capabilities():
     s = get_settings()
     return {
         "configured": s.generate_enabled,
-        "models": s.ark_models_list,
+        # 国内 + 亚太（无预过滤，配了 BytePlus 密钥才列）
+        "models": s.video_models_list,
         "default_model": s.ark_model,
+        "byteplus_configured": s.byteplus_configured,
         "params": {
             "resolution": ["480p", "720p", "1080p"],   # 480p 优先（成本最低）
             "ratio": ["adaptive", "1:1", "16:9", "9:16", "4:3", "3:4"],

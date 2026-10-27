@@ -44,9 +44,10 @@ TERMINAL_OK = "succeeded"
 TERMINAL_BAD = ("failed", "cancelled", "expired")
 
 
-def _cancel_remote_task(task_id):
+def _cancel_remote_task(task_id, model=None):
     # 停止请求在独立线程中执行，原轮询客户端可能已经退出并关闭。
-    client = ArkClient()
+    # 要按模型选接入点：亚太（无预过滤）的任务得去 byteplus 取消
+    client = ArkClient.for_model(model)
     try:
         return client.cancel_task(task_id)
     finally:
@@ -323,7 +324,7 @@ def run_generate(session, req: dict, ctx) -> dict:
                  "role": "first_frame"},
             ]
 
-        client = ArkClient()
+        client = ArkClient.for_model(model)
         try:
             ctx.report(5, "提交生成任务...")
             if req.get('template_id'):
@@ -353,7 +354,7 @@ def run_generate(session, req: dict, ctx) -> dict:
                                        'dispatch_state': 'created'})
             if hasattr(ctx, 'record_remote'):
                 ctx.record_remote(remote_id)
-            ctx.register_cancel(lambda: _cancel_remote_task(remote_id))
+            ctx.register_cancel(lambda: _cancel_remote_task(remote_id, model))
 
             info = poll_until_done(client, remote_id, ctx)
             ctx.report(92, "生成完成，下载视频...")
@@ -399,12 +400,14 @@ def run_reconcile(session, ctx) -> dict:
     if not pending:
         return {"reconciled": 0, "results": []}
 
-    client = ArkClient()
     results = []
-    try:
-        for i, take in enumerate(pending):
-            tid, rid = take["id"], take["remote_task_id"]
-            ctx.report(i / len(pending) * 100, f"检查 {tid} ...")
+    for i, take in enumerate(pending):
+        tid, rid = take["id"], take["remote_task_id"]
+        ctx.report(i / len(pending) * 100, f"检查 {tid} ...")
+        # 每条 take 可能属于不同接入点（国内 / 亚太），各自建客户端
+        client = None
+        try:
+            client = ArkClient.for_model(take.get("model"))
             try:
                 info = client.get_task(rid)
                 status = info.get("status")
@@ -426,6 +429,7 @@ def run_reconcile(session, ctx) -> dict:
                 # 网络错误：take 保持 running，下次重挂再试；不影响其余条目
                 results.append({"id": tid, "status": "network_error",
                                 "detail": f"{type(e).__name__}: {str(e)[:100]}"})
-    finally:
-        client.close()
+        finally:
+            if client is not None:
+                client.close()
     return {"reconciled": len(results), "results": results}

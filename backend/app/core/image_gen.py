@@ -21,12 +21,14 @@ class ImageGenError(RuntimeError):
 
 
 def provider_for(model: Optional[str]) -> str:
-    """该模型走哪条通道。"""
+    """该模型走哪条通道：weimeta（网关）/ byteplus（亚太·无预过滤）/ ark（国内）。"""
     s = get_settings()
     model = (model or "").strip()
     if model:
         if any(m["id"] == model for m in s.weimeta_image_models_list):
             return "weimeta"
+        if any(m["id"] == model for m in s.byteplus_image_models_list):
+            return "byteplus"
         if any(m["id"] == model for m in s.ark_image_models_list):
             return "ark"
     mode = (s.image_provider or "auto").strip().lower()

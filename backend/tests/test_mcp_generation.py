@@ -229,6 +229,8 @@ def test_trial_image_then_video_uses_frozen_inputs_and_records_real_usage(paid_t
     monkeypatch.setattr(video_generator, '_cached_upload', upload)
     created = []
     class Client:
+        @classmethod
+        def for_model(cls, model=None): return cls()
         def create_task(self, model, content, **kwargs):
             created.append((model, content, kwargs))
             assert ledger.report('owner')['attempts'][-1]['status'] == 'unknown'

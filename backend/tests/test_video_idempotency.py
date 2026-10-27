@@ -54,6 +54,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(api, '_default_generate_payload', lambda *a, **kw: payload())
 
     class Client:
+        @classmethod
+        def for_model(cls, model=None):
+            """生产代码按模型选接入点；测试里一律用这个假客户端。"""
+            return cls()
         def create_task(self, *args, **kwargs):
             receipt = TakeStore(session.storage).list()['takes'][-1]
             assert receipt['dispatch_state'] == 'unknown'  # persisted before POST

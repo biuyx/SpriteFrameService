@@ -91,12 +91,18 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None,
     输出 png；该模型不支持组图，不传 sequential_image_generation。
     """
     s = get_settings()
-    key = s.ark_key_value
+    model_id = model or s.ark_image_model
+    # 亚太（无预过滤）的 Seedream 走 byteplus 接入点，其余走国内
+    provider = s.ark_provider_for(model_id)
+    base, key = s.ark_endpoint(provider)
     if not key:
-        raise ArkImageError("未配置 Ark API Key")
+        raise ArkImageError(
+            "未配置 BytePlus 密钥：这个模型走亚太接入点，请在「设置」里填 "
+            "SPRITE_BYTEPLUS_API_KEY" if provider == "byteplus"
+            else "未配置 Ark API Key")
     b64 = bool(getattr(s, "ark_image_b64", False))
     payload = {
-        "model": model or s.ark_image_model,
+        "model": model_id,
         "prompt": prompt,
         "size": size,
         "response_format": "b64_json" if b64 else "url",
@@ -110,7 +116,7 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None,
         ]
     try:
         with httpx.Client(timeout=httpx.Timeout(timeout, connect=15.0)) as c:
-            r = _post_generation(c, f"{s.ark_base_url}/images/generations",
+            r = _post_generation(c, f"{base}/images/generations",
                                  payload, {"Authorization": f"Bearer {key}"})
             if r.status_code != 200:
                 try:

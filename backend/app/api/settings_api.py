@@ -67,6 +67,9 @@ class SettingsPatch(BaseModel):
     # weimeta 生图网关（直连上游，gpt-image-2.5 家族）
     weimeta_base_url: Optional[str] = None
     weimeta_api_key: Optional[str] = None
+    # BytePlus 亚太接入点（无预过滤的 Seedance / Seedream）
+    byteplus_api_key: Optional[str] = None
+    byteplus_base_url: Optional[str] = None
 
 
 # 设置面板写入 .env 时使用的 OSS 键（与环境变量同名，oss_uploader 文件优先读取）
@@ -108,6 +111,13 @@ def get_runtime_settings():
             "base_url": s.weimeta_base_url or None,
             "api_key_masked": _mask(s.weimeta_api_key),
             "default_image_model": s.default_image_model,
+        },
+        "byteplus": {
+            "configured": s.byteplus_configured,
+            "base_url": s.byteplus_base_url or None,
+            "api_key_masked": _mask(s.byteplus_api_key),
+            "video_models": len(s.byteplus_models_list),
+            "image_models": len(s.byteplus_image_models_list),
         },
     }
 
@@ -160,6 +170,19 @@ def put_runtime_settings(req: SettingsPatch):
         if key and (len(key) < 16 or " " in key):
             raise HTTPException(status_code=400, detail="网关密钥格式不正确")
         updates["SPRITE_WEIMETA_API_KEY"] = key
+
+    # ---- BytePlus 亚太接入点（无预过滤的 Seedance / Seedream）----
+    if req.byteplus_base_url is not None:
+        base = req.byteplus_base_url.strip().rstrip("/")
+        if base and not base.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400,
+                                detail="BytePlus 地址需以 http:// 或 https:// 开头")
+        updates["SPRITE_BYTEPLUS_BASE_URL"] = base
+    if req.byteplus_api_key is not None:
+        key = req.byteplus_api_key.strip()
+        if key and (len(key) < 16 or " " in key):
+            raise HTTPException(status_code=400, detail="BytePlus 密钥格式不正确")
+        updates["SPRITE_BYTEPLUS_API_KEY"] = key
 
     if not updates:
         raise HTTPException(status_code=400, detail="没有要更新的设置")

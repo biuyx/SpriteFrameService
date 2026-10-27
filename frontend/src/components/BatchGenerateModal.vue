@@ -149,7 +149,8 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
         <div class="row" style="gap:10px;margin-bottom:8px;align-items:center">
           <div class="field inline"><label>模型</label>
             <select v-model="model">
-              <option v-for="m in gen?.models || []" :key="m.id" :value="m.id">{{ m.label }}</option>
+              <option v-for="m in gen?.models || []" :key="m.id" :value="m.id">
+                {{ m.label }}<template v-if="m.provider === 'byteplus'"> · 亚太</template></option>
             </select></div>
           <div class="field inline"><label>分辨率</label>
             <select v-model="resolution">

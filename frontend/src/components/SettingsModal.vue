@@ -18,6 +18,8 @@ const ossSk = ref('')
 // weimeta 生图网关（留空 = 不修改）
 const wmUrl = ref('')
 const wmKey = ref('')
+// BytePlus 亚太接入点（无预过滤的 Seedance / Seedream）
+const bpKey = ref('')
 
 async function load() {
   loading.value = true
@@ -44,11 +46,12 @@ async function save() {
     if (ossSk.value.trim()) patch.oss_access_key_secret = ossSk.value.trim()
     if (wmUrl.value.trim()) patch.weimeta_base_url = wmUrl.value.trim()
     if (wmKey.value.trim()) patch.weimeta_api_key = wmKey.value.trim()
+    if (bpKey.value.trim()) patch.byteplus_api_key = bpKey.value.trim()
     if (!Object.keys(patch).length) { emit('close'); return }
     current.value = await api.saveSettings(patch)
     newKey.value = ''
     ossBucket.value = ossDomain.value = ossAk.value = ossSk.value = ''
-    wmUrl.value = wmKey.value = ''
+    wmUrl.value = wmKey.value = bpKey.value = ''
     toast('设置已保存并生效')
     emit('close')
   } catch (e) {
@@ -178,6 +181,21 @@ onMounted(load)
             <input v-model="wmKey" type="password" placeholder="网关密钥 sk-..." autocomplete="off" />
           </div>
           <p class="hint">配好后首帧生图默认用 gpt-image-2.5-sunburst；参考图会先传 OSS 换公网 URL。密钥保存到 backend\.env，立即生效。</p>
+        </div>
+
+        <div class="set-group">
+          <label class="set-label">BytePlus 亚太接入点（无预过滤，备选）</label>
+          <div class="set-row">
+            <span class="key-now" v-if="current.byteplus?.configured">
+              当前：{{ current.byteplus.base_url }} · 密钥 {{ current.byteplus.api_key_masked }}
+              · 视频 {{ current.byteplus.video_models }} 个 / 图片 {{ current.byteplus.image_models }} 个
+            </span>
+            <span class="key-now" v-else>未配置——亚太的无预过滤模型不会出现在下拉里</span>
+          </div>
+          <div class="oss-grid">
+            <input v-model="bpKey" type="password" placeholder="BytePlus Ark 密钥 ark-..." autocomplete="off" />
+          </div>
+          <p class="hint">配上后，生图/生视频的模型下拉里会出现「Seedance / Seedream（亚太·无预过滤）」作为备选；默认模型不变。跨境更慢、按美元计价。</p>
         </div>
 
         <div class="modal-foot">

@@ -100,6 +100,20 @@ class Settings(BaseSettings):
     ark_image_b64: bool = False
     ark_timeout_seconds: int = 900   # 单次生成总超时
 
+    # --- BytePlus Ark（亚太接入点）：内容预过滤关闭，游戏原画更容易过审 ---
+    # 备选通道，不影响默认；密钥留空则该通道的模型不出现在下拉里
+    byteplus_api_key: str = ""
+    byteplus_base_url: str = "https://ark.ap-southeast.bytepluses.com/api/v3"
+    # 视频模型（id:标签，分号分隔）。ep- 是方舟的「接入点 id」，与模型名等价
+    byteplus_models: str = (
+        "ep-20261027144709-pwhn6:Seedance 2.0（亚太·无预过滤）;"
+        "ep-20261027150350-c2l6q:Seedance 2.0 Fast（亚太·无预过滤）;"
+        "ep-20261027150430-87g7q:Seedance 2.0 Mini（亚太·无预过滤）;"
+        "ep-20261027144026-6dxbq:Seedance 2.5（亚太·无预过滤）")
+    # 生图模型（id:标签，分号分隔）
+    byteplus_image_models: str = (
+        "ep-20261027150254-4cxlt:Seedream 5.0 Pro（亚太·无预过滤）")
+
     # --- weimeta 生图网关（gpt-image-2.5 家族；直连上游，不经 LocalAI）---
     # 通道选择：ark = 只走方舟；weimeta = 只走网关；auto = 按模型 id 判断
     image_provider: str = "auto"
@@ -133,15 +147,50 @@ class Settings(BaseSettings):
 
     @property
     def ark_models_list(self) -> list[dict]:
-        """解析可选模型：[{"id": ..., "label": ...}]。"""
-        result = []
-        for item in self.ark_models.split(";"):
-            item = item.strip()
-            if not item:
-                continue
-            mid, _, label = item.partition(":")
-            result.append({"id": mid.strip(), "label": label.strip() or mid.strip()})
-        return result
+        """方舟（国内）视频模型：[{"id", "label", "provider"}]。"""
+        return self._parse_models(self.ark_models, "ark")
+
+    @property
+    def byteplus_configured(self) -> bool:
+        """亚太接入点是否可用：有密钥就行（地址有默认值）。"""
+        return bool(self.byteplus_api_key.strip())
+
+    @property
+    def byteplus_models_list(self) -> list[dict]:
+        """亚太（无预过滤）视频模型；没配密钥就不列，免得选了必然失败。"""
+        if not self.byteplus_configured:
+            return []
+        return self._parse_models(self.byteplus_models, "byteplus")
+
+    @property
+    def byteplus_image_models_list(self) -> list[dict]:
+        if not self.byteplus_configured:
+            return []
+        return self._parse_models(self.byteplus_image_models, "byteplus")
+
+    @property
+    def video_models_list(self) -> list[dict]:
+        """界面可选的视频模型：国内 + 亚太（备选）。"""
+        return self.ark_models_list + self.byteplus_models_list
+
+    @property
+    def byteplus_model_ids(self) -> set[str]:
+        """亚太的模型 id（不看密钥配没配）。用于「这个 id 属于哪个接入点」的判断：
+        即使后来把密钥删了，历史的 ep- 模型也不会被误发到国内接入点。"""
+        return {m["id"] for m in self._parse_models(self.byteplus_models, "byteplus")} | \
+               {m["id"] for m in self._parse_models(self.byteplus_image_models, "byteplus")}
+
+    def ark_provider_for(self, model: str | None) -> str:
+        """这个模型走哪个接入点：ark（国内）或 byteplus（亚太）。"""
+        mid = (model or "").strip()
+        return "byteplus" if mid and mid in self.byteplus_model_ids else "ark"
+
+    def ark_endpoint(self, provider: str = "ark") -> tuple[str, str]:
+        """接入点的 (base_url, api_key)。"""
+        if provider == "byteplus":
+            return (self.byteplus_base_url.strip().rstrip("/"),
+                    self.byteplus_api_key.strip())
+        return self.ark_base_url.strip().rstrip("/"), self.ark_key_value
 
     @property
     def weimeta_configured(self) -> bool:
@@ -175,9 +224,10 @@ class Settings(BaseSettings):
     def image_models_list(self) -> list[dict]:
         """界面可选的生图模型（带 provider 标记）。
 
-        网关的模型只在配好密钥后才列出来——否则界面上能选却一定失败。
+        网关和亚太的模型只在配好各自密钥后才列出来——否则界面上能选却一定失败。
         """
         models = list(self.ark_image_models_list)
+        models += self.byteplus_image_models_list
         if self.weimeta_configured:
             models += self.weimeta_image_models_list
         return models
