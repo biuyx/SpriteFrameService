@@ -120,9 +120,11 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
         r = httpx.post(f"{_base()}/v2/images/generations", json=payload,
                        headers=_headers(), timeout=httpx.Timeout(60.0))
     except httpx.HTTPError as e:
+        # 提交阶段连不上是「不知道有没有提交成功」，重试可能重复扣费，所以不自动重试
         raise WeimetaError(
             f"连不上生图网关（{urlparse(_base()).hostname or _base()}）："
-            f"{type(e).__name__}。请检查服务器出网") from e
+            f"{type(e).__name__}。这次提交不确定是否已到达网关，"
+            "请先到网关后台确认没有生成记录，再重试") from e
     if r.status_code >= 400:
         raise WeimetaError(_explain(r, "提交"))
     task_id = str((r.json() or {}).get("id") or "").strip()
@@ -131,6 +133,7 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
 
     deadline = time.time() + max(30, s.weimeta_timeout_seconds)
     last_note = 0.0
+    net_failures = 0          # 连续的网络失败次数
     while True:
         if cancelled and cancelled():
             raise WeimetaError("已取消")
@@ -142,7 +145,17 @@ def generate_image(prompt: str, images: Optional[List[bytes]] = None, *,
             r = httpx.get(f"{_base()}/v2/tasks/{task_id}", headers=_headers(),
                           timeout=httpx.Timeout(30.0))
         except httpx.HTTPError as e:
-            raise WeimetaError(f"查询生图任务失败：{type(e).__name__}") from e
+            # 任务已经提交、钱已经花，一次网络抖动不该把结果丢掉：重试到超时为止
+            net_failures += 1
+            note(35, f"查询中断（{type(e).__name__}），重试中...")
+            if net_failures >= 8:
+                raise WeimetaError(
+                    f"查询生图任务连续失败 {net_failures} 次（{type(e).__name__}）："
+                    f"任务 {task_id} 可能仍在网关执行，请稍后到网关后台确认，"
+                    "别重复提交（会再扣一次费）") from e
+            time.sleep(max(1.0, s.weimeta_poll_seconds))
+            continue
+        net_failures = 0
         if r.status_code >= 400:
             raise WeimetaError(_explain(r, "查询"))
         st = r.json() or {}

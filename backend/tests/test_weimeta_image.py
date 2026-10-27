@@ -85,6 +85,27 @@ def test_提交轮询下载一条龙(gateway, monkeypatch):
     assert len(set(urls)) == 2
 
 
+def test_轮询遇到网络抖动会重试而不是丢掉任务(gateway, monkeypatch):
+    """任务已提交、钱已花，一次 ConnectError 不该让结果作废。"""
+    import httpx
+    seen = {"gets": 0}
+    monkeypatch.setattr(weimeta_image.httpx, "post",
+                        lambda *a, **k: FakeResp(body={"id": "t9", "status": "QUEUED"}))
+
+    def fake_get(url, headers=None, timeout=None, **kw):
+        if url.startswith("https://gw.test/v2/tasks/"):
+            seen["gets"] += 1
+            if seen["gets"] == 1:
+                raise httpx.ConnectError("network down")
+            return FakeResp(body={"status": "SUCCESS",
+                                  "output": {"images": [{"url": "https://cdn.test/x.png"}]}})
+        return FakeResp(content=b"img-bytes")
+
+    monkeypatch.setattr(weimeta_image.httpx, "get", fake_get)
+    assert generate("x", None, model="gpt-image-2.5-sunburst") == b"img-bytes"
+    assert seen["gets"] == 2, "第一次查询失败后应重试"
+
+
 def test_模型不存在时说明未计费(gateway, monkeypatch):
     monkeypatch.setattr(weimeta_image.httpx, "post",
                         lambda *a, **k: FakeResp(status=503, body={
