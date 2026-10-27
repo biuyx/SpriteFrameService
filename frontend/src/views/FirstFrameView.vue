@@ -203,7 +203,7 @@ onMounted(probeFirstFrame)
           <select v-model="ffImageModel" style="width:100%">
             <option v-for="mm in ffImageModels" :key="mm.id" :value="mm.id">
               {{ mm.label }}<template v-if="mm.id === ffImageDefault">（默认）</template>
-              · {{ mm.provider === 'weimeta' ? '网关' : '方舟' }}</option>
+              · {{ mm.provider === 'weimeta' ? '网关' : (mm.provider === 'byteplus' ? '亚太' : '方舟') }}</option>
           </select></div>
         <p class="hint" style="margin:0 0 10px">图1=姿势参考，图2=立绘；立绘在「从图库选」的图库里上传并标记正面/背面。</p>
         <div class="row" style="align-items:center;gap:10px">

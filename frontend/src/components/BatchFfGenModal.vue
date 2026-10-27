@@ -184,7 +184,7 @@ const STATUS_TXT = { queued: '排队', running: '生成中', done: '✓ 完成',
             <select v-model="imageModel">
               <option v-for="mm in imageModels" :key="mm.id" :value="mm.id">
                 {{ mm.label }}<template v-if="mm.id === imageDefault">（默认）</template>
-                · {{ mm.provider === 'weimeta' ? '网关' : '方舟' }}</option>
+                · {{ mm.provider === 'weimeta' ? '网关' : (mm.provider === 'byteplus' ? '亚太' : '方舟') }}</option>
             </select></div>
           <span class="hint">模型不同，画风与出图速度会有差异；失败不计费。</span>
         </div>
