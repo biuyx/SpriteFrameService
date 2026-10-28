@@ -44,6 +44,54 @@ TERMINAL_OK = "succeeded"
 TERMINAL_BAD = ("failed", "cancelled", "expired")
 
 
+# 提交响应丢失后的找回：任务 id 里带创建时间（cgt-YYYYMMDDHHMMSS-xxx），
+# 按「同模型 + 提交时刻 ±窗口」去任务列表里认。认不到就别猜。
+_ADOPT_WINDOW_SECONDS = 180     # 提交时刻前后多久算「同一次提交」
+_ADOPT_GIVE_UP_SECONDS = 900    # 超过这么久还认不出来，就判定为失败，允许重生成
+
+
+def _task_stamp(task_id: str) -> Optional[float]:
+    """从 cgt-20261028153616-xxxxx 里取出创建时刻（本地时区秒）。"""
+    try:
+        return time.mktime(time.strptime(task_id.split("-")[1], "%Y%m%d%H%M%S"))
+    except (IndexError, ValueError, OverflowError):
+        return None
+
+
+def _adopt_lost_task(client, take: dict, used_ids: set) -> Optional[str]:
+    """提交响应丢失时，按「模型 + 提交时刻」把远端任务认回来。
+
+    只认唯一候选：候选多于一个说明分不清是哪次提交，宁可不动（也不重复花钱）。
+    """
+    started = take.get("dispatch_started_at") or 0
+    model = take.get("model") or ""
+    if not started or not model:
+        return None
+    for page in range(1, 4):
+        try:
+            data = client.list_tasks(page_num=page, page_size=20)
+        except ArkError as e:
+            logger.warning("找回丢失任务时查询任务列表失败：%s", e)
+            return None
+        items = data.get("items") or []
+        candidates = []
+        for t in items:
+            tid = t.get("id") or ""
+            stamp = _task_stamp(tid)
+            if not stamp or tid in used_ids or t.get("model") != model:
+                continue
+            if abs(stamp - started) <= _ADOPT_WINDOW_SECONDS:
+                candidates.append(tid)
+        if len(candidates) == 1:
+            return candidates[0]
+        if len(candidates) > 1:
+            logger.warning("找回丢失任务时出现多个候选 %s，放弃自动认领", candidates[:5])
+            return None
+        if len(items) < 20:
+            break
+    return None
+
+
 def _cancel_remote_task(task_id, model=None):
     # 停止请求在独立线程中执行，原轮询客户端可能已经退出并关闭。
     # 要按模型选接入点：亚太（无预过滤）的任务得去 byteplus 取消
@@ -393,14 +441,65 @@ def run_generate(session, req: dict, ctx) -> dict:
         raise
 
 
+def _adopt_lost_dispatches(take_store, ctx, results: list) -> list:
+    """把「提交响应丢失」的 take 找回成有任务号的，或者在确认远端没有时判定失败。
+
+    这类 take 没有 remote_task_id，普通重挂永远处理不到，会一直卡在「生成中」。
+    方舟的任务列表带创建时间，按「同模型 + 提交时刻 ±3 分钟」能认回来。
+    认不出来又不肯放弃，等于让人一直等着——所以超过 15 分钟就按失败处理并说明白。
+    """
+    takes = take_store.load()["takes"]
+    lost = [t for t in takes
+            if t.get("source") == "generate"
+            and t.get("dispatch_state") == "unknown"
+            and not t.get("remote_task_id")
+            and t.get("status") in ("pending", "running")]
+    if not lost:
+        return []
+    used = {t.get("remote_task_id") for t in takes if t.get("remote_task_id")}
+    adopted = []
+    for take in lost:
+        tid = take["id"]
+        client = None
+        try:
+            client = ArkClient.for_model(take.get("model"))
+            rid = _adopt_lost_task(client, take, used)
+            if rid:
+                take_store.update(tid, {"remote_task_id": rid, "dispatch_state": "created",
+                                        "status": "running", "error": None})
+                used.add(rid)
+                adopted.append(take_store.get(tid))
+                results.append({"id": tid, "status": "adopted", "remote_task_id": rid})
+                logger.info("找回丢失的远端任务：%s → %s", tid, rid)
+            elif (time.time() - (take.get("dispatch_started_at") or 0)) > _ADOPT_GIVE_UP_SECONDS:
+                take_store.update(tid, {
+                    "status": "failed", "dispatch_state": "resolved",
+                    "error": "提交响应丢失，远端任务列表里按「模型 + 提交时刻」查无此任务，"
+                             "按失败处理；可以重新生成。若远端确实出了片，说明这次没取回、"
+                             "已计费但不影响重做。"})
+                results.append({"id": tid, "status": "failed",
+                                "detail": "远端没有对应的任务，已解除锁定"})
+            else:
+                results.append({"id": tid, "status": "waiting",
+                                "detail": "提交结果未确认，等远端任务出现后再自动认领"})
+        except ArkError as e:
+            results.append({"id": tid, "status": "error", "detail": str(e)[:120]})
+        finally:
+            if client is not None:
+                client.close()
+    return adopted
+
+
 def run_reconcile(session, ctx) -> dict:
     """重挂未完结的远端任务：重启/超时后取回结果或确认失败。"""
     take_store = TakeStore(session.storage)
+    results = []
     pending = take_store.pending_remote()
-    if not pending:
+    # 先处理「连任务号都没有」的：能从远端认回来就变成可重挂的
+    pending += _adopt_lost_dispatches(take_store, ctx, results)
+    if not pending and not results:
         return {"reconciled": 0, "results": []}
 
-    results = []
     for i, take in enumerate(pending):
         tid, rid = take["id"], take["remote_task_id"]
         ctx.report(i / len(pending) * 100, f"检查 {tid} ...")

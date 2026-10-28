@@ -132,6 +132,18 @@ class ArkClient:
             raise ArkError(f"查询任务失败: {_summarize_error(r)}")
         return r.json()
 
+    def list_tasks(self, page_num: int = 1, page_size: int = 20) -> dict:
+        """列出生成任务（按创建时间倒序）。
+
+        用途：提交响应丢失（读超时）时拿不到任务号，又不敢重发；靠这份列表按
+        「模型 + 提交时刻」把已经产生的远端任务找回来，别让付费结果烂在远端。
+        """
+        r = self._client.get(f"{self._base}/contents/generations/tasks",
+                             params={"pageNum": page_num, "pageSize": page_size})
+        if r.status_code >= 400:
+            raise ArkError(f"查询任务列表失败: {_summarize_error(r)}")
+        return r.json()
+
     def cancel_task(self, task_id: str) -> bool:
         """尝试取消远端任务。端点未在文档确认，失败静默返回 False。"""
         try:
