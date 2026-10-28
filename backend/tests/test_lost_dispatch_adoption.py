@@ -136,6 +136,57 @@ def test_时间还没到就继续等(tmp_path, monkeypatch):
     assert any(r["status"] == "waiting" for r in out["results"])
 
 
+def test_同模型连着提交两次时按秒级对齐挑(tmp_path, monkeypatch):
+    """线上真实情况：15:35:27 和 15:36:16 各提交过一次同模型任务。
+
+    宽窗口里两个都命中，但真正的这次和提交时刻只差 0.1 秒，靠这个分出来。
+    """
+    session, store, tid = _session(tmp_path, started_ago=60)
+    stamp = _stamp(-60)
+    near = f"cgt-{stamp}-near"
+    far = f"cgt-{_stamp(-109)}-far"          # 49 秒前的另一次提交
+    _install_client(monkeypatch, [(near, MODEL, "succeeded"), (far, MODEL, "succeeded")])
+
+    video.run_reconcile(session, Ctx())
+    assert store.get(tid)["remote_task_id"] == near
+
+
+def test_秒级也分不开时用参数指纹(tmp_path, monkeypatch):
+    session, store, tid = _session(tmp_path, started_ago=60)
+    store.update(tid, {"params": {"resolution": "480p", "ratio": "adaptive", "duration": 5}})
+    stamp = _stamp(-60)
+    a, b = f"cgt-{stamp}-a", f"cgt-{_stamp(-62)}-b"
+    calls = {"lists": 0, "gets": 0, "downloads": 0}
+
+    class Client:
+        @classmethod
+        def for_model(cls, model=None):
+            return cls()
+
+        def list_tasks(self, page_num=1, page_size=20):
+            return {"items": [
+                {"id": a, "model": MODEL, "status": "succeeded",
+                 "resolution": "720p", "ratio": "16:9", "duration": 5},
+                {"id": b, "model": MODEL, "status": "succeeded",
+                 "resolution": "480p", "ratio": "adaptive", "duration": 5},
+            ]}
+
+        def get_task(self, rid):
+            return {"status": "succeeded", "content": {"video_url": "https://cdn.test/v.mp4"}}
+
+        def download(self, url, dest):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"v")
+            return 1
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(video, "ArkClient", Client)
+    video.run_reconcile(session, Ctx())
+    assert store.get(tid)["remote_task_id"] == b, "分辨率和参数一致的那个才是自己的"
+
+
 def test_提交时刻被挤到后面几页也能翻到(tmp_path, monkeypatch):
     """任务多的时候，15 分钟前的提交可能已经在第 4 页往后——要按时间翻页，不能只翻 3 页。"""
     session, store, tid = _session(tmp_path, started_ago=800)

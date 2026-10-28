@@ -47,6 +47,7 @@ TERMINAL_BAD = ("failed", "cancelled", "expired")
 # 提交响应丢失后的找回：任务 id 里带创建时间（cgt-YYYYMMDDHHMMSS-xxx），
 # 按「同模型 + 提交时刻 ±窗口」去任务列表里认。认不到就别猜。
 _ADOPT_WINDOW_SECONDS = 180     # 提交时刻前后多久算「同一次提交」
+_ADOPT_TIGHT_SECONDS = 15       # 秒级对齐：同模型多次提交时先靠这个分
 _ADOPT_GIVE_UP_SECONDS = 900    # 超过这么久还认不出来，就判定为失败，允许重生成
 _ADOPT_MAX_PAGES = 40           # 最多往前翻 800 条任务（一页 20 条）
 
@@ -57,6 +58,33 @@ def _task_stamp(task_id: str) -> Optional[float]:
         return time.mktime(time.strptime(task_id.split("-")[1], "%Y%m%d%H%M%S"))
     except (IndexError, ValueError, OverflowError):
         return None
+
+
+def _pick_candidate(candidates: list, take: dict) -> Optional[str]:
+    """多个候选时怎么定夺。
+
+    同一动作连着提交两次（相隔几十秒）是正常用法，宽窗口里就会同时命中。
+    先看「秒级对齐」——提交时刻和任务号里的时间通常只差零点几秒；
+    再看参数指纹（分辨率/比例/时长）——同一个人两次提交常常改过这些。
+    都不行就放弃：宁可让人手动处理，也不能认错别人的付费任务。
+    """
+    if not candidates:
+        return None
+    tight = [c for c in candidates if c[1] <= _ADOPT_TIGHT_SECONDS]
+    if len(tight) == 1:
+        return tight[0][0]
+    pool = tight if tight else candidates
+    params = take.get("params") or {}
+
+    def same_shape(task: dict) -> bool:
+        return (task.get("resolution") == params.get("resolution")
+                and task.get("ratio") == params.get("ratio")
+                and task.get("duration") == params.get("duration"))
+
+    by_shape = [c for c in pool if same_shape(c[2])]
+    if len(by_shape) == 1:
+        return by_shape[0][0]
+    return None
 
 
 def _adopt_lost_task(client, take: dict, used_ids: set) -> Optional[str]:
@@ -87,11 +115,13 @@ def _adopt_lost_task(client, take: dict, used_ids: set) -> Optional[str]:
             if not stamp or tid in used_ids or t.get("model") != model:
                 continue
             if abs(stamp - started) <= _ADOPT_WINDOW_SECONDS:
-                candidates.append(tid)
-        if len(candidates) == 1:
-            return candidates[0]
+                candidates.append((tid, abs(stamp - started), t))
+        picked = _pick_candidate(candidates, take)
+        if picked:
+            return picked
         if len(candidates) > 1:
-            logger.warning("找回丢失任务时出现多个候选 %s，放弃自动认领", candidates[:5])
+            logger.warning("找回丢失任务时出现多个候选 %s，放弃自动认领",
+                           [c[0] for c in candidates[:5]])
             return None
         if len(items) < 20:
             break
