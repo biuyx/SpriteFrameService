@@ -41,8 +41,9 @@ def _session(tmp_path, started_ago: float = 60, model: str = MODEL):
     return SimpleNamespace(storage=storage), store, take["id"]
 
 
-def _install_client(monkeypatch, tasks, video_bytes=b"video-bytes", status="succeeded"):
-    """tasks: [(id, model, status)]"""
+def _install_client(monkeypatch, tasks, video_bytes=b"video-bytes", status="succeeded",
+                    per_page=20):
+    """tasks: [(id, model, status)]，按传入顺序切页（真实接口也是倒序分页）。"""
     calls = {"lists": 0, "gets": 0, "downloads": 0}
 
     class Client:
@@ -52,9 +53,8 @@ def _install_client(monkeypatch, tasks, video_bytes=b"video-bytes", status="succ
 
         def list_tasks(self, page_num=1, page_size=20):
             calls["lists"] += 1
-            if page_num > 1:
-                return {"items": []}
-            return {"items": [{"id": tid, "model": m, "status": s} for tid, m, s in tasks]}
+            chunk = tasks[(page_num - 1) * per_page: page_num * per_page]
+            return {"items": [{"id": tid, "model": m, "status": s} for tid, m, s in chunk]}
 
         def get_task(self, rid):
             calls["gets"] += 1
@@ -134,6 +134,20 @@ def test_时间还没到就继续等(tmp_path, monkeypatch):
     take = store.get(tid)
     assert take["status"] == "running" and not take.get("remote_task_id")
     assert any(r["status"] == "waiting" for r in out["results"])
+
+
+def test_提交时刻被挤到后面几页也能翻到(tmp_path, monkeypatch):
+    """任务多的时候，15 分钟前的提交可能已经在第 4 页往后——要按时间翻页，不能只翻 3 页。"""
+    session, store, tid = _session(tmp_path, started_ago=800)
+    decoys = [(f"cgt-{_stamp(-790 + i * 10)}-d{i:02d}", "doubao-seedance-2-0-260128", "succeeded")
+              for i in range(60)]                      # 60 个更新的任务，占满 3 页
+    target = (f"cgt-{_stamp(-800)}-target", MODEL, "succeeded")
+    calls = _install_client(monkeypatch, decoys + [target])
+
+    video.run_reconcile(session, Ctx())
+
+    assert store.get(tid)["remote_task_id"] == target[0]
+    assert calls["lists"] >= 4, "应该翻到第 4 页才找到"
 
 
 def test_任务号里的时间能解出来():

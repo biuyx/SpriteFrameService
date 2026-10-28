@@ -48,6 +48,7 @@ TERMINAL_BAD = ("failed", "cancelled", "expired")
 # 按「同模型 + 提交时刻 ±窗口」去任务列表里认。认不到就别猜。
 _ADOPT_WINDOW_SECONDS = 180     # 提交时刻前后多久算「同一次提交」
 _ADOPT_GIVE_UP_SECONDS = 900    # 超过这么久还认不出来，就判定为失败，允许重生成
+_ADOPT_MAX_PAGES = 40           # 最多往前翻 800 条任务（一页 20 条）
 
 
 def _task_stamp(task_id: str) -> Optional[float]:
@@ -61,23 +62,28 @@ def _task_stamp(task_id: str) -> Optional[float]:
 def _adopt_lost_task(client, take: dict, used_ids: set) -> Optional[str]:
     """提交响应丢失时，按「模型 + 提交时刻」把远端任务认回来。
 
+    列表按创建时间倒序、一页 20 条；任务多的时候提交时刻可能落在好几页之后，
+    所以按时间往前翻，翻过提交时刻就停（有上限，别无限翻）。
+
     只认唯一候选：候选多于一个说明分不清是哪次提交，宁可不动（也不重复花钱）。
     """
     started = take.get("dispatch_started_at") or 0
     model = take.get("model") or ""
     if not started or not model:
         return None
-    for page in range(1, 4):
+    for page in range(1, _ADOPT_MAX_PAGES + 1):
         try:
             data = client.list_tasks(page_num=page, page_size=20)
         except ArkError as e:
             logger.warning("找回丢失任务时查询任务列表失败：%s", e)
             return None
         items = data.get("items") or []
-        candidates = []
+        candidates, stamps = [], []
         for t in items:
             tid = t.get("id") or ""
             stamp = _task_stamp(tid)
+            if stamp:
+                stamps.append(stamp)
             if not stamp or tid in used_ids or t.get("model") != model:
                 continue
             if abs(stamp - started) <= _ADOPT_WINDOW_SECONDS:
@@ -88,6 +94,9 @@ def _adopt_lost_task(client, take: dict, used_ids: set) -> Optional[str]:
             logger.warning("找回丢失任务时出现多个候选 %s，放弃自动认领", candidates[:5])
             return None
         if len(items) < 20:
+            break
+        # 这一页最老的任务都已经早于「提交时刻 - 窗口」→ 再往前全是更老的，没必要翻了
+        if stamps and min(stamps) < started - _ADOPT_WINDOW_SECONDS:
             break
     return None
 
